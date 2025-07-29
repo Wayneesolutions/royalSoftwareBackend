@@ -5,6 +5,7 @@ import morgan from 'morgan'
 import adminRoute from './routes/adminRoute.js'
 import path from 'path'
 import { fileURLToPath } from 'url';
+import { superAdminRoute } from './routes/superAdminRoute.js'
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -52,7 +53,7 @@ app.get('/health', (req, res) => {
 
 
   app.use('/api/v1/admin',adminRoute)
-
+  app.use('/api/v1/superadmin',superAdminRoute)
   //404 handler for unmatched routes
   app.use((req, res) => {
     res.status(404).json({ 
