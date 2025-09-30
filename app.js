@@ -53,7 +53,9 @@ app.get('/health', (req, res) => {
 
 
   app.use('/api/v1/admin',adminRoute)
+
   app.use('/api/v1/superadmin',superAdminRoute)
+  
   //404 handler for unmatched routes
   app.use((req, res) => {
     res.status(404).json({ 

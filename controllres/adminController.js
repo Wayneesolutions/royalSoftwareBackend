@@ -10,7 +10,7 @@ export const adminCreation = async (req, res) => {
     if (!email || !password || !role || !name) {
       return res.json({success:false, message: "All fields are required" });
     }
-
+    
     // Check if user already exists
     const existingAdmin = await User.findOne({ email });
     if (existingAdmin) {

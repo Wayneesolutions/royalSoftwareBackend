@@ -11,6 +11,7 @@ adminRoute.get('/dashboard',adminDashboard)
 
 
 
+
 // company managemant
 adminRoute.post('/create-company',createCompany)
 adminRoute.get('/list-all-companies',getCompanies)

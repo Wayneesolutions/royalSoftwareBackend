@@ -1,7 +1,7 @@
 import bcrypt from 'bcryptjs';
 import SuperAdmin from '../models/superAdminModel/superAdminModel.js';
 import User from '../models/user/userModel.js';
-
+import jwt from 'jsonwebtoken'
 export const createSuperAdmin = async (req, res) => {
   try {
     const { email, password, name } = req.body;
@@ -43,6 +43,8 @@ export const loginSuperAdmin = async (req, res) => {
 
     return res.json({ success: true, message: 'Login successful', data:{ admin:admin,token:token }});
   } catch (err) {
+    console.log(err);
+    
     return res.json({ success: false, message: 'Login failed' });
   }
 };

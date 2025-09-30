@@ -1,5 +1,5 @@
 import exress from 'express'
-import { createAdmin, createSuperAdmin, loginSuperAdmin } from '../controllres/superAdminController'
+import { createAdmin, createSuperAdmin, loginSuperAdmin } from '../controllres/superAdminController.js'
 
 const superAdminRoute = exress.Router()
 
