@@ -4,7 +4,7 @@ import {
     createUser, 
     listCompanies, 
     listUsers 
-} from '../../controllres/tallyController'
+} from '../../controllres/tallyController.js'
 
 export const tallyRoute = express.Router()
 
