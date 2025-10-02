@@ -13,7 +13,7 @@ export const listCompanies = async (req,res) =>{
 }
 export const listUsers = async (req,res) =>{
     try {
-        const usres = User.find()
+        const usres =await User.find()
         res.json({success:true,message:'users list',data:usres})
     } catch (error) {
         return res.json({success:false,message:error.message})
