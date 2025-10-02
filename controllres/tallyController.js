@@ -5,7 +5,7 @@ import Counter from "../models/company/counterModel.js";
 
 export const listCompanies = async (req,res) =>{
     try {
-        const companies = await Company.find()
+        const companies = await Company.find().lean()
         return res.json({success:true,message:"companies list",data:companies})
     } catch (error) {
          return res.json({success:false,message:error.message})
@@ -13,7 +13,7 @@ export const listCompanies = async (req,res) =>{
 }
 export const listUsers = async (req,res) =>{
     try {
-        const usres =await User.find()
+        const usres =await User.find().lean()
         res.json({success:true,message:'users list',data:usres})
     } catch (error) {
         return res.json({success:false,message:error.message})
