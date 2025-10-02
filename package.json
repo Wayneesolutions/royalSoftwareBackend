@@ -23,7 +23,7 @@
     "axios": "^1.11.0",
     "bcryptjs": "^3.0.2",
     "cors": "^2.8.5",
-    "dotenv": "^17.2.0",
+    "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "fast-xml-parser": "^5.2.5",
     "helmet": "^8.1.0",
