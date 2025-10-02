@@ -6,7 +6,7 @@ const companySchema = new mongoose.Schema({
     companyCountry: { type: String, required: true },
     companyMobile: { type: String, required: true },
     companyEmail: { type: String, required: true },
-    companyCode: { type: Number, required: true, unique: true },
+    companyCode: { type: String, required: true, unique: true },
     maxUser: { type: Number, required: true },
     guid:{ type: Number, required: true, unique: true }
 }, {
