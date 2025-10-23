@@ -3,10 +3,16 @@ import helmet from 'helmet'
 import cors from 'cors'
 import morgan from 'morgan'
 import adminRoute from './routes/adminRoute.js'
+import authRoute from './routes/authRoute.js'
+import userRoute from './routes/userRoute.js'
+import orderRoute from './routes/orderRoute.js'
+import approvalRoute from './routes/approvalRoute.js'
+import productRoute from './routes/productRoute.js'
 import path from 'path'
 import { fileURLToPath } from 'url';
 import { superAdminRoute } from './routes/superAdminRoute.js'
 import { tallyRoute } from './routes/tally/tallyRoute.js'
+import { specs, swaggerUi } from './config/swagger.js'
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -52,12 +58,21 @@ app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok' });
   });
 
+  // Swagger documentation
+  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs, {
+    explorer: true,
+    customCss: '.swagger-ui .topbar { display: none }',
+    customSiteTitle: 'Royal App API Documentation'
+  }));
 
-  app.use('/api/v1/admin',adminRoute)
-
-  app.use('/api/v1/superadmin',superAdminRoute)
-  
-  app.use('/api/v1/tally',tallyRoute)
+  app.use('/api/v1/auth', authRoute)
+  app.use('/api/v1/admin', adminRoute)
+  app.use('/api/v1/user', userRoute)
+  app.use('/api/v1/orders', orderRoute)
+  app.use('/api/v1/approvals', approvalRoute)
+  app.use('/api/v1/products', productRoute)
+  app.use('/api/v1/superadmin', superAdminRoute)
+  app.use('/api/v1/tally', tallyRoute)
   //404 handler for unmatched routes
   app.use((req, res) => {
     res.status(404).json({ 

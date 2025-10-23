@@ -1,27 +1,47 @@
 import express from 'express'
-import { adminCreation, adminDashboard, adminLogin } from '../controllres/adminController.js'
-import {  getUsersByRole, createUser, getUserById } from '../controllres/adminUserController.js'
-import { createCompany, deleteCompany, getCompanies, updateCompany } from '../controllres/companyController.js'
+import { 
+  adminCreation, 
+  adminDashboard, 
+  adminLogin, 
+  switchCompany, 
+  getCompanyData,
+  createUser,
+  getUsersByCompany,
+  updateUserStatus,
+  editUser,
+  deleteUser
+} from '../controllres/adminController.js'
+import { 
+  getUsersByRole, 
+  getUserById
+} from '../controllres/adminUserController.js'
+import { requireAuth, authorizeRoles } from '../middleware/authMiddleware.js'
 
 const adminRoute = express.Router()
 
-adminRoute.post('/create',adminCreation)
-adminRoute.post('/login',adminLogin)
-adminRoute.get('/dashboard',adminDashboard)
+/**
+ * @swagger
+ * tags:
+ *   name: Admin
+ *   description: Admin management endpoints
+ */
 
+// Public routes (no authentication required)
+adminRoute.post('/create', adminCreation)
+adminRoute.post('/login', adminLogin)
 
+// Protected routes (authentication required)
+adminRoute.get('/dashboard', requireAuth, authorizeRoles(['admin']), adminDashboard)
+adminRoute.get('/company-data', requireAuth, authorizeRoles(['admin']), getCompanyData)
+adminRoute.post('/switch-company', requireAuth, authorizeRoles(['admin']), switchCompany)
 
-
-// company managemant
-adminRoute.post('/create-company',createCompany)
-adminRoute.get('/list-all-companies',getCompanies)
-adminRoute.patch('/update-company/:id',updateCompany)
-adminRoute.delete('/delete-company/:id',deleteCompany)
-
-
-// user management
-adminRoute.get('/role/:role',getUsersByRole)
-adminRoute.get('/get-user/:id',getUserById)
-adminRoute.post('/create-user',createUser)
+// User management routes
+adminRoute.get('/users-by-company', requireAuth, authorizeRoles(['admin']), getUsersByCompany)
+adminRoute.get('/role/:role', requireAuth, authorizeRoles(['admin']), getUsersByRole)
+adminRoute.get('/get-user/:id', requireAuth, authorizeRoles(['admin']), getUserById)
+adminRoute.post('/create-user', requireAuth, authorizeRoles(['admin']), createUser)
+adminRoute.put('/user/:userId/status', requireAuth, authorizeRoles(['admin']), updateUserStatus)
+adminRoute.put('/user/:userId', requireAuth, authorizeRoles(['admin']), editUser)
+adminRoute.delete('/user/:userId', requireAuth, authorizeRoles(['admin']), deleteUser)
 
 export default adminRoute
