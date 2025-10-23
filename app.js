@@ -8,10 +8,15 @@ import userRoute from './routes/userRoute.js'
 import orderRoute from './routes/orderRoute.js'
 import approvalRoute from './routes/approvalRoute.js'
 import productRoute from './routes/productRoute.js'
+import targetRoute from './routes/targetRoute.js'
+import outstandingRoute from './routes/outstandingRoute.js'
+import ledgerRoute from './routes/ledgerRoute.js'
+import stockRoute from './routes/stockRoute.js'
+import zonalRoute from './routes/zonalRoute.js'
 import path from 'path'
 import { fileURLToPath } from 'url';
 import { superAdminRoute } from './routes/superAdminRoute.js'
-import { tallyRoute } from './routes/tally/tallyRoute.js'
+import tallyRoute from './routes/tallyRoute.js'
 import { specs, swaggerUi } from './config/swagger.js'
 
 const __filename = fileURLToPath(import.meta.url);
@@ -71,6 +76,11 @@ app.get('/health', (req, res) => {
   app.use('/api/v1/orders', orderRoute)
   app.use('/api/v1/approvals', approvalRoute)
   app.use('/api/v1/products', productRoute)
+  app.use('/api/v1/targets', targetRoute)
+  app.use('/api/v1/outstanding', outstandingRoute)
+app.use('/api/v1/ledger', ledgerRoute)
+app.use('/api/v1/stock', stockRoute)
+app.use('/api/v1/zonal', zonalRoute)
   app.use('/api/v1/superadmin', superAdminRoute)
   app.use('/api/v1/tally', tallyRoute)
   //404 handler for unmatched routes

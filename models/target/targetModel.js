@@ -90,7 +90,7 @@ const targetSchema = new mongoose.Schema({
   role: {
     type: String,
     required: true,
-    enum: ['admin', 'zonal', 'rsm', 'asm', 'salesman', 'distributor', 'dealer']
+    enum: ['superadmin', 'admin', 'dealers', 'subdealer', 'asm', 'rsm', 'distibutors', 'suppliers', 'salesman', 'zonal']
   },
   
   // Tally Integration

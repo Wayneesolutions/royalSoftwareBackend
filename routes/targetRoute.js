@@ -4,14 +4,15 @@ import {
   assignTargets,
   getUsersForTargetAssignment,
   getTargetPerformanceReport,
-  updateTarget
+  updateTarget,
+  calculateTargetAchievements
 } from '../controllres/targetController.js';
-import { authenticateToken } from '../middleware/authMiddleware.js';
+import { requireAuth } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
 
 // Apply authentication middleware to all routes
-router.use(authenticateToken);
+router.use(requireAuth);
 
 // Get targets for current user
 router.get('/my-targets', getMyTargets);
@@ -27,5 +28,8 @@ router.get('/performance-report', getTargetPerformanceReport);
 
 // Update individual target
 router.put('/:targetId', updateTarget);
+
+// Calculate target achievements from orders
+router.post('/calculate-achievements', calculateTargetAchievements);
 
 export default router;
