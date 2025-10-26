@@ -1,7 +1,8 @@
 import express from 'express';
 import {
   getZonalDashboardData,
-  getZonalTeamMembers
+  getZonalTeamMembers,
+  getZonalRecentActivity
 } from '../controllres/zonalController.js';
 import { requireAuth } from '../middleware/authMiddleware.js';
 
@@ -15,5 +16,8 @@ router.get('/dashboard', getZonalDashboardData);
 
 // Get team members
 router.get('/team', getZonalTeamMembers);
+
+// Get recent activity
+router.get('/recent-activity', getZonalRecentActivity);
 
 export default router;

@@ -367,3 +367,155 @@ export const getZonalTeamMembers = async (req, res) => {
     });
   }
 };
+
+// Get recent activity for Zonal user based on specific company
+export const getZonalRecentActivity = async (req, res) => {
+  try {
+    const userId = req.user.userDetails._id;
+    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+    const { limit = 20, days = 7 } = req.query;
+
+    // Calculate date range
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - parseInt(days));
+
+    // Get team user IDs
+    const teamUsers = await User.find({
+      'defaultCompany': companyId,
+      isActive: true,
+      _id: { $ne: userId },
+      $or: [
+        { 'hierarchy.parentUser': userId },
+        { 
+          'hierarchy.level': { $gt: 0 },
+          role: { $in: ['rsm', 'asm', 'salesman', 'dealers', 'distibutors', 'subdealer'] }
+        }
+      ]
+    }).select('_id name role');
+
+    const teamUserIds = teamUsers.map(user => user._id);
+
+    // Get recent orders
+    const recentOrders = await Order.find({
+      companyId,
+      createdBy: { $in: teamUserIds },
+      isActive: true,
+      createdAt: { $gte: startDate, $lte: endDate }
+    })
+      .populate('createdBy', 'name role')
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit) / 2);
+
+    // Get recent user activities (logins, profile updates, etc.)
+    const recentUserActivities = await User.find({
+      'defaultCompany': companyId,
+      _id: { $in: teamUserIds },
+      lastLogin: { $gte: startDate, $lte: endDate }
+    })
+      .select('_id name role lastLogin')
+      .sort({ lastLogin: -1 })
+      .limit(parseInt(limit) / 2);
+
+    // Format activities
+    const activities = [];
+
+    // Add order activities
+    recentOrders.forEach(order => {
+      activities.push({
+        id: `order_${order._id}`,
+        type: 'order',
+        title: getOrderActivityTitle(order.status),
+        description: `${order.createdBy.name} (${order.createdBy.role}) - Order #${order.orderNumber}`,
+        amount: order.finalAmount,
+        status: order.status,
+        timestamp: order.createdAt,
+        user: order.createdBy,
+        icon: getOrderIcon(order.status),
+        color: getOrderColor(order.status)
+      });
+    });
+
+    // Add user login activities
+    recentUserActivities.forEach(user => {
+      activities.push({
+        id: `login_${user._id}`,
+        type: 'login',
+        title: 'User Login',
+        description: `${user.name} (${user.role}) logged in`,
+        timestamp: user.lastLogin,
+        user: { name: user.name, role: user.role },
+        icon: 'log-in',
+        color: '#10B981'
+      });
+    });
+
+    // Sort all activities by timestamp
+    activities.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+    // Limit final results
+    const limitedActivities = activities.slice(0, parseInt(limit));
+
+    res.status(200).json({
+      success: true,
+      data: {
+        activities: limitedActivities,
+        totalActivities: activities.length,
+        dateRange: {
+          startDate,
+          endDate,
+          days: parseInt(days)
+        },
+        teamStats: {
+          totalTeamMembers: teamUsers.length,
+          activeMembers: recentUserActivities.length
+        }
+      },
+      message: 'Recent activity retrieved successfully'
+    });
+  } catch (error) {
+    console.error('Error getting recent activity:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve recent activity',
+      error: error.message
+    });
+  }
+};
+
+// Helper functions for activity formatting
+const getOrderActivityTitle = (status) => {
+  const statusMap = {
+    'pending': 'New Order Created',
+    'confirmed': 'Order Confirmed',
+    'processing': 'Order Processing',
+    'shipped': 'Order Shipped',
+    'delivered': 'Order Delivered',
+    'cancelled': 'Order Cancelled'
+  };
+  return statusMap[status] || 'Order Updated';
+};
+
+const getOrderIcon = (status) => {
+  const iconMap = {
+    'pending': 'time',
+    'confirmed': 'checkmark-circle',
+    'processing': 'refresh',
+    'shipped': 'car',
+    'delivered': 'checkmark-done',
+    'cancelled': 'close-circle'
+  };
+  return iconMap[status] || 'document';
+};
+
+const getOrderColor = (status) => {
+  const colorMap = {
+    'pending': '#F59E0B',
+    'confirmed': '#3B82F6',
+    'processing': '#8B5CF6',
+    'shipped': '#06B6D4',
+    'delivered': '#10B981',
+    'cancelled': '#EF4444'
+  };
+  return colorMap[status] || '#6B7280';
+};

@@ -13,6 +13,8 @@ import outstandingRoute from './routes/outstandingRoute.js'
 import ledgerRoute from './routes/ledgerRoute.js'
 import stockRoute from './routes/stockRoute.js'
 import zonalRoute from './routes/zonalRoute.js'
+import rsmRoute from './routes/rsmRoute.js'
+import asmRoute from './routes/asmRoute.js'
 import path from 'path'
 import { fileURLToPath } from 'url';
 import { superAdminRoute } from './routes/superAdminRoute.js'
@@ -81,6 +83,8 @@ app.get('/health', (req, res) => {
 app.use('/api/v1/ledger', ledgerRoute)
 app.use('/api/v1/stock', stockRoute)
 app.use('/api/v1/zonal', zonalRoute)
+app.use('/api/v1/rsm', rsmRoute)
+app.use('/api/v1/asm', asmRoute)
   app.use('/api/v1/superadmin', superAdminRoute)
   app.use('/api/v1/tally', tallyRoute)
   //404 handler for unmatched routes
