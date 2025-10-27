@@ -387,3 +387,124 @@ export const updateUserProfile = async (req, res) => {
     })
   }
 }
+
+/**
+ * @swagger
+ * /api/v1/user/delete/{userId}:
+ *   delete:
+ *     summary: Delete a user (accessible by admin and superadmin)
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: userId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: User ID to delete
+ *     responses:
+ *       200:
+ *         description: User deleted successfully
+ *       403:
+ *         description: Access denied
+ *       404:
+ *         description: User not found
+ */
+export const deleteUser = async (req, res) => {
+  try {
+    const { userId } = req.params
+    const currentUser = req.user.userDetails
+    const currentUserId = req.user.userId
+
+    // Check if user is trying to delete themselves
+    if (userId === currentUserId) {
+      return res.status(400).json({
+        success: false,
+        message: 'You cannot delete your own account'
+      })
+    }
+
+    // Check permissions
+    let hasPermission = false
+
+    if (currentUser.role === 'superadmin') {
+      hasPermission = true
+    } else if (currentUser.role === 'admin') {
+      // Admin can only delete users from their own company
+      hasPermission = true
+    } else {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied: Only admins and super admins can delete users'
+      })
+    }
+
+    // Find the user to delete
+    const userToDelete = await User.findById(userId)
+      .populate('companies.companyId', 'companyName companyCode')
+
+    if (!userToDelete) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      })
+    }
+
+    // For admin users, check if the user belongs to their company
+    if (currentUser.role === 'admin') {
+      const userCompanyIds = userToDelete.companies
+        .filter(comp => comp.isActive)
+        .map(comp => comp.companyId._id.toString())
+
+      const currentUserCompanyIds = currentUser.companies
+        .filter(comp => comp.isActive)
+        .map(comp => comp.companyId._id.toString())
+
+      const hasAccessToUser = userCompanyIds.some(companyId => 
+        currentUserCompanyIds.includes(companyId)
+      )
+
+      if (!hasAccessToUser) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied: You can only delete users from your own company'
+        })
+      }
+    }
+
+    // Check if user has any active orders or important data
+    // This is a basic check - you might want to add more comprehensive checks
+    const userCompanies = userToDelete.companies
+      .filter(comp => comp.isActive)
+      .map(comp => comp.companyId.companyName)
+      .join(', ')
+
+    // Delete the user
+    await User.findByIdAndDelete(userId)
+
+    // Log the deletion for audit purposes
+    console.log(`User ${userToDelete.name} (${userToDelete.email}) deleted by ${currentUser.name} (${currentUser.role})`)
+
+    res.json({
+      success: true,
+      message: 'User deleted successfully',
+      data: {
+        deletedUser: {
+          id: userToDelete._id,
+          name: userToDelete.name,
+          email: userToDelete.email,
+          role: userToDelete.role,
+          companies: userCompanies
+        }
+      }
+    })
+
+  } catch (error) {
+    console.error('Error deleting user:', error)
+    res.status(500).json({
+      success: false,
+      message: 'Server error while deleting user'
+    })
+  }
+}

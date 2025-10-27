@@ -9,19 +9,47 @@ export const getASMDashboardData = async (req, res) => {
     const userId = req.user.userDetails._id;
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
 
-    // Find all team users under this ASM
-    const teamUsers = await User.find({
-      company: companyId,
-      reportingManager: userId
-    }).select('_id name role');
+    // Get the ASM user's hierarchy information
+    const asmUser = await User.findById(userId).populate('hierarchy.parentUser');
+    
+    if (!asmUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'ASM user not found'
+      });
+    }
 
-    // Get role counts
+    // Get all users under this ASM user's hierarchy
+    const teamUsers = await User.find({
+      'defaultCompany': companyId,
+      isActive: true,
+      _id: { $ne: userId }, // Exclude current ASM user
+      $or: [
+        { 'hierarchy.parentUser': userId },
+        { 
+          'hierarchy.level': { $gt: asmUser.hierarchy?.level || 0 },
+          role: { $in: ['salesman', 'dealers', 'distibutors', 'subdealer'] }
+        }
+      ]
+    }).select('_id name email role hierarchy lastLogin');
+
+    console.log(`ASM ${userId} team users:`, teamUsers.length); // Debug log
+
+    // Count users by role
     const roleCounts = {
-      salesman: teamUsers.filter(user => user.role === 'salesman').length,
-      dealers: teamUsers.filter(user => user.role === 'dealers').length,
-      distibutors: teamUsers.filter(user => user.role === 'distibutors').length,
-      subdealer: teamUsers.filter(user => user.role === 'subdealer').length
+      salesman: 0,
+      dealers: 0,
+      distibutors: 0,
+      subdealer: 0
     };
+
+    teamUsers.forEach(user => {
+      if (roleCounts.hasOwnProperty(user.role)) {
+        roleCounts[user.role]++;
+      }
+    });
+
+    console.log('Role counts:', roleCounts); // Debug log
 
     const teamUserIds = teamUsers.map(user => user._id);
 
@@ -29,8 +57,10 @@ export const getASMDashboardData = async (req, res) => {
     const salesSummary = await Order.aggregate([
       {
         $match: {
+          companyId: new mongoose.Types.ObjectId(companyId),
           createdBy: { $in: teamUserIds },
-          status: { $in: ['completed', 'approved'] }
+          isActive: true,
+          status: { $in: ['confirmed', 'processing', 'shipped', 'delivered'] }
         }
       },
       {
@@ -40,12 +70,20 @@ export const getASMDashboardData = async (req, res) => {
           totalOrders: { $sum: 1 },
           pendingOrders: {
             $sum: {
-              $cond: [{ $eq: ['$status', 'pending'] }, 1, 0]
+              $cond: [
+                { $in: ['$status', ['confirmed', 'processing']] },
+                1,
+                0
+              ]
             }
           },
           completedOrders: {
             $sum: {
-              $cond: [{ $in: ['$status', ['completed', 'approved']] }, 1, 0]
+              $cond: [
+                { $in: ['$status', ['shipped', 'delivered']] },
+                1,
+                0
+              ]
             }
           }
         }
@@ -61,18 +99,22 @@ export const getASMDashboardData = async (req, res) => {
 
     // Get recent orders
     const recentOrders = await Order.find({
-      createdBy: { $in: teamUserIds }
+      companyId,
+      createdBy: { $in: teamUserIds },
+      isActive: true
     })
-    .populate('createdBy', 'name role')
-    .sort({ createdAt: -1 })
-    .limit(10);
+      .populate('createdBy', 'name role')
+      .sort({ createdAt: -1 })
+      .limit(5);
 
     // Get top performers
     const topPerformers = await Order.aggregate([
       {
         $match: {
+          companyId: new mongoose.Types.ObjectId(companyId),
           createdBy: { $in: teamUserIds },
-          status: { $in: ['completed', 'approved'] }
+          isActive: true,
+          status: { $in: ['confirmed', 'processing', 'shipped', 'delivered'] }
         }
       },
       {
@@ -114,26 +156,17 @@ export const getASMDashboardData = async (req, res) => {
     const teamPerformance = await Order.aggregate([
       {
         $match: {
+          companyId: new mongoose.Types.ObjectId(companyId),
           createdBy: { $in: teamUserIds },
-          status: { $in: ['completed', 'approved'] }
+          isActive: true,
+          createdAt: { $gte: new Date(new Date().setMonth(new Date().getMonth() - 1)) }
         }
       },
       {
         $group: {
           _id: '$createdBy',
-          totalSales: { $sum: '$finalAmount' },
-          orderCount: { $sum: 1 },
-          monthlySales: {
-            $sum: {
-              $cond: [
-                {
-                  $gte: ['$createdAt', new Date(new Date().setDate(1))]
-                },
-                '$finalAmount',
-                0
-              ]
-            }
-          }
+          monthlySales: { $sum: '$finalAmount' },
+          monthlyOrders: { $sum: 1 }
         }
       },
       {
@@ -149,29 +182,23 @@ export const getASMDashboardData = async (req, res) => {
       },
       {
         $project: {
-          _id: '$_id',
-          name: '$user.name',
-          role: '$user.role',
-          salesData: {
-            totalSales: '$totalSales',
-            orderCount: '$orderCount',
-            monthlySales: '$monthlySales'
-          },
-          isActive: {
-            $cond: [
-              {
-                $gte: ['$user.lastLogin', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)]
-              },
-              true,
-              false
-            ]
-          }
+          userId: '$_id',
+          userName: '$user.name',
+          userRole: '$user.role',
+          monthlySales: 1,
+          monthlyOrders: 1,
+          lastLogin: '$user.lastLogin'
         }
-      },
-      {
-        $sort: { 'salesData.totalSales': -1 }
       }
     ]);
+
+    // Calculate active members
+    const activeMembers = teamUsers.filter(user => 
+      user.lastLogin && new Date(user.lastLogin) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+    ).length;
+
+    console.log('Active members:', activeMembers); // Debug log
+    console.log('Sales data:', salesData); // Debug log
 
     res.status(200).json({
       success: true,
@@ -179,19 +206,18 @@ export const getASMDashboardData = async (req, res) => {
         teamOverview: {
           totalTeamMembers: teamUsers.length,
           roleCounts,
-          activeMembers: teamUsers.filter(user => 
-            user.lastLogin && new Date(user.lastLogin) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
-          ).length
+          teamUsers: teamUsers.slice(0, 10), // Show first 10 team members
+          activeMembers: activeMembers
         },
         salesSummary: {
-          totalSales: salesData.totalSales,
-          totalOrders: salesData.totalOrders,
-          pendingOrders: salesData.pendingOrders,
-          completedOrders: salesData.completedOrders
+          totalSales: salesData.totalSales || 0,
+          totalOrders: salesData.totalOrders || 0,
+          pendingOrders: salesData.pendingOrders || 0,
+          completedOrders: salesData.completedOrders || 0
         },
-        topPerformers,
-        recentOrders,
-        teamPerformance
+        topPerformers: topPerformers || [],
+        recentOrders: recentOrders || [],
+        teamPerformance: teamPerformance || []
       },
       message: 'ASM dashboard data retrieved successfully'
     });
@@ -212,10 +238,28 @@ export const getASMTeamMembers = async (req, res) => {
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
     const { limit = 50, role } = req.query;
 
-    // Build query
-    const query = {
-      company: companyId,
-      reportingManager: userId
+    // Get the ASM user's hierarchy information
+    const asmUser = await User.findById(userId).populate('hierarchy.parentUser');
+    
+    if (!asmUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'ASM user not found'
+      });
+    }
+
+    // Build query for team members
+    let query = {
+      'defaultCompany': companyId,
+      isActive: true,
+      _id: { $ne: userId }, // Exclude current ASM user
+      $or: [
+        { 'hierarchy.parentUser': userId },
+        { 
+          'hierarchy.level': { $gt: asmUser.hierarchy?.level || 0 },
+          role: { $in: ['salesman', 'dealers', 'distibutors', 'subdealer'] }
+        }
+      ]
     };
 
     if (role && role !== 'all') {
@@ -234,8 +278,10 @@ export const getASMTeamMembers = async (req, res) => {
     const salesData = await Order.aggregate([
       {
         $match: {
+          companyId: new mongoose.Types.ObjectId(companyId),
           createdBy: { $in: teamUserIds },
-          status: { $in: ['completed', 'approved'] }
+          isActive: true,
+          status: { $in: ['confirmed', 'processing', 'shipped', 'delivered'] }
         }
       },
       {
@@ -455,17 +501,37 @@ export const getASMRecentActivity = async (req, res) => {
     const startDate = new Date();
     startDate.setDate(endDate.getDate() - parseInt(days));
 
+    // Get the ASM user's hierarchy information
+    const asmUser = await User.findById(userId).populate('hierarchy.parentUser');
+    
+    if (!asmUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'ASM user not found'
+      });
+    }
+
     // Find all team users under this ASM
     const teamUsers = await User.find({
-      company: companyId,
-      reportingManager: userId
+      'defaultCompany': companyId,
+      isActive: true,
+      _id: { $ne: userId }, // Exclude current ASM user
+      $or: [
+        { 'hierarchy.parentUser': userId },
+        { 
+          'hierarchy.level': { $gt: asmUser.hierarchy?.level || 0 },
+          role: { $in: ['salesman', 'dealers', 'distibutors', 'subdealer'] }
+        }
+      ]
     }).select('_id name role');
 
     const teamUserIds = teamUsers.map(user => user._id);
 
     // Get recent orders from team members
     const recentOrders = await Order.find({
+      companyId,
       createdBy: { $in: teamUserIds },
+      isActive: true,
       createdAt: { $gte: startDate, $lte: endDate }
     })
     .populate('createdBy', 'name role')
@@ -591,3 +657,4 @@ const getRoleDisplayName = (role) => {
   };
   return names[role] || role;
 };
+

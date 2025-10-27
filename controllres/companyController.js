@@ -1,4 +1,7 @@
 import Company from "../models/company/companyModel.js";
+import User from "../models/user/userModel.js";
+import Order from "../models/order/orderModel.js";
+import mongoose from "mongoose";
 
 /**
  * @swagger
@@ -181,7 +184,7 @@ export const createCompany = async (req, res) => {
  *       403:
  *         description: Forbidden
  */
-// Get All Companies
+// Get All Companies with Statistics
 export const getCompanies = async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
@@ -206,13 +209,87 @@ export const getCompanies = async (req, res) => {
             .skip(skip)
             .limit(limit);
 
+        // Get statistics for each company
+        const companiesWithStats = await Promise.all(
+            companies.map(async (company) => {
+                const companyId = company._id;
+                
+                // Get user statistics
+                const userStats = await User.aggregate([
+                    { $match: { defaultCompany: companyId } },
+                    {
+                        $group: {
+                            _id: null,
+                            totalUsers: { $sum: 1 },
+                            activeUsers: { $sum: { $cond: ['$isActive', 1, 0] } },
+                            inactiveUsers: { $sum: { $cond: ['$isActive', 0, 1] } }
+                        }
+                    }
+                ]);
+
+                // Get order statistics
+                const orderStats = await Order.aggregate([
+                    { $match: { companyId: companyId } },
+                    {
+                        $group: {
+                            _id: null,
+                            totalOrders: { $sum: 1 },
+                            pendingOrders: { 
+                                $sum: { 
+                                    $cond: [ 
+                                        { $in: ['$status', ['pending', 'confirmed', 'processing']] }, 
+                                        1, 
+                                        0
+                                    ] 
+                                } 
+                            },
+                            completedOrders: { 
+                                $sum: { 
+                                    $cond: [
+                                        { $in: ['$status', ['delivered', 'shipped']] }, 
+                                        1, 
+                                        0
+                                    ] 
+                                } 
+                            },
+                            totalSales: { $sum: '$finalAmount' }
+                        }
+                    }
+                ]);
+
+                // Get assigned admin information
+                const assignedAdmin = await User.findOne({ 
+                    defaultCompany: companyId, 
+                    role: 'admin' 
+                }).select('name email mobile');
+
+                return {
+                    ...company.toObject(),
+                    stats: {
+                        totalUsers: userStats[0]?.totalUsers || 0,
+                        activeUsers: userStats[0]?.activeUsers || 0,
+                        inactiveUsers: userStats[0]?.inactiveUsers || 0,
+                        totalOrders: orderStats[0]?.totalOrders || 0,
+                        pendingOrders: orderStats[0]?.pendingOrders || 0,
+                        completedOrders: orderStats[0]?.completedOrders || 0,
+                        totalSales: orderStats[0]?.totalSales || 0
+                    },
+                    assignedAdmin: assignedAdmin ? {
+                        name: assignedAdmin.name,
+                        email: assignedAdmin.email,
+                        mobile: assignedAdmin.mobile
+                    } : null
+                };
+            })
+        );
+
         const totalCompanies = await Company.countDocuments(searchQuery);
         const totalPages = Math.ceil(totalCompanies / limit);
 
         res.json({ 
             success: true, 
             data: {
-                companies,
+                companies: companiesWithStats,
                 pagination: {
                     currentPage: page,
                     totalPages,
@@ -232,14 +309,136 @@ export const getCompanies = async (req, res) => {
     }
 };
 
-// Get Single Company
+// Get Single Company with Detailed Statistics
 export const getCompanyById = async (req, res) => {
     try {
-        const company = await Company.findById(req.params.id);
-        if (!company) return res.json({ success: true, message: "Company not found" });
-        res.json({ success: true, data:company });
+        const companyId = req.params.id;
+        
+        if (!mongoose.Types.ObjectId.isValid(companyId)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid company ID'
+            });
+        }
+
+        const company = await Company.findById(companyId)
+            .populate('createdBy', 'name email')
+            .populate('assignedAdmins.adminId', 'name email');
+
+        if (!company) {
+            return res.status(404).json({
+                success: false,
+                message: 'Company not found'
+            });
+        }
+
+        // Get detailed user statistics
+        const userStats = await User.aggregate([
+            { $match: { defaultCompany: companyId } },
+            {
+                $group: {
+                    _id: null,
+                    totalUsers: { $sum: 1 },
+                    activeUsers: { $sum: { $cond: ['$isActive', 1, 0] } },
+                    inactiveUsers: { $sum: { $cond: ['$isActive', 0, 1] } },
+                    usersByRole: {
+                        $push: {
+                            role: '$role',
+                            isActive: '$isActive',
+                            lastLogin: '$lastLogin'
+                        }
+                    }
+                }
+            }
+        ]);
+
+        // Get detailed order statistics
+        const orderStats = await Order.aggregate([
+            { $match: { companyId: companyId } },
+            {
+                $group: {
+                    _id: null,
+                    totalOrders: { $sum: 1 },
+                    pendingOrders: { 
+                        $sum: { 
+                            $cond: [
+                                { $in: ['$status', ['pending', 'confirmed', 'processing']] }, 
+                                1, 
+                                0
+                            ] 
+                        } 
+                    },
+                    completedOrders: { 
+                        $sum: { 
+                            $cond: [
+                                { $in: ['$status', ['delivered', 'shipped']] }, 
+                                1, 
+                                0
+                            ] 
+                        } 
+                    },
+                    totalSales: { $sum: '$finalAmount' },
+                    ordersByStatus: {
+                        $push: {
+                            status: '$status',
+                            amount: '$finalAmount',
+                            createdAt: '$createdAt'
+                        }
+                    }
+                }
+            }
+        ]);
+
+        // Get recent orders
+        const recentOrders = await Order.find({ companyId: companyId })
+            .populate('createdBy', 'name email')
+            .sort({ createdAt: -1 })
+            .limit(10)
+            .select('orderNumber finalAmount status createdAt createdBy');
+
+        // Get assigned admin information
+        const assignedAdmin = await User.findOne({ 
+            defaultCompany: companyId, 
+            role: 'admin' 
+        }).select('name email mobile lastLogin');
+
+        // Get all users for the company
+        const allUsers = await User.find({ defaultCompany: companyId })
+            .select('name email role isActive lastLogin createdAt')
+            .sort({ createdAt: -1 });
+
+        const companyWithDetails = {
+            ...company.toObject(),
+            stats: {
+                totalUsers: userStats[0]?.totalUsers || 0,
+                activeUsers: userStats[0]?.activeUsers || 0,
+                inactiveUsers: userStats[0]?.inactiveUsers || 0,
+                totalOrders: orderStats[0]?.totalOrders || 0,
+                pendingOrders: orderStats[0]?.pendingOrders || 0,
+                completedOrders: orderStats[0]?.completedOrders || 0,
+                totalSales: orderStats[0]?.totalSales || 0
+            },
+            assignedAdmin: assignedAdmin ? {
+                name: assignedAdmin.name,
+                email: assignedAdmin.email,
+                mobile: assignedAdmin.mobile,
+                lastLogin: assignedAdmin.lastLogin
+            } : null,
+            recentOrders: recentOrders,
+            allUsers: allUsers
+        };
+
+        res.json({ 
+            success: true, 
+            data: companyWithDetails 
+        });
     } catch (error) {
-        res.json({ success: false, message: error.message });
+        console.error('Error getting company details:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Failed to get company details',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
     }
 };
 
@@ -262,5 +461,74 @@ export const deleteCompany = async (req, res) => {
         res.json({ success: true, message: "Company deleted successfully" });
     } catch (error) {
         res.json({ success: false, message: error.message });
+    }
+};
+
+// Get System Overview Statistics
+export const getSystemStats = async (req, res) => {
+    try {
+        // Get total companies count
+        const totalCompanies = await Company.countDocuments();
+
+        // Get total admins count
+        const totalAdmins = await User.countDocuments({ role: 'admin' });
+
+        // Get total users count
+        const totalUsers = await User.countDocuments();
+
+        // Get total orders and sales across all companies
+        const orderStats = await Order.aggregate([
+            {
+                $group: {
+                    _id: null,
+                    totalOrders: { $sum: 1 },
+                    totalSales: { $sum: '$finalAmount' },
+                    pendingOrders: { 
+                        $sum: { 
+                            $cond: [ 
+                                { $in: ['$status', ['pending', 'confirmed', 'processing']] }, 
+                                1, 
+                                0
+                            ] 
+                        } 
+                    },
+                    completedOrders: { 
+                        $sum: { 
+                            $cond: [
+                                { $in: ['$status', ['delivered', 'shipped']] }, 
+                                1, 
+                                0
+                            ] 
+                        } 
+                    }
+                }
+            }
+        ]);
+
+        const stats = orderStats[0] || {
+            totalOrders: 0,
+            totalSales: 0,
+            pendingOrders: 0,
+            completedOrders: 0
+        };
+
+        res.json({
+            success: true,
+            data: {
+                totalCompanies,
+                totalAdmins,
+                totalUsers,
+                totalOrders: stats.totalOrders,
+                totalSales: stats.totalSales,
+                pendingOrders: stats.pendingOrders,
+                completedOrders: stats.completedOrders
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching system stats:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to fetch system statistics'
+        });
     }
 };

@@ -192,15 +192,71 @@ export const getOrders = async (req, res) => {
       .populate('customerId', 'name email mobile role')
       .populate('createdBy', 'name role')
       .populate('approvedBy', 'name role')
+      .populate('items.productId', 'productName productCode sellingPrice specifications')
       .sort({ orderDate: -1 })
       .skip(skip)
       .limit(parseInt(limit));
 
     const totalOrders = await Order.countDocuments(filter);
 
+    // Calculate order statistics
+    const statsPipeline = [
+      { $match: { companyId, isActive: true } },
+      {
+        $group: {
+          _id: null,
+          totalOrders: { $sum: 1 },
+          totalAmount: { $sum: '$finalAmount' },
+          pendingOrders: {
+            $sum: {
+              $cond: [{ $in: ['$status', ['draft', 'pending']] }, 1, 0]
+            }
+          },
+          confirmedOrders: {
+            $sum: {
+              $cond: [{ $eq: ['$status', 'confirmed'] }, 1, 0]
+            }
+          },
+          processingOrders: {
+            $sum: {
+              $cond: [{ $eq: ['$status', 'processing'] }, 1, 0]
+            }
+          },
+          shippedOrders: {
+            $sum: {
+              $cond: [{ $eq: ['$status', 'shipped'] }, 1, 0]
+            }
+          },
+          deliveredOrders: {
+            $sum: {
+              $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0]
+            }
+          },
+          cancelledOrders: {
+            $sum: {
+              $cond: [{ $eq: ['$status', 'cancelled'] }, 1, 0]
+            }
+          }
+        }
+      }
+    ];
+
+    const statsResult = await Order.aggregate(statsPipeline);
+    const stats = statsResult.length > 0 ? statsResult[0] : {
+      totalOrders: 0,
+      totalAmount: 0,
+      pendingOrders: 0,
+      confirmedOrders: 0,
+      processingOrders: 0,
+      shippedOrders: 0,
+      deliveredOrders: 0,
+      cancelledOrders: 0
+    };
+
     res.json({
       success: true,
       orders,
+      stats,
       pagination: {
         currentPage: parseInt(page),
         totalPages: Math.ceil(totalOrders / limit),
@@ -234,7 +290,7 @@ export const getOrderById = async (req, res) => {
       .populate('customerId', 'name email mobile role address')
       .populate('createdBy', 'name role')
       .populate('approvedBy', 'name role')
-      .populate('items.productId', 'productName productCode price specifications');
+      .populate('items.productId', 'productName productCode sellingPrice specifications description category brand');
 
     if (!order) {
       return res.status(404).json({

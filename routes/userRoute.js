@@ -3,7 +3,8 @@ import {
   getUsersByCompany,
   getUsersByRole,
   getUserProfile,
-  updateUserProfile
+  updateUserProfile,
+  deleteUser
 } from '../controllres/userController.js'
 import { requireAuth, authorizeRoles } from '../middleware/authMiddleware.js'
 
@@ -27,5 +28,8 @@ userRoute.get('/profile', requireAuth, getUserProfile)
 
 // Update user profile (accessible by all authenticated users)
 userRoute.put('/profile', requireAuth, updateUserProfile)
+
+// Delete user (accessible by admin and superadmin only)
+userRoute.delete('/delete/:userId', requireAuth, authorizeRoles(['admin', 'superadmin']), deleteUser)
 
 export default userRoute

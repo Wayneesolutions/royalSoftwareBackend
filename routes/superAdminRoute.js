@@ -7,14 +7,23 @@ import {
   updateAdmin,
   deleteAdmin,
   assignCompanyToAdmin,
-  getAdminById
+  getAdminById,
+  getSalesReport,
+  exportSalesReport,
+  getSuperAdminOutstandingSummary,
+  getSuperAdminOutstandingList,
+  getSuperAdminOutstandingDetails,
+  updateSuperAdminOutstanding,
+  addSuperAdminCollectionNote
 } from '../controllres/superAdminController.js'
 import { authorizeRoles, requireAuth } from '../middleware/authMiddleware.js'
 import {
   createCompany,
   deleteCompany,
   getCompanies,
-  updateCompany
+  getCompanyById,
+  updateCompany,
+  getSystemStats
 } from '../controllres/companyController.js'
 
 const superAdminRoute = express.Router()
@@ -163,6 +172,12 @@ superAdminRoute.get(
   authorizeRoles(['superadmin']),
   getCompanies
 )
+superAdminRoute.get(
+  '/company/:id',
+  requireAuth,
+  authorizeRoles(['superadmin']),
+  getCompanyById
+)
 superAdminRoute.patch(
   '/update-company/:id',
   requireAuth,
@@ -175,4 +190,64 @@ superAdminRoute.delete(
   authorizeRoles(['superadmin']),
   deleteCompany
 )
+
+// Get system statistics
+superAdminRoute.get(
+  '/system-stats',
+  requireAuth,
+  authorizeRoles(['superadmin']),
+  getSystemStats
+)
+
+// Sales report routes
+superAdminRoute.get(
+  '/sales-report',
+  requireAuth,
+  authorizeRoles(['superadmin']),
+  getSalesReport
+)
+
+superAdminRoute.get(
+  '/sales-report/export',
+  requireAuth,
+  authorizeRoles(['superadmin']),
+  exportSalesReport
+)
+
+// Outstanding management routes
+superAdminRoute.get(
+  '/outstanding-summary',
+  requireAuth,
+  authorizeRoles(['superadmin']),
+  getSuperAdminOutstandingSummary
+)
+
+superAdminRoute.get(
+  '/outstanding-list',
+  requireAuth,
+  authorizeRoles(['superadmin']),
+  getSuperAdminOutstandingList
+)
+
+superAdminRoute.get(
+  '/outstanding/:outstandingId',
+  requireAuth,
+  authorizeRoles(['superadmin']),
+  getSuperAdminOutstandingDetails
+)
+
+superAdminRoute.patch(
+  '/outstanding/:outstandingId/update',
+  requireAuth,
+  authorizeRoles(['superadmin']),
+  updateSuperAdminOutstanding
+)
+
+superAdminRoute.post(
+  '/outstanding/:outstandingId/add-note',
+  requireAuth,
+  authorizeRoles(['superadmin']),
+  addSuperAdminCollectionNote
+)
+
 export { superAdminRoute }
