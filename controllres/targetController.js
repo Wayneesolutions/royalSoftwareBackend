@@ -262,6 +262,25 @@ export const assignTargets = async (req, res) => {
       }
     }
 
+    // Determine success based on whether any targets were assigned and if there are errors
+    const hasErrors = errors.length > 0;
+    const hasAssignedTargets = assignedTargets.length > 0;
+    
+    // If there are errors and no targets were assigned, return success: false
+    if (hasErrors && !hasAssignedTargets) {
+      return res.status(400).json({
+        success: false,
+        data: {
+          assignedTargets: assignedTargets.length,
+          targets: assignedTargets,
+          errors: errors
+        },
+        message: `Failed to assign targets: ${errors.join(', ')}`
+      });
+    }
+    
+    // If there are some errors but some targets were assigned, return success: true with warnings
+    // If no errors and targets assigned, return success: true
     res.status(200).json({
       success: true,
       data: {
@@ -269,7 +288,7 @@ export const assignTargets = async (req, res) => {
         targets: assignedTargets,
         errors: errors
       },
-      message: `Successfully assigned ${assignedTargets.length} targets${errors.length > 0 ? ` with ${errors.length} errors` : ''}`
+      message: `Successfully assigned ${assignedTargets.length} targets${errors.length > 0 ? ` with ${errors.length} warnings` : ''}`
     });
 
   } catch (error) {

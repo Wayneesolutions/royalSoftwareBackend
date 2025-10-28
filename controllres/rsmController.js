@@ -1,5 +1,6 @@
 import User from '../models/user/userModel.js';
 import Order from '../models/order/orderModel.js';
+import Target from '../models/target/targetModel.js';
 import mongoose from 'mongoose';
 
 // Get RSM dashboard data with team overview
@@ -518,6 +519,85 @@ export const getRSMTeamPerformance = async (req, res) => {
       }
     ]);
 
+    // Get target data for team members based on period
+    const currentDate = new Date();
+    let targetQuery = {
+      companyId: new mongoose.Types.ObjectId(companyId),
+      isActive: true,
+      $or: [
+        // Targets assigned TO team members (by RSM or others)
+        { assignedTo: { $in: teamUserIds } },
+        // Targets assigned BY the RSM to anyone
+        { assignedBy: userId },
+        // Targets assigned TO the RSM user
+        { assignedTo: userId }
+      ]
+    };
+
+    // Add period filter based on the requested period
+    switch (period) {
+      case 'current':
+        targetQuery['period.year'] = currentDate.getFullYear();
+        targetQuery['period.month'] = currentDate.getMonth() + 1;
+        break;
+      case 'month':
+        targetQuery['period.year'] = currentDate.getFullYear();
+        targetQuery['period.month'] = currentDate.getMonth() + 1;
+        break;
+      case 'quarter':
+        // Get current quarter (3 months)
+        const quarterStartMonth = Math.floor(currentDate.getMonth() / 3) * 3 + 1;
+        targetQuery['period.year'] = currentDate.getFullYear();
+        targetQuery['period.month'] = { $gte: quarterStartMonth, $lte: quarterStartMonth + 2 };
+        break;
+      case 'year':
+        targetQuery['period.year'] = currentDate.getFullYear();
+        break;
+      default:
+        targetQuery['period.year'] = currentDate.getFullYear();
+        targetQuery['period.month'] = currentDate.getMonth() + 1;
+    }
+
+    // Get targets for team members
+    const targets = await Target.find(targetQuery)
+    .populate('assignedTo', 'name email role')
+    .populate('assignedBy', 'name email role');
+
+    console.log('RSM Target Query Debug:', {
+      userId,
+      companyId,
+      companyIdType: typeof companyId,
+      teamUserIds: teamUserIds.length,
+      teamUserIdsList: teamUserIds,
+      targetQuery,
+      targetsFound: targets.length,
+      period,
+      currentDate: currentDate.toISOString()
+    });
+
+    // Also check if there are any targets at all for this company
+    const allCompanyTargets = await Target.find({ 
+      companyId: new mongoose.Types.ObjectId(companyId),
+      isActive: true 
+    }).countDocuments();
+    
+    console.log(`Total targets in company ${companyId}: ${allCompanyTargets}`);
+
+    // Format targets for frontend
+    const formattedTargets = targets.map(target => ({
+      _id: target._id,
+      userId: target.assignedTo._id,
+      userName: target.assignedTo.name,
+      userRole: target.assignedTo.role,
+      targetAmount: target.targetAmount,
+      achievedAmount: target.achievedAmount,
+      targetPeriod: `${target.period.year}-${target.period.month.toString().padStart(2, '0')}`,
+      startDate: target.period.startDate,
+      endDate: target.period.endDate,
+      status: target.status,
+      achievementPercentage: target.achievementPercentage
+    }));
+
     // Calculate team totals
     const teamTotals = performanceData.reduce((acc, member) => {
       acc.totalSales += member.totalSales;
@@ -528,6 +608,7 @@ export const getRSMTeamPerformance = async (req, res) => {
     res.status(200).json({
       success: true,
       data: {
+        targets: formattedTargets, // Add targets array for frontend
         performanceData,
         teamTotals,
         period: {
@@ -567,10 +648,19 @@ export const getRSMRecentActivity = async (req, res) => {
 
     // Find all team users under this RSM
     const teamUsers = await User.find({
-      company: companyId,
-      $or: [
-        { reportingManager: userId },
-        { reportingManager: { $in: await User.find({ reportingManager: userId }).distinct('_id') } }
+      $and: [
+        {
+          $or: [
+            { defaultCompany: companyId },
+            { 'companies.companyId': companyId }
+          ]
+        },
+        {
+          $or: [
+            { 'hierarchy.parentUser': userId },
+            { 'hierarchy.parentUser': { $in: await User.find({ 'hierarchy.parentUser': userId }).distinct('_id') } }
+          ]
+        }
       ]
     }).select('_id name role');
 
