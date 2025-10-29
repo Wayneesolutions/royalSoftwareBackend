@@ -193,13 +193,17 @@ export const getUsersByRole = async (req, res) => {
       hasPermission = true
     } else if (user.role === 'admin') {
       hasPermission = true
-    } else if (user.role === 'zonal' && ['rsm', 'asm', 'salesman', 'dealers', 'distibutors'].includes(role)) {
+    } else if (user.role === 'zonal' && ['rsm', 'asm', 'salesman', 'dealers', 'distibutors', 'subdealer'].includes(role)) {
       hasPermission = true
-    } else if (user.role === 'rsm' && ['asm', 'salesman', 'dealers', 'distibutors'].includes(role)) {
+    } else if (user.role === 'rsm' && ['asm', 'salesman', 'dealers', 'distibutors', 'subdealer'].includes(role)) {
       hasPermission = true
-    } else if (user.role === 'asm' && ['salesman', 'dealers', 'distibutors'].includes(role)) {
+    } else if (user.role === 'asm' && ['salesman', 'dealers', 'distibutors', 'subdealer'].includes(role)) {
       hasPermission = true
-    } else if (user.role === 'salesman' && ['dealers', 'distibutors'].includes(role)) {
+    } else if (user.role === 'salesman' && ['dealers', 'distibutors', 'subdealer'].includes(role)) {
+      hasPermission = true
+    } else if (user.role === 'distibutors' && ['dealers', 'subdealer'].includes(role)) {
+      hasPermission = true
+    } else if (user.role === 'dealers' && ['subdealer'].includes(role)) {
       hasPermission = true
     }
 
@@ -213,18 +217,48 @@ export const getUsersByRole = async (req, res) => {
     // Get company IDs the user has access to
     const companyIds = user.companies
       .filter(comp => comp.isActive)
-      .map(comp => comp.companyId._id)
+      .map(comp => comp.companyId._id || comp.companyId)
 
     if (user.defaultCompany) {
-      companyIds.push(user.defaultCompany._id)
+      const defaultCompanyId = user.defaultCompany._id || user.defaultCompany;
+      if (!companyIds.includes(defaultCompanyId)) {
+        companyIds.push(defaultCompanyId);
+      }
     }
 
-    // Build query
+    console.log('getUsersByRole - User:', user.name, 'Role:', user.role);
+    console.log('getUsersByRole - Company IDs:', companyIds);
+    console.log('getUsersByRole - Requested role:', role);
+
+    // Build query - use $elemMatch to ensure companyId and isActive refer to the same company entry
     const query = {
       role: role,
-      'companies.companyId': { $in: companyIds },
-      'companies.isActive': true,
+      companies: {
+        $elemMatch: {
+          companyId: { $in: companyIds },
+          isActive: true
+        }
+      },
       _id: { $ne: userId }
+    }
+
+    console.log('getUsersByRole - Query:', JSON.stringify(query, null, 2));
+
+    // Debug: Count all subdealers vs matching ones
+    if (role === 'subdealer') {
+      const allSubDealersCount = await User.countDocuments({ role: 'subdealer' });
+      const matchingCount = await User.countDocuments(query);
+      console.log(`getUsersByRole - Total subdealers in DB: ${allSubDealersCount}`);
+      console.log(`getUsersByRole - Subdealers matching query: ${matchingCount}`);
+      
+      // Also check which subdealers don't match
+      const allSubDealers = await User.find({ role: 'subdealer' })
+        .select('name email companies.companyId companies.isActive isActive');
+      console.log('getUsersByRole - All subdealers:', allSubDealers.map(sd => ({
+        name: sd.name,
+        companies: sd.companies,
+        isActive: sd.isActive
+      })));
     }
 
     // Get users
@@ -233,6 +267,8 @@ export const getUsersByRole = async (req, res) => {
       .populate('companies.companyId', 'companyName companyCode')
       .populate('hierarchy.parentUser', 'name email role')
       .sort({ createdAt: -1 })
+
+    console.log(`getUsersByRole - Found ${users.length} users with role ${role}`);
 
     res.json({
       success: true,

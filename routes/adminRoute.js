@@ -41,7 +41,7 @@ adminRoute.get('/role/:role', requireAuth, authorizeRoles(['admin']), getUsersBy
 adminRoute.get('/get-user/:id', requireAuth, authorizeRoles(['admin']), getUserById)
 adminRoute.post('/create-user', requireAuth, authorizeRoles(['admin']), createUser)
 adminRoute.put('/user/:userId/status', requireAuth, authorizeRoles(['admin']), updateUserStatus)
-adminRoute.put('/user/:userId', requireAuth, authorizeRoles(['admin']), editUser)
+adminRoute.put('/edit-user/:userId', requireAuth, authorizeRoles(['admin']), editUser)
 adminRoute.delete('/user/:userId', requireAuth, authorizeRoles(['admin']), deleteUser)
 
 export default adminRoute

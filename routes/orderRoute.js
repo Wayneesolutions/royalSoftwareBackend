@@ -240,7 +240,7 @@ orderRoute.get('/:orderId', requireAuth, authorizeRoles(['admin', 'zonal', 'rsm'
  *       500:
  *         description: Server error
  */
-orderRoute.put('/:orderId', requireAuth, authorizeRoles(['admin', 'zonal', 'rsm', 'asm', 'salesman']), updateOrder);
+orderRoute.put('/:orderId', requireAuth, authorizeRoles(['admin', 'zonal', 'rsm', 'asm', 'salesman', 'dealers', 'distibutors']), updateOrder);
 
 /**
  * @swagger
@@ -282,7 +282,7 @@ orderRoute.put('/:orderId', requireAuth, authorizeRoles(['admin', 'zonal', 'rsm'
  *       500:
  *         description: Server error
  */
-orderRoute.patch('/:orderId/status', requireAuth, authorizeRoles(['admin', 'zonal', 'rsm', 'asm', 'salesman']), updateOrderStatus);
+orderRoute.patch('/:orderId/status', requireAuth, authorizeRoles(['admin', 'zonal', 'rsm', 'asm', 'salesman', 'dealers', 'distibutors']), updateOrderStatus);
 
 /**
  * @swagger

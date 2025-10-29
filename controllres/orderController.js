@@ -2,6 +2,7 @@ import Order from '../models/order/orderModel.js';
 import Product from '../models/product/productModel.js';
 import User from '../models/user/userModel.js';
 import Company from '../models/company/companyModel.js';
+import mongoose from 'mongoose';
 
 // Create a new order
 export const createOrder = async (req, res) => {
@@ -12,6 +13,10 @@ export const createOrder = async (req, res) => {
       customerEmail,
       customerMobile,
       customerAddress,
+      dealerId,
+      dealerName,
+      subDealerId,
+      subDealerName,
       items,
       deliveryDate,
       priority,
@@ -106,6 +111,10 @@ export const createOrder = async (req, res) => {
       customerEmail: customerEmail || (customer ? customer.email : ''),
       customerMobile: customerMobile || (customer ? customer.mobile : ''),
       customerAddress: customerAddress || (customer ? customer.address : {}),
+      dealerId: dealerId || customerId, // Use dealerId if provided, fallback to customerId
+      dealerName: dealerName || customerName,
+      subDealerId: subDealerId || null,
+      subDealerName: subDealerName || null,
       items: processedItems,
       deliveryDate,
       priority: priority || 'medium',
@@ -165,7 +174,9 @@ export const getOrders = async (req, res) => {
       customerId,
       startDate,
       endDate,
-      search
+      search,
+      orderType,
+      createdBy // Filter by createdBy (user ID)
     } = req.query;
 
     const filter = { companyId, isActive: true };
@@ -173,6 +184,17 @@ export const getOrders = async (req, res) => {
     // Apply filters
     if (status) filter.status = status;
     if (customerId) filter.customerId = customerId;
+    if (orderType) filter.orderType = orderType; // Filter by orderType (e.g., 'zonal_created', 'admin_created')
+    if (createdBy) {
+      // Convert to ObjectId if it's a string
+      try {
+        filter.createdBy = mongoose.Types.ObjectId.isValid(createdBy) 
+          ? new mongoose.Types.ObjectId(createdBy) 
+          : createdBy;
+      } catch (error) {
+        console.error('Error converting createdBy to ObjectId:', error);
+      }
+    }
     if (startDate || endDate) {
       filter.orderDate = {};
       if (startDate) filter.orderDate.$gte = new Date(startDate);
@@ -190,6 +212,8 @@ export const getOrders = async (req, res) => {
 
     const orders = await Order.find(filter)
       .populate('customerId', 'name email mobile role')
+      .populate('dealerId', 'name email mobile role')
+      .populate('subDealerId', 'name email mobile role address')
       .populate('createdBy', 'name role')
       .populate('approvedBy', 'name role')
       .populate('items.productId', 'productName productCode sellingPrice specifications')
@@ -199,32 +223,50 @@ export const getOrders = async (req, res) => {
 
     const totalOrders = await Order.countDocuments(filter);
 
-    // Calculate order statistics
+    // Calculate order statistics using the same filter
+    const statsMatch = { ...filter }; 
+    
+    // Convert createdBy to ObjectId if it's a string (for aggregation pipeline)
+    if (statsMatch.createdBy && typeof statsMatch.createdBy === 'string') {
+      try {
+        statsMatch.createdBy = new mongoose.Types.ObjectId(statsMatch.createdBy);
+      } catch (error) {
+        console.error('Error converting createdBy to ObjectId:', error);
+        // If conversion fails, remove it from filter
+        delete statsMatch.createdBy;
+      }
+    }
+    
     const statsPipeline = [
-      { $match: { companyId, isActive: true } },
+      { $match: statsMatch },
       {
         $group: {
           _id: null,
           totalOrders: { $sum: 1 },
           totalAmount: { $sum: '$finalAmount' },
+          draftOrders: {
+            $sum: {
+              $cond: [{ $eq: ['$status', 'draft'] }, 1, 0]
+            }
+          },
           pendingOrders: {
             $sum: {
-              $cond: [{ $in: ['$status', ['draft', 'pending']] }, 1, 0]
+              $cond: [{ $eq: ['$status', 'pending_approval'] }, 1, 0]
             }
           },
           confirmedOrders: {
             $sum: {
-              $cond: [{ $eq: ['$status', 'confirmed'] }, 1, 0]
+              $cond: [{ $eq: ['$status', 'approved'] }, 1, 0]
             }
           },
           processingOrders: {
             $sum: {
-              $cond: [{ $eq: ['$status', 'processing'] }, 1, 0]
+              $cond: [{ $in: ['$status', ['sent_to_tally']] }, 1, 0]
             }
           },
           shippedOrders: {
             $sum: {
-              $cond: [{ $eq: ['$status', 'shipped'] }, 1, 0]
+              $cond: [{ $eq: ['$status', 'dispatched'] }, 1, 0]
             }
           },
           deliveredOrders: {
@@ -245,6 +287,7 @@ export const getOrders = async (req, res) => {
     const stats = statsResult.length > 0 ? statsResult[0] : {
       totalOrders: 0,
       totalAmount: 0,
+      draftOrders: 0,
       pendingOrders: 0,
       confirmedOrders: 0,
       processingOrders: 0,
@@ -288,6 +331,8 @@ export const getOrderById = async (req, res) => {
       isActive: true
     })
       .populate('customerId', 'name email mobile role address')
+      .populate('dealerId', 'name email mobile role address')
+      .populate('subDealerId', 'name email mobile role address')
       .populate('createdBy', 'name role')
       .populate('approvedBy', 'name role')
       .populate('items.productId', 'productName productCode sellingPrice specifications description category brand');
@@ -322,7 +367,7 @@ export const updateOrderStatus = async (req, res) => {
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
     const userId = req.user.userDetails._id;
 
-    const validStatuses = ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'returned'];
+    const validStatuses = ['draft', 'pending_approval', 'approved', 'sent_to_tally', 'dispatched', 'delivered', 'cancelled', 'returned'];
     
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
@@ -345,7 +390,7 @@ export const updateOrderStatus = async (req, res) => {
     }
 
     // If approving the order
-    if (status === 'confirmed' && order.status === 'pending') {
+    if (status === 'approved' && (order.status === 'draft' || order.status === 'pending_approval')) {
       order.approvedBy = userId;
       order.approvedAt = new Date();
     }
@@ -384,6 +429,29 @@ export const updateOrder = async (req, res) => {
     delete updateData.companyId;
     delete updateData.createdBy;
     delete updateData.createdAt;
+
+    // Process items to ensure totalPrice is calculated correctly
+    if (updateData.items && Array.isArray(updateData.items)) {
+      updateData.items = updateData.items.map(item => {
+        const quantity = item.quantity || 0;
+        const unitPrice = item.unitPrice || item.price || 0;
+        const totalPrice = quantity * unitPrice;
+        
+        return {
+          ...item,
+          unitPrice: unitPrice,
+          quantity: quantity,
+          totalPrice: totalPrice, // Ensure totalPrice is calculated
+          // Keep other fields as they are
+          productId: item.productId,
+          productCode: item.productCode,
+          productName: item.productName,
+          unit: item.unit,
+          discount: item.discount || 0,
+          tax: item.tax || 0
+        };
+      });
+    }
 
     const order = await Order.findOneAndUpdate(
       { _id: orderId, companyId, isActive: true },

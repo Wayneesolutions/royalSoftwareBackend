@@ -16,7 +16,9 @@
   "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "nodemon server.js"
+    "start": "nodemon server.js",
+    "migrate:addresses": "node scripts/updateUserAddresses.js",
+    "migrate:addresses:all": "node scripts/updateUserAddresses.js --all"
   },
   "keywords": [],
   "dependencies": {

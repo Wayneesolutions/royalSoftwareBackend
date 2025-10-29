@@ -25,6 +25,28 @@ const userSchema = new mongoose.Schema({
         required: true,
         sparse: true
     },
+    address: {
+        street: {
+            type: String,
+            default: ''
+        },
+        city: {
+            type: String,
+            default: ''
+        },
+        state: {
+            type: String,
+            default: ''
+        },
+        pincode: {
+            type: String,
+            default: ''
+        },
+        country: {
+            type: String,
+            default: 'India'
+        }
+    },
     role: {
         type: String,
         enum: [

@@ -219,7 +219,16 @@ export const getUsersByRole = async (req, res) => {
  */
 export const createUser = async (req, res) => {
   try {
-    const { email, password, name, mobile, role, companyId, parentUserId } = req.body;
+    const { 
+      email, 
+      password, 
+      name, 
+      mobile, 
+      role, 
+      companyId, 
+      parentUserId,
+      address 
+    } = req.body;
     const adminId = req.user.userId;
 
     // Validate required fields
@@ -285,6 +294,15 @@ export const createUser = async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // Prepare address data with defaults
+    const addressData = {
+      street: address?.street || '',
+      city: address?.city || '',
+      state: address?.state || '',
+      pincode: address?.pincode || '',
+      country: address?.country || 'India'
+    };
+
     // Create user
     const newUser = await User.create({
       email,
@@ -292,6 +310,7 @@ export const createUser = async (req, res) => {
       name,
       mobile,
       role,
+      address: addressData,
       companies: [{
         companyId: companyId,
         role: role,
@@ -322,6 +341,198 @@ export const createUser = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to create user',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * @swagger
+ * /api/v1/admin/edit-user/{userId}:
+ *   put:
+ *     summary: Edit a user (admin only)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: userId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: User ID to edit
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *               email:
+ *                 type: string
+ *                 format: email
+ *               mobile:
+ *                 type: string
+ *               role:
+ *                 type: string
+ *                 enum: ['zonal', 'rsm', 'asm', 'salesman', 'dealers', 'subdealer', 'distibutors']
+ *               isActive:
+ *                 type: boolean
+ *               address:
+ *                 type: object
+ *                 properties:
+ *                   street:
+ *                     type: string
+ *                   city:
+ *                     type: string
+ *                   state:
+ *                     type: string
+ *                   pincode:
+ *                     type: string
+ *                   country:
+ *                     type: string
+ *     responses:
+ *       200:
+ *         description: User updated successfully
+ *       400:
+ *         description: Bad request
+ *       403:
+ *         description: Access denied
+ *       404:
+ *         description: User not found
+ */
+export const editUser = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { 
+      name, 
+      email, 
+      mobile, 
+      role, 
+      isActive,
+      address 
+    } = req.body;
+    const adminId = req.user.userId;
+
+    // Validate required fields
+    if (!name || !mobile || !role) {
+      return res.status(400).json({
+        success: false,
+        message: 'Required fields: name, mobile, role'
+      });
+    }
+
+    // Validate role
+    const allowedRoles = ['zonal', 'rsm', 'asm', 'salesman', 'dealers', 'subdealer', 'distibutors'];
+    if (!allowedRoles.includes(role)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid role. Allowed roles: ' + allowedRoles.join(', ')
+      });
+    }
+
+    // Find the user to edit
+    const userToEdit = await User.findById(userId);
+    if (!userToEdit) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Verify admin has access to this user's company
+    const admin = await User.findById(adminId);
+    const userCompanyIds = userToEdit.companies
+      .filter(comp => comp.isActive)
+      .map(comp => comp.companyId.toString());
+
+    const hasAccess = admin.companies.some(comp => 
+      comp.isActive && userCompanyIds.includes(comp.companyId.toString())
+    );
+
+    if (!hasAccess) {
+      return res.status(403).json({
+        success: false,
+        message: 'You do not have access to edit this user'
+      });
+    }
+
+    // Check if email or mobile already exists for other users
+    if (email) {
+      const existingUser = await User.findOne({ 
+        email, 
+        _id: { $ne: userId } 
+      });
+      if (existingUser) {
+        return res.status(400).json({
+          success: false,
+          message: 'Email already exists for another user'
+        });
+      }
+    }
+
+    if (mobile) {
+      const existingUser = await User.findOne({ 
+        mobile, 
+        _id: { $ne: userId } 
+      });
+      if (existingUser) {
+        return res.status(400).json({
+          success: false,
+          message: 'Mobile number already exists for another user'
+        });
+      }
+    }
+
+    // Prepare update data
+    const updateData = {
+      name,
+      mobile,
+      role,
+      isActive: isActive !== undefined ? isActive : userToEdit.isActive
+    };
+
+    // Add email if provided
+    if (email) {
+      updateData.email = email;
+      updateData.userName = email; // Update username as well
+    }
+
+    // Add address if provided
+    if (address) {
+      updateData.address = {
+        street: address.street || userToEdit.address?.street || '',
+        city: address.city || userToEdit.address?.city || '',
+        state: address.state || userToEdit.address?.state || '',
+        pincode: address.pincode || userToEdit.address?.pincode || '',
+        country: address.country || userToEdit.address?.country || 'India'
+      };
+    }
+
+    // Update user
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      updateData,
+      { new: true, runValidators: true }
+    )
+      .select('-password')
+      .populate('companies.companyId', 'companyName companyCode')
+      .populate('hierarchy.parentUser', 'name email role')
+      .populate('createdBy', 'name email');
+
+    return res.json({
+      success: true,
+      message: 'User updated successfully',
+      data: updatedUser
+    });
+
+  } catch (error) {
+    console.error('User edit error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update user',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }

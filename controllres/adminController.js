@@ -394,7 +394,7 @@ export const adminDashboard = async (req, res) => {
 // Create User for Company
 export const createUser = async (req, res) => {
   try {
-    const { name, email, mobile, password, role, userName } = req.body;
+    const { name, email, mobile, password, role, userName, address } = req.body;
     const adminId = req.user.userId;
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
 
@@ -452,6 +452,15 @@ export const createUser = async (req, res) => {
     // Hash the password
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // Prepare address with safe defaults
+    const addressData = {
+      street: address?.street || '',
+      city: address?.city || '',
+      state: address?.state || '',
+      pincode: address?.pincode || '',
+      country: address?.country || 'India'
+    };
+
     // Create new user
     const newUser = await User.create({
       name,
@@ -460,6 +469,7 @@ export const createUser = async (req, res) => {
       password: hashedPassword,
       role,
       userName: userName || undefined,
+      address: addressData,
       defaultCompany: companyId,
       companies: [{
         companyId: companyId,
@@ -490,6 +500,7 @@ export const createUser = async (req, res) => {
         mobile: newUser.mobile,
         role: newUser.role,
         userName: newUser.userName,
+        address: newUser.address,
         isActive: newUser.isActive
       }
     });
@@ -543,7 +554,7 @@ export const getUsersByCompany = async (req, res) => {
     // Get users with pagination
     const skip = (page - 1) * limit;
     const users = await User.find(query)
-      .select('name email mobile role userName isActive companies.$ lastLogin createdAt')
+      .select('name email mobile role userName isActive address companies.$ lastLogin createdAt')
       .populate('companies.companyId', 'companyName companyCode')
       .sort({ createdAt: -1 })
       .skip(skip)
@@ -650,9 +661,20 @@ export const updateUserStatus = async (req, res) => {
 export const editUser = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { name, email, mobile, role, userName, isActive } = req.body;
+    const { name, email, mobile, role, userName, isActive, address } = req.body;
     const adminId = req.user.userId;
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+
+    console.log('🔍 Edit User - Received data:', {
+      userId,
+      name,
+      email,
+      mobile,
+      role,
+      userName,
+      isActive,
+      address
+    });
 
     // Validate required fields
     if (!name || !mobile || !role) {
@@ -695,6 +717,15 @@ export const editUser = async (req, res) => {
       });
     }
 
+    console.log('🔍 User before update:', {
+      _id: userToEdit._id,
+      name: userToEdit.name,
+      email: userToEdit.email,
+      mobile: userToEdit.mobile,
+      role: userToEdit.role,
+      address: userToEdit.address
+    });
+
     // Check if mobile or email already exists for another user
     const existingUser = await User.findOne({
       _id: { $ne: userId },
@@ -725,6 +756,17 @@ export const editUser = async (req, res) => {
       userToEdit.userName = userName;
     }
 
+    // Update address if provided
+    if (address) {
+      userToEdit.address = {
+        street: address.street || userToEdit.address?.street || '',
+        city: address.city || userToEdit.address?.city || '',
+        state: address.state || userToEdit.address?.state || '',
+        pincode: address.pincode || userToEdit.address?.pincode || '',
+        country: address.country || userToEdit.address?.country || 'India'
+      };
+    }
+
     // Update the role in the companies array
     const companyIndex = userToEdit.companies.findIndex(
       comp => comp.companyId.toString() === companyId.toString()
@@ -741,6 +783,15 @@ export const editUser = async (req, res) => {
 
     await userToEdit.save();
 
+    console.log('🔍 User after update:', {
+      _id: userToEdit._id,
+      name: userToEdit.name,
+      email: userToEdit.email,
+      mobile: userToEdit.mobile,
+      role: userToEdit.role,
+      address: userToEdit.address
+    });
+
     res.json({
       success: true,
       message: "User updated successfully",
@@ -751,6 +802,7 @@ export const editUser = async (req, res) => {
         mobile: userToEdit.mobile,
         role: userToEdit.role,
         userName: userToEdit.userName,
+        address: userToEdit.address,
         isActive: userToEdit.isActive
       }
     });

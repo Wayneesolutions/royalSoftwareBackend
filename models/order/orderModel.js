@@ -35,6 +35,26 @@ const orderSchema = new mongoose.Schema({
     pincode: String,
     country: { type: String, default: 'India' }
   },
+  // Dealer information
+  dealerId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: false
+  },
+  dealerName: {
+    type: String,
+    required: false
+  },
+  // Sub-dealer information
+  subDealerId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: false
+  },
+  subDealerName: {
+    type: String,
+    required: false
+  },
   items: [{
     productId: {
       type: mongoose.Schema.Types.ObjectId,
