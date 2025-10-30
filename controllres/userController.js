@@ -80,10 +80,11 @@ export const getUsersByCompany = async (req, res) => {
       })
     }
 
-    // Build query based on user role and hierarchy
+    // Build query based on user role and hierarchy - only active users
     let query = {
       'companies.companyId': targetCompanyId,
       'companies.isActive': true,
+      isActive: true, // Only show active users
       _id: { $ne: userId } // Exclude the current user
     }
 
@@ -214,31 +215,30 @@ export const getUsersByRole = async (req, res) => {
       })
     }
 
-    // Get company IDs the user has access to
-    const companyIds = user.companies
-      .filter(comp => comp.isActive)
-      .map(comp => comp.companyId._id || comp.companyId)
+    // Get user's current default company ID only
+    const currentCompanyId = user.defaultCompany?._id || user.defaultCompany;
 
-    if (user.defaultCompany) {
-      const defaultCompanyId = user.defaultCompany._id || user.defaultCompany;
-      if (!companyIds.includes(defaultCompanyId)) {
-        companyIds.push(defaultCompanyId);
-      }
+    if (!currentCompanyId) {
+      return res.status(400).json({
+        success: false,
+        message: 'No company selected'
+      });
     }
 
     console.log('getUsersByRole - User:', user.name, 'Role:', user.role);
-    console.log('getUsersByRole - Company IDs:', companyIds);
+    console.log('getUsersByRole - Current Company ID:', currentCompanyId);
     console.log('getUsersByRole - Requested role:', role);
 
-    // Build query - use $elemMatch to ensure companyId and isActive refer to the same company entry
+    // Build query - filter by current company only, only active users
     const query = {
       role: role,
       companies: {
         $elemMatch: {
-          companyId: { $in: companyIds },
+          companyId: currentCompanyId,
           isActive: true
         }
       },
+      isActive: true, // Only show active users
       _id: { $ne: userId }
     }
 
@@ -246,15 +246,15 @@ export const getUsersByRole = async (req, res) => {
 
     // Debug: Count all subdealers vs matching ones
     if (role === 'subdealer') {
-      const allSubDealersCount = await User.countDocuments({ role: 'subdealer' });
+      const allSubDealersCount = await User.countDocuments({ role: 'subdealer', isActive: true });
       const matchingCount = await User.countDocuments(query);
-      console.log(`getUsersByRole - Total subdealers in DB: ${allSubDealersCount}`);
-      console.log(`getUsersByRole - Subdealers matching query: ${matchingCount}`);
+      console.log(`getUsersByRole - Total active subdealers in DB: ${allSubDealersCount}`);
+      console.log(`getUsersByRole - Active subdealers matching query: ${matchingCount}`);
       
       // Also check which subdealers don't match
-      const allSubDealers = await User.find({ role: 'subdealer' })
+      const allSubDealers = await User.find({ role: 'subdealer', isActive: true })
         .select('name email companies.companyId companies.isActive isActive');
-      console.log('getUsersByRole - All subdealers:', allSubDealers.map(sd => ({
+      console.log('getUsersByRole - All active subdealers:', allSubDealers.map(sd => ({
         name: sd.name,
         companies: sd.companies,
         isActive: sd.isActive

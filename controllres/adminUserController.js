@@ -79,11 +79,12 @@ export const getUsersByCompany = async (req, res) => {
       });
     }
 
-    // Build query
+    // Build query - exclude superadmin and admin users, only active users
     const query = {
       'companies.companyId': targetCompanyId,
       'companies.isActive': true,
-      role: { $ne: 'admin' } // Exclude other admins
+      isActive: true, // Only show active users
+      role: { $nin: ['admin', 'superadmin'] } // Exclude superadmin and admin users
     };
 
     if (role) {
@@ -139,16 +140,23 @@ export const getUsersByRole = async (req, res) => {
       });
     }
 
-    // Get admin's companies
+    // Get admin's current default company (not all companies)
     const admin = await User.findById(adminId);
-    const companyIds = admin.companies
-      .filter(comp => comp.isActive)
-      .map(comp => comp.companyId);
+    const currentCompanyId = admin.defaultCompany;
 
+    if (!currentCompanyId) {
+      return res.status(400).json({
+        success: false,
+        message: 'No company selected'
+      });
+    }
+
+    // Filter by current default company only, only active users
     const users = await User.find({
       role,
-      'companies.companyId': { $in: companyIds },
-      'companies.isActive': true
+      'companies.companyId': currentCompanyId,
+      'companies.isActive': true,
+      isActive: true // Only show active users
     })
       .select('-password')
       .populate('companies.companyId', 'companyName companyCode')

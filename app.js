@@ -62,12 +62,12 @@ app.use(helmet({
   app.use(cors());  
 
    // Health check endpoint
-app.get('/health', (req, res) => {
+app.get('/api/v1/health', (req, res) => {
     res.status(200).json({ status: 'ok' });
   });
 
   // Swagger documentation
-  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs, {
+  app.use('/api/v1/api-docs', swaggerUi.serve, swaggerUi.setup(specs, {
     explorer: true,
     customCss: '.swagger-ui .topbar { display: none }',
     customSiteTitle: 'Royal App API Documentation'

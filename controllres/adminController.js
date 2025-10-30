@@ -309,13 +309,14 @@ export const getCompanyData = async (req, res) => {
       .populate('createdBy', 'name email')
       .populate('assignedAdmins.adminId', 'name email');
 
-    // Get user statistics for this company
+    // Get user statistics for this company (exclude superadmin and admin, only active users)
     const userStats = await User.aggregate([
       {
         $match: {
           'companies.companyId': targetCompanyId,
           'companies.isActive': true,
-          role: { $ne: 'admin' }
+          isActive: true, // Only count active users
+          role: { $nin: ['admin', 'superadmin'] }
         }
       },
       {
@@ -326,10 +327,12 @@ export const getCompanyData = async (req, res) => {
       }
     ]);
 
-    // Get total users in company
+    // Get total users in company (exclude superadmin and admin, only active users)
     const totalUsers = await User.countDocuments({
       'companies.companyId': targetCompanyId,
-      'companies.isActive': true
+      'companies.isActive': true,
+      isActive: true, // Only count active users
+      role: { $nin: ['admin', 'superadmin'] }
     });
 
     return res.json({
@@ -541,9 +544,12 @@ export const getUsersByCompany = async (req, res) => {
       });
     }
 
-    // Build query
+    // Build query - only active users, exclude admin and superadmin
     const query = {
       'companies.companyId': companyId,
+      'companies.isActive': true,
+      isActive: true, // Only show active users
+      role: { $nin: ['admin', 'superadmin'] }, // Exclude admin and superadmin users
       _id: { $ne: adminId } // Exclude the admin user
     };
 
