@@ -3,6 +3,140 @@ import Company from '../models/company/companyModel.js'
 
 /**
  * @swagger
+ * /api/v1/user/switch-company:
+ *   post:
+ *     summary: Switch the active company for the current user and update their active role
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - companyId
+ *             properties:
+ *               companyId:
+ *                 type: string
+ *                 description: Company ID to switch to
+ *     responses:
+ *       200:
+ *         description: Company switched successfully
+ *       400:
+ *         description: Missing required parameters
+ *       403:
+ *         description: User does not have access to the requested company
+ *       404:
+ *         description: User or company not found
+ */
+export const switchCompany = async (req, res) => {
+  try {
+    const { companyId } = req.body
+    const userId = req.user.userId
+
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Company ID is required'
+      })
+    }
+
+    const companyIdStr = companyId.toString()
+
+    // Fetch user with company assignments
+    const user = await User.findById(userId)
+      .populate('defaultCompany', 'companyName companyCode companyEmail companyMobile contactDetails')
+      .populate('companies.companyId', 'companyName companyCode companyEmail companyMobile contactDetails')
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      })
+    }
+
+    let targetCompanyEntry = null
+
+    if (user.role === 'superadmin') {
+      // Super admin can switch to any active company
+      const targetCompany = await Company.findById(companyIdStr)
+        .select('companyName companyCode companyEmail companyMobile contactDetails isActive')
+
+      if (!targetCompany) {
+        return res.status(404).json({
+          success: false,
+          message: 'Company not found'
+        })
+      }
+
+      if (!targetCompany.isActive) {
+        return res.status(403).json({
+          success: false,
+          message: 'Company is not active'
+        })
+      }
+
+      targetCompanyEntry = {
+        companyId: targetCompany,
+        role: user.role,
+        isActive: true
+      }
+    } else {
+      // Other roles must have the company assigned and active
+      targetCompanyEntry = user.companies.find(
+        (comp) =>
+          comp.companyId &&
+          comp.companyId._id.toString() === companyIdStr &&
+          comp.isActive
+      )
+
+      if (!targetCompanyEntry) {
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have access to this company or the assignment is inactive'
+        })
+      }
+    }
+
+    // Update default company
+    user.defaultCompany = targetCompanyEntry.companyId._id
+
+    // Update active role to match the assignment
+    if (targetCompanyEntry.role && user.role !== targetCompanyEntry.role) {
+      user.role = targetCompanyEntry.role
+    }
+
+    await user.save()
+
+    const updatedUser = await User.findById(userId)
+      .select('-password')
+      .populate('defaultCompany', 'companyName companyCode companyEmail companyMobile contactDetails')
+      .populate('companies.companyId', 'companyName companyCode companyEmail companyMobile contactDetails')
+      .populate('hierarchy.parentUser', 'name email role')
+      .populate('createdBy', 'name email')
+
+    return res.json({
+      success: true,
+      message: 'Company switched successfully',
+      data: {
+        user: updatedUser,
+        activeRole: updatedUser.role
+      }
+    })
+  } catch (error) {
+    console.error('Error switching company:', error)
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to switch company',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    })
+  }
+}
+
+/**
+ * @swagger
  * /api/v1/user/users-by-company:
  *   get:
  *     summary: Get users by company (accessible by all roles)

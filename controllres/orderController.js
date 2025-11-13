@@ -4,6 +4,124 @@ import User from '../models/user/userModel.js';
 import Company from '../models/company/companyModel.js';
 import mongoose from 'mongoose';
 
+const DEFAULT_GST_RATE = 18;
+
+const normalizePaymentMethod = (value) => {
+  if (!value) {
+    return 'other';
+  }
+
+  const normalized = value.toString().trim().toLowerCase();
+
+  switch (normalized) {
+    case 'cash':
+      return 'cash';
+    case 'cheque':
+    case 'check':
+      return 'cheque';
+    case 'bank transfer':
+    case 'bank_transfer':
+    case 'bank-transfer':
+    case 'neft':
+    case 'rtgs':
+      return 'bank_transfer';
+    case 'upi':
+      return 'upi';
+    case 'credit card':
+    case 'debit card':
+    case 'card':
+    case 'card payment':
+    case 'card-payment':
+      return 'card';
+    case 'credit':
+      return 'credit';
+    default:
+      return 'other';
+  }
+};
+
+const extractState = (value) => {
+  if (!value) return '';
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+  return value.state ? String(value.state).trim() : '';
+};
+
+const normalizeState = (value) => extractState(value).toLowerCase();
+
+const determineGstType = (sellerState, buyerState) => {
+  if (!sellerState || !buyerState) {
+    return 'UNKNOWN';
+  }
+  return normalizeState(sellerState) === normalizeState(buyerState)
+    ? 'INTRA_STATE'
+    : 'INTER_STATE';
+};
+
+const safeNumber = (value, fallback = 0) => {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : fallback;
+  }
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+  const parsed = parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const computeGstComponents = ({
+  quantity,
+  unitPrice,
+  discountPercent,
+  gstRate,
+  gstType
+}) => {
+  const qty = safeNumber(quantity, 0);
+  const price = safeNumber(unitPrice, 0);
+  const discountRate = safeNumber(discountPercent, 0);
+  const normalizedGstRate = Math.max(0, safeNumber(gstRate, DEFAULT_GST_RATE));
+
+  const baseAmount = qty * price;
+  const discountAmount = (baseAmount * discountRate) / 100;
+  const taxableValue = Math.max(0, baseAmount - discountAmount);
+
+  let cgstRate = 0;
+  let sgstRate = 0;
+  let igstRate = 0;
+
+  if (gstType === 'INTRA_STATE') {
+    cgstRate = normalizedGstRate / 2;
+    sgstRate = normalizedGstRate / 2;
+  } else if (gstType === 'INTER_STATE') {
+    igstRate = normalizedGstRate;
+  } else {
+    // Unknown tax type - fall back to IGST for safe handling
+    igstRate = normalizedGstRate;
+  }
+
+  const cgstAmount = (taxableValue * cgstRate) / 100;
+  const sgstAmount = (taxableValue * sgstRate) / 100;
+  const igstAmount = (taxableValue * igstRate) / 100;
+  const totalTaxAmount = cgstAmount + sgstAmount + igstAmount;
+  const lineTotal = taxableValue + totalTaxAmount;
+
+  return {
+    gstRate: normalizedGstRate,
+    baseAmount,
+    discountAmount,
+    taxableValue,
+    cgstRate,
+    cgstAmount,
+    sgstRate,
+    sgstAmount,
+    igstRate,
+    igstAmount,
+    totalTaxAmount,
+    lineTotal
+  };
+};
+
 // Create a new order
 export const createOrder = async (req, res) => {
   try {
@@ -22,7 +140,14 @@ export const createOrder = async (req, res) => {
       priority,
       paymentMethod,
       notes,
-      shippingAddress
+      shippingAddress,
+      mode,
+      modeSelection,
+      customMode,
+      termsOfPayment,
+      otherReference,
+      termsOfDelivery1,
+      termsOfDelivery2
     } = req.body;
 
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
@@ -53,16 +178,53 @@ export const createOrder = async (req, res) => {
       }
     }
 
-    // Validate and process items
+    const company = await Company.findById(companyId).lean();
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: 'Company not found for the current user'
+      });
+    }
+
+    let dealerDoc = null;
+    let subDealerDoc = null;
+
+    if (dealerId) {
+      dealerDoc = await User.findById(dealerId).lean();
+    }
+
+    if (subDealerId) {
+      subDealerDoc = await User.findById(subDealerId).lean();
+    }
+
+    const sellerState =
+      extractState(company.companyState) ||
+      extractState(company?.contactDetails?.address?.state);
+
+    const buyerState =
+      extractState(shippingAddress?.state) ||
+      extractState(customerAddress?.state) ||
+      extractState(customer?.address?.state) ||
+      extractState(subDealerDoc?.address?.state) ||
+      extractState(dealerDoc?.address?.state);
+
+    const gstType = determineGstType(sellerState, buyerState);
+
+    // Validate and process items with GST calculations
     const processedItems = [];
-    let totalAmount = 0;
+    let grossAmountTotal = 0;
+    let discountTotal = 0;
+    let taxableValueTotal = 0;
+    let cgstTotal = 0;
+    let sgstTotal = 0;
+    let igstTotal = 0;
+    let taxAmountTotal = 0;
 
     for (const item of items) {
       const product = await Product.findOne({
         _id: item.productId,
         companyId,
-        isActive: true,
-        isAvailable: true
+        isActive: true
       });
 
       if (!product) {
@@ -76,14 +238,21 @@ export const createOrder = async (req, res) => {
       if (!product.isInStock(item.quantity)) {
         return res.status(400).json({
           success: false,
-          message: `Insufficient stock for product ${product.productName}. Available: ${product.stock.current}`
+          message: `Insufficient stock for product ${product.productName}. Available: ${product.stock}`
         });
       }
 
       const unitPrice = product.sellingPrice;
-      const itemTotal = item.quantity * unitPrice;
-      const discount = item.discount || 0;
-      const tax = item.tax || product.taxRate;
+      const discountPercent = item.discount || 0;
+      const gstRateInput = item.gstRate !== undefined ? item.gstRate : product.gstRate;
+
+      const taxDetails = computeGstComponents({
+        quantity: item.quantity,
+        unitPrice,
+        discountPercent,
+        gstRate: gstRateInput,
+        gstType
+      });
 
       processedItems.push({
         productId: product._id,
@@ -91,13 +260,42 @@ export const createOrder = async (req, res) => {
         productCode: product.productCode,
         quantity: item.quantity,
         unitPrice,
-        totalPrice: itemTotal,
-        discount,
-        tax
+        discount: discountPercent,
+        tax: taxDetails.gstRate,
+        gstRate: taxDetails.gstRate,
+        taxType: gstType,
+        taxableValue: taxDetails.taxableValue,
+        cgstRate: taxDetails.cgstRate,
+        cgstAmount: taxDetails.cgstAmount,
+        sgstRate: taxDetails.sgstRate,
+        sgstAmount: taxDetails.sgstAmount,
+        igstRate: taxDetails.igstRate,
+        igstAmount: taxDetails.igstAmount,
+        totalTaxAmount: taxDetails.totalTaxAmount,
+        totalPrice: taxDetails.lineTotal
       });
 
-      totalAmount += itemTotal;
+      grossAmountTotal += taxDetails.baseAmount;
+      discountTotal += taxDetails.discountAmount;
+      taxableValueTotal += taxDetails.taxableValue;
+      cgstTotal += taxDetails.cgstAmount;
+      sgstTotal += taxDetails.sgstAmount;
+      igstTotal += taxDetails.igstAmount;
+      taxAmountTotal += taxDetails.totalTaxAmount;
     }
+
+    // Determine payment information
+    const resolvedModeSelectionRaw = (modeSelection || paymentMethod || mode || '').toString().trim();
+    const resolvedModeSelection = resolvedModeSelectionRaw || '';
+    const resolvedMode =
+      modeSelection === 'Other'
+        ? (mode || customMode || 'Other')
+        : (mode || resolvedModeSelection || '');
+    const normalizedPaymentMethod = normalizePaymentMethod(resolvedModeSelection || resolvedMode || paymentMethod);
+    const sanitizedTermsOfPayment = termsOfPayment || '';
+    const sanitizedOtherReference = otherReference || '';
+    const sanitizedTermsOfDelivery1 = termsOfDelivery1 || '';
+    const sanitizedTermsOfDelivery2 = termsOfDelivery2 || '';
 
     // Generate order number
     const orderNumber = await Order.generateOrderNumber(companyId);
@@ -118,15 +316,30 @@ export const createOrder = async (req, res) => {
       items: processedItems,
       deliveryDate,
       priority: priority || 'medium',
-      paymentMethod: paymentMethod || 'cash',
+      paymentMethod: normalizedPaymentMethod || 'cash',
+      modeSelection: resolvedModeSelection || null,
+      mode: resolvedMode || null,
+      termsOfPayment: sanitizedTermsOfPayment,
+      otherReference: sanitizedOtherReference,
+      termsOfDelivery1: sanitizedTermsOfDelivery1,
+      termsOfDelivery2: sanitizedTermsOfDelivery2,
       notes,
       shippingAddress: shippingAddress || customerAddress,
       createdBy,
-      totalAmount,
-      finalAmount: totalAmount
+      totalAmount: grossAmountTotal,
+      discountAmount: discountTotal,
+      taxAmount: taxAmountTotal,
+      taxableValueTotal,
+      cgstTotal,
+      sgstTotal,
+      igstTotal,
+      finalAmount: taxableValueTotal + taxAmountTotal,
+      sellerState,
+      buyerState,
+      gstType
     });
 
-    // Calculate totals
+    // Calculate totals to ensure consistency
     order.calculateTotals();
 
     // Save order
@@ -136,7 +349,7 @@ export const createOrder = async (req, res) => {
     for (const item of items) {
       await Product.findByIdAndUpdate(
         item.productId,
-        { $inc: { 'stock.current': -item.quantity } }
+        { $inc: { stock: -item.quantity } }
       );
     }
 
@@ -421,45 +634,21 @@ export const updateOrderStatus = async (req, res) => {
 export const updateOrder = async (req, res) => {
   try {
     const { orderId } = req.params;
-    const updateData = req.body;
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+    const updateData = { ...req.body };
 
-    // Remove fields that shouldn't be updated directly
-    delete updateData.orderNumber;
-    delete updateData.companyId;
-    delete updateData.createdBy;
-    delete updateData.createdAt;
-
-    // Process items to ensure totalPrice is calculated correctly
-    if (updateData.items && Array.isArray(updateData.items)) {
-      updateData.items = updateData.items.map(item => {
-        const quantity = item.quantity || 0;
-        const unitPrice = item.unitPrice || item.price || 0;
-        const totalPrice = quantity * unitPrice;
-        
-        return {
-          ...item,
-          unitPrice: unitPrice,
-          quantity: quantity,
-          totalPrice: totalPrice, // Ensure totalPrice is calculated
-          // Keep other fields as they are
-          productId: item.productId,
-          productCode: item.productCode,
-          productName: item.productName,
-          unit: item.unit,
-          discount: item.discount || 0,
-          tax: item.tax || 0
-        };
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid order ID'
       });
     }
 
-    const order = await Order.findOneAndUpdate(
-      { _id: orderId, companyId, isActive: true },
-      { ...updateData, updatedAt: new Date() },
-      { new: true, runValidators: true }
-    )
-      .populate('customerId', 'name email mobile')
-      .populate('createdBy', 'name role');
+    const order = await Order.findOne({
+      _id: orderId,
+      companyId,
+      isActive: true
+    });
 
     if (!order) {
       return res.status(404).json({
@@ -468,12 +657,242 @@ export const updateOrder = async (req, res) => {
       });
     }
 
+    const company = await Company.findById(companyId).lean();
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: 'Company not found for the current user'
+      });
+    }
+
+    // Handle payment mode normalization
+    if (updateData.customMode !== undefined) {
+      if (updateData.modeSelection === 'Other' && !updateData.mode) {
+        updateData.mode = updateData.customMode;
+      }
+      delete updateData.customMode;
+    }
+
+    const resolvedModeSelectionRaw = (
+      updateData.modeSelection ??
+      updateData.paymentMethod ??
+      updateData.mode ??
+      order.modeSelection ??
+      order.mode ??
+      order.paymentMethod ??
+      ''
+    ).toString().trim();
+    const resolvedModeSelection = resolvedModeSelectionRaw || '';
+    let resolvedMode = updateData.mode ?? order.mode ?? '';
+    if ((updateData.modeSelection ?? order.modeSelection) === 'Other') {
+      resolvedMode = updateData.mode || updateData.modeSelection || order.mode || '';
+    }
+    const normalizedPaymentMethod = normalizePaymentMethod(
+      resolvedModeSelection || resolvedMode || updateData.paymentMethod || order.paymentMethod
+    );
+
+    // Determine customer/dealer/sub-dealer details
+    const nextCustomerId = updateData.customerId ?? order.customerId;
+    let customer = null;
+    if (nextCustomerId) {
+      try {
+        customer = await User.findOne({
+          _id: nextCustomerId,
+          $or: [
+            { defaultCompany: companyId },
+            { 'companies.companyId': companyId }
+          ]
+        }).lean();
+      } catch (error) {
+        console.log('updateOrder - invalid customerId:', nextCustomerId);
+      }
+    }
+
+    const dealerId = updateData.dealerId ?? order.dealerId;
+    const subDealerId = updateData.subDealerId ?? order.subDealerId;
+
+    const dealerDoc = dealerId ? await User.findById(dealerId).lean() : null;
+    const subDealerDoc = subDealerId ? await User.findById(subDealerId).lean() : null;
+
+    const customerAddress =
+      updateData.customerAddress ??
+      (customer ? customer.address : null) ??
+      order.customerAddress ??
+      {};
+
+    const shippingAddress =
+      updateData.shippingAddress ??
+      order.shippingAddress ??
+      customerAddress;
+
+    const sellerState =
+      extractState(company.companyState) ||
+      extractState(company?.contactDetails?.address?.state);
+
+    const buyerState =
+      extractState(shippingAddress?.state) ||
+      extractState(customerAddress?.state) ||
+      extractState(customer?.address?.state) ||
+      extractState(subDealerDoc?.address?.state) ||
+      extractState(dealerDoc?.address?.state);
+
+    const gstType = determineGstType(sellerState, buyerState);
+
+    const rawItems = (updateData.items && Array.isArray(updateData.items))
+      ? updateData.items
+      : order.items.map(item => (typeof item.toObject === 'function' ? item.toObject() : item));
+
+    if (!rawItems || rawItems.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Order must contain at least one item'
+      });
+    }
+
+    const productIds = [
+      ...new Set(
+        rawItems
+          .map(item => item.productId)
+          .filter(Boolean)
+          .map(id => (typeof id === 'object' ? id.toString() : id))
+      )
+    ];
+
+    const products = productIds.length
+      ? await Product.find({
+          _id: { $in: productIds },
+          companyId
+        }).lean()
+      : [];
+
+    const productMap = new Map(products.map(prod => [prod._id.toString(), prod]));
+
+    const processedItems = [];
+    let grossAmountTotal = 0;
+    let discountTotal = 0;
+    let taxableValueTotal = 0;
+    let cgstTotal = 0;
+    let sgstTotal = 0;
+    let igstTotal = 0;
+    let taxAmountTotal = 0;
+
+    for (const item of rawItems) {
+      const productId =
+        typeof item.productId === 'object' && item.productId !== null
+          ? item.productId.toString()
+          : item.productId;
+
+      const productDoc = productMap.get(productId || '') || null;
+      const quantity = safeNumber(item.quantity, 0);
+      if (quantity <= 0) {
+        continue;
+      }
+
+      const unitPrice = safeNumber(
+        item.unitPrice ?? item.price,
+        productDoc?.sellingPrice ?? productDoc?.price ?? 0
+      );
+      const discountPercent = safeNumber(item.discount, 0);
+      const gstRateInput =
+        item.gstRate !== undefined
+          ? item.gstRate
+          : productDoc?.gstRate ?? DEFAULT_GST_RATE;
+
+      const taxDetails = computeGstComponents({
+        quantity,
+        unitPrice,
+        discountPercent,
+        gstRate: gstRateInput,
+        gstType
+      });
+
+      processedItems.push({
+        productId: productId,
+        productName: item.productName || productDoc?.productName || '',
+        productCode: item.productCode || productDoc?.productCode || '',
+        quantity,
+        unitPrice,
+        discount: discountPercent,
+        tax: taxDetails.gstRate,
+        gstRate: taxDetails.gstRate,
+        taxType: gstType,
+        taxableValue: taxDetails.taxableValue,
+        cgstRate: taxDetails.cgstRate,
+        cgstAmount: taxDetails.cgstAmount,
+        sgstRate: taxDetails.sgstRate,
+        sgstAmount: taxDetails.sgstAmount,
+        igstRate: taxDetails.igstRate,
+        igstAmount: taxDetails.igstAmount,
+        totalTaxAmount: taxDetails.totalTaxAmount,
+        totalPrice: taxDetails.lineTotal
+      });
+
+      grossAmountTotal += taxDetails.baseAmount;
+      discountTotal += taxDetails.discountAmount;
+      taxableValueTotal += taxDetails.taxableValue;
+      cgstTotal += taxDetails.cgstAmount;
+      sgstTotal += taxDetails.sgstAmount;
+      igstTotal += taxDetails.igstAmount;
+      taxAmountTotal += taxDetails.totalTaxAmount;
+    }
+
+    if (processedItems.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Order must contain at least one item with valid quantity'
+      });
+    }
+
+    // Update order fields
+    order.customerId = customer ? customer._id : nextCustomerId || null;
+    order.customerName = updateData.customerName ?? (customer ? customer.name : order.customerName);
+    order.customerEmail = updateData.customerEmail ?? (customer ? customer.email : order.customerEmail);
+    order.customerMobile = updateData.customerMobile ?? (customer ? customer.mobile : order.customerMobile);
+    order.customerAddress = customerAddress || {};
+    order.dealerId = dealerId || null;
+    order.dealerName = updateData.dealerName ?? (dealerDoc ? dealerDoc.name : order.dealerName);
+    order.subDealerId = subDealerId || null;
+    order.subDealerName = updateData.subDealerName ?? (subDealerDoc ? subDealerDoc.name : order.subDealerName);
+    order.items = processedItems;
+    order.deliveryDate = updateData.deliveryDate ?? order.deliveryDate;
+    order.priority = updateData.priority ?? order.priority;
+    order.paymentMethod = normalizedPaymentMethod;
+    order.modeSelection = updateData.modeSelection ?? order.modeSelection ?? null;
+    order.mode = resolvedMode || null;
+    order.termsOfPayment = updateData.termsOfPayment ?? order.termsOfPayment;
+    order.otherReference = updateData.otherReference ?? order.otherReference;
+    order.termsOfDelivery1 = updateData.termsOfDelivery1 ?? order.termsOfDelivery1;
+    order.termsOfDelivery2 = updateData.termsOfDelivery2 ?? order.termsOfDelivery2;
+    order.notes = updateData.notes ?? order.notes;
+    order.shippingAddress = shippingAddress || {};
+    order.status = updateData.status ?? order.status;
+    order.taxableValueTotal = taxableValueTotal;
+    order.totalAmount = grossAmountTotal;
+    order.discountAmount = discountTotal;
+    order.taxAmount = taxAmountTotal;
+    order.cgstTotal = cgstTotal;
+    order.sgstTotal = sgstTotal;
+    order.igstTotal = igstTotal;
+    order.finalAmount = taxableValueTotal + taxAmountTotal;
+    order.sellerState = sellerState;
+    order.buyerState = buyerState;
+    order.gstType = gstType;
+    order.updatedAt = new Date();
+
+    order.calculateTotals();
+    await order.save();
+
+    await order.populate([
+      { path: 'customerId', select: 'name email mobile' },
+      { path: 'createdBy', select: 'name role' },
+      { path: 'companyId', select: 'companyName companyCode' }
+    ]);
+
     res.json({
       success: true,
       message: 'Order updated successfully',
       order
     });
-
   } catch (error) {
     console.error('Update order error:', error);
     res.status(500).json({
@@ -507,7 +926,7 @@ export const deleteOrder = async (req, res) => {
     for (const item of order.items) {
       await Product.findByIdAndUpdate(
         item.productId,
-        { $inc: { 'stock.current': item.quantity } }
+        { $inc: { stock: item.quantity } }
       );
     }
 

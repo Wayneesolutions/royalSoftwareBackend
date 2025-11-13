@@ -4,7 +4,8 @@ import {
   getUsersByRole,
   getUserProfile,
   updateUserProfile,
-  deleteUser
+  deleteUser,
+  switchCompany
 } from '../controllres/userController.js'
 import { requireAuth, authorizeRoles } from '../middleware/authMiddleware.js'
 
@@ -16,6 +17,9 @@ const userRoute = express.Router()
  *   name: User
  *   description: General user management endpoints for all roles
  */
+
+// Switch company (accessible by all authenticated users with company assignments)
+userRoute.post('/switch-company', requireAuth, switchCompany)
 
 // Get users by company (accessible by all authenticated users)
 userRoute.get('/users-by-company', requireAuth, getUsersByCompany)

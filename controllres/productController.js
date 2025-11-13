@@ -11,15 +11,9 @@ export const createProduct = async (req, res) => {
       category,
       subCategory,
       brand,
-      unit,
       price,
-      costPrice,
-      mrp,
-      discount,
-      taxRate,
       stock,
-      images,
-      specifications
+      gstRate
     } = req.body;
 
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
@@ -49,19 +43,13 @@ export const createProduct = async (req, res) => {
       category,
       subCategory,
       brand,
-      unit,
-      price,
-      costPrice,
-      mrp,
-      discount,
-      taxRate,
-      stock: {
-        current: stock?.current || 0,
-        minimum: stock?.minimum || 0,
-        maximum: stock?.maximum || 1000
-      },
-      images,
-      specifications,
+      price: typeof price === 'number' ? price : parseFloat(price || 0),
+      stock: typeof stock === 'number' ? stock : parseInt(stock || 0, 10),
+      gstRate: (() => {
+        const parsed =
+          typeof gstRate === 'number' ? gstRate : parseFloat(gstRate ?? '');
+        return Number.isFinite(parsed) ? parsed : 18;
+      })(),
       companyId,
       createdBy
     });
@@ -96,7 +84,6 @@ export const getProducts = async (req, res) => {
       limit = 10,
       category,
       search,
-      isAvailable,
       isActive
     } = req.query;
 
@@ -117,7 +104,6 @@ export const getProducts = async (req, res) => {
 
     // Apply filters
     if (category) filter.category = category;
-    if (isAvailable !== undefined) filter.isAvailable = isAvailable === 'true';
     if (isActive !== undefined) filter.isActive = isActive === 'true';
     if (search) {
       filter.$or = [
@@ -211,17 +197,42 @@ export const getProductById = async (req, res) => {
 export const updateProduct = async (req, res) => {
   try {
     const { productId } = req.params;
-    const updateData = req.body;
+    const {
+      productName,
+      description,
+      category,
+      subCategory,
+      brand,
+      price,
+      stock,
+      isActive,
+      gstRate
+    } = req.body;
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
     const userId = req.user.userDetails._id;
 
-    // Remove fields that shouldn't be updated directly
-    delete updateData.productCode;
-    delete updateData.companyId;
-    delete updateData.createdBy;
-    delete updateData.createdAt;
+    const updateData = {
+      updatedBy: userId
+    };
 
-    updateData.updatedBy = userId;
+    if (productName !== undefined) updateData.productName = productName;
+    if (description !== undefined) updateData.description = description;
+    if (category !== undefined) updateData.category = category;
+    if (subCategory !== undefined) updateData.subCategory = subCategory;
+    if (brand !== undefined) updateData.brand = brand;
+    if (price !== undefined) {
+      updateData.price = typeof price === 'number' ? price : parseFloat(price);
+    }
+    if (stock !== undefined) {
+      updateData.stock = typeof stock === 'number' ? stock : parseInt(stock, 10);
+    }
+    if (isActive !== undefined) updateData.isActive = isActive;
+    if (gstRate !== undefined) {
+      const parsedGst = typeof gstRate === 'number' ? gstRate : parseFloat(gstRate);
+      if (!Number.isNaN(parsedGst)) {
+        updateData.gstRate = parsedGst;
+      }
+    }
 
     const product = await Product.findOneAndUpdate(
       { _id: productId, companyId },
@@ -356,15 +367,15 @@ export const getLowStockProducts = async (req, res) => {
   try {
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
 
+    const LOW_STOCK_THRESHOLD = 5;
+
     const products = await Product.find({
       companyId,
       isActive: true,
-      $expr: {
-        $lte: ['$stock.current', '$stock.minimum']
-      }
+      stock: { $lte: LOW_STOCK_THRESHOLD }
     })
       .select('productCode productName stock category')
-      .sort({ 'stock.current': 1 });
+      .sort({ stock: 1 });
 
     res.json({
       success: true,

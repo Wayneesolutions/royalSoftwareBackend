@@ -90,6 +90,56 @@ const orderSchema = new mongoose.Schema({
       type: Number,
       default: 0,
       min: 0
+    },
+    gstRate: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    taxType: {
+      type: String,
+      enum: ['INTRA_STATE', 'INTER_STATE', 'UNKNOWN'],
+      default: 'UNKNOWN'
+    },
+    taxableValue: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    cgstRate: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    cgstAmount: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    sgstRate: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    sgstAmount: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    igstRate: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    igstAmount: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    totalTaxAmount: {
+      type: Number,
+      default: 0,
+      min: 0
     }
   }],
   orderDate: {
@@ -129,6 +179,37 @@ const orderSchema = new mongoose.Schema({
     required: true,
     min: 0
   },
+  taxableValueTotal: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  cgstTotal: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  sgstTotal: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  igstTotal: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  sellerState: {
+    type: String
+  },
+  buyerState: {
+    type: String
+  },
+  gstType: {
+    type: String,
+    enum: ['INTRA_STATE', 'INTER_STATE', 'UNKNOWN'],
+    default: 'UNKNOWN'
+  },
   paymentStatus: {
     type: String,
     enum: ['pending', 'partial', 'paid', 'refunded'],
@@ -136,8 +217,26 @@ const orderSchema = new mongoose.Schema({
   },
   paymentMethod: {
     type: String,
-    enum: ['cash', 'cheque', 'bank_transfer', 'upi', 'card', 'credit'],
+    enum: ['cash', 'cheque', 'bank_transfer', 'upi', 'card', 'credit', 'other'],
     default: 'cash'
+  },
+  modeSelection: {
+    type: String
+  },
+  mode: {
+    type: String
+  },
+  termsOfPayment: {
+    type: String
+  },
+  otherReference: {
+    type: String
+  },
+  termsOfDelivery1: {
+    type: String
+  },
+  termsOfDelivery2: {
+    type: String
   },
   notes: {
     type: String
@@ -239,22 +338,44 @@ orderSchema.methods.calculateTotals = function() {
   let totalAmount = 0;
   let totalDiscount = 0;
   let totalTax = 0;
+  let totalTaxableValue = 0;
+  let cgstTotal = 0;
+  let sgstTotal = 0;
+  let igstTotal = 0;
 
   this.items.forEach(item => {
-    const itemTotal = item.quantity * item.unitPrice;
-    const itemDiscount = (itemTotal * item.discount) / 100;
-    const itemTax = ((itemTotal - itemDiscount) * item.tax) / 100;
-    
-    item.totalPrice = itemTotal - itemDiscount + itemTax;
-    totalAmount += itemTotal;
+    const lineBase = item.quantity * item.unitPrice;
+    const itemDiscount = (lineBase * (item.discount || 0)) / 100;
+    const taxableValue = item.taxableValue || (lineBase - itemDiscount);
+    const cgstAmount = item.cgstAmount || 0;
+    const sgstAmount = item.sgstAmount || 0;
+    const igstAmount = item.igstAmount || 0;
+    const totalTaxAmount = item.totalTaxAmount || cgstAmount + sgstAmount + igstAmount;
+
+    item.taxableValue = taxableValue;
+    item.totalTaxAmount = totalTaxAmount;
+    item.cgstAmount = cgstAmount;
+    item.sgstAmount = sgstAmount;
+    item.igstAmount = igstAmount;
+    item.totalPrice = taxableValue + totalTaxAmount;
+
+    totalAmount += lineBase;
     totalDiscount += itemDiscount;
-    totalTax += itemTax;
+    totalTaxableValue += taxableValue;
+    totalTax += totalTaxAmount;
+    cgstTotal += cgstAmount;
+    sgstTotal += sgstAmount;
+    igstTotal += igstAmount;
   });
 
   this.totalAmount = totalAmount;
   this.discountAmount = totalDiscount;
   this.taxAmount = totalTax;
-  this.finalAmount = totalAmount - totalDiscount + totalTax;
+  this.taxableValueTotal = totalTaxableValue;
+  this.cgstTotal = cgstTotal;
+  this.sgstTotal = sgstTotal;
+  this.igstTotal = igstTotal;
+  this.finalAmount = totalTaxableValue + totalTax;
 };
 
 // Static method to generate order number

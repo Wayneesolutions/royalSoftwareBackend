@@ -33,15 +33,17 @@ export const authMiddleware = (requiredRoles = []) => {
         return res.status(401).json({ success: false, message: 'User not found or inactive' })
       }
 
+      const effectiveRole = user.role
+
       req.user = { 
         ...decoded, 
         userId, 
-        role,
+        role: effectiveRole,
         userDetails: user
       }
 
       if (Array.isArray(requiredRoles) && requiredRoles.length > 0) {
-        if (!role || !requiredRoles.includes(role)) {
+        if (!effectiveRole || !requiredRoles.includes(effectiveRole)) {
           return res.status(403).json({ success: false, message: 'Forbidden: Insufficient role' })
         }
       }

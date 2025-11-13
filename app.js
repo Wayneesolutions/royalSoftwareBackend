@@ -19,8 +19,8 @@ import dealerTeamRoute from './routes/dealerTeamRoute.js'
 import path from 'path'
 import { fileURLToPath } from 'url';
 import { superAdminRoute } from './routes/superAdminRoute.js'
-import tallyRoute from './routes/tallyRoute.js'
 import { specs, swaggerUi } from './config/swagger.js'
+import tallyRoute from './routes/tally/tallyRoute.js'
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -34,22 +34,27 @@ app.use(
     })
   );
 
-app.use(
-  express.json({
-    limit: '50mb',
-    verify: (req, res, buf) => {
-      req.rawBody = buf
-    } // Store raw body for webhooks
-  })
-)
+const jsonBodyParser = express.json({
+  limit: '50mb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf
+  },
+  type: (req) => !req.originalUrl.startsWith('/api/v1/tally')
+})
 
-app.use(express.json({ 
-    limit: "50mb",
-    verify: (req, res, buf) => { req.rawBody = buf } // Store raw body for webhooks
-  }));
+const tallyBodyParser = express.text({
+  limit: '50mb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf
+  },
+  type: (req) => req.originalUrl.startsWith('/api/v1/tally')
+})
 
-  // Parse URL-encoded bodies
-app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+app.use(jsonBodyParser)
+app.use(tallyBodyParser)
+
+// Parse URL-encoded bodies
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 app.use(helmet({
     contentSecurityPolicy: process.env.NODE_ENV === 'production' ? undefined : false,
@@ -87,8 +92,8 @@ app.use('/api/v1/zonal', zonalRoute)
 app.use('/api/v1/rsm', rsmRoute)
 app.use('/api/v1/asm', asmRoute)
 app.use('/api/v1/dealer', dealerTeamRoute)
+app.use('/api/v1/tally', tallyRoute)
   app.use('/api/v1/superadmin', superAdminRoute)
-  app.use('/api/v1/tally', tallyRoute)
   //404 handler for unmatched routes
   app.use((req, res) => {
     res.status(404).json({ 

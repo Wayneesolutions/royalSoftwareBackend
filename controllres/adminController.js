@@ -2,7 +2,6 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import User from "../models/user/userModel.js";
 import Company from "../models/company/companyModel.js";
-import { fetchLedgerFromTally, fetchSalesFromTally } from "../tally/adminDashboard.js";
 // Admin Signup
 export const adminCreation = async (req, res) => {
   try {
@@ -366,30 +365,6 @@ export const getCompanyData = async (req, res) => {
       success: false,
       message: 'Failed to get company data',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-};
-
-export const adminDashboard = async (req, res) => {
-  try {
-    // You can get dynamic dates from query params or hardcode for testing
-    const fromDate = req.query.fromDate || "20240401";
-    const toDate = req.query.toDate || "20240723";
-    const ledgerName = req.query.ledgerName || ''
-    const sales = await fetchSalesFromTally(fromDate, toDate);
-    const ledger = await fetchLedgerFromTally(fromDate,toDate,ledgerName)
-    return res.json({
-      success: true,
-      data:{
-        sales:sales,
-        ledger:ledger
-      }
-    });
-  } catch (error) {
-    console.log(error.message);
-    return res.json({
-      success: false,
-      message: error.message
     });
   }
 };

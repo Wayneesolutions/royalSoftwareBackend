@@ -38,7 +38,6 @@ const productRoute = express.Router();
  *               - productCode
  *               - productName
  *               - category
- *               - unit
  *               - price
  *             properties:
  *               productCode:
@@ -53,34 +52,10 @@ const productRoute = express.Router();
  *                 type: string
  *               brand:
  *                 type: string
- *               unit:
- *                 type: string
- *                 enum: [kg, liter, piece, box, packet, dozen, meter, sqft]
  *               price:
  *                 type: number
- *               costPrice:
- *                 type: number
- *               mrp:
- *                 type: number
- *               discount:
- *                 type: number
- *               taxRate:
- *                 type: number
  *               stock:
- *                 type: object
- *                 properties:
- *                   current:
- *                     type: number
- *                   minimum:
- *                     type: number
- *                   maximum:
- *                     type: number
- *               images:
- *                 type: array
- *                 items:
- *                   type: object
- *               specifications:
- *                 type: object
+ *                 type: number
  *     responses:
  *       201:
  *         description: Product created successfully
@@ -120,10 +95,6 @@ productRoute.post('/', requireAuth, authorizeRoles(['admin', 'zonal', 'rsm', 'as
  *         name: search
  *         schema:
  *           type: string
- *       - in: query
- *         name: isAvailable
- *         schema:
- *           type: boolean
  *       - in: query
  *         name: isActive
  *         schema:

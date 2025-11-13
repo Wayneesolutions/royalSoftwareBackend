@@ -1,7 +1,6 @@
 import express from 'express'
 import { 
   adminCreation, 
-  adminDashboard, 
   adminLogin, 
   switchCompany, 
   getCompanyData,
@@ -31,7 +30,6 @@ adminRoute.post('/create', adminCreation)
 adminRoute.post('/login', adminLogin)
 
 // Protected routes (authentication required)
-adminRoute.get('/dashboard', requireAuth, authorizeRoles(['admin']), adminDashboard)
 adminRoute.get('/company-data', requireAuth, authorizeRoles(['admin']), getCompanyData)
 adminRoute.post('/switch-company', requireAuth, authorizeRoles(['admin']), switchCompany)
 
