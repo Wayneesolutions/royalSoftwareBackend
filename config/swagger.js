@@ -146,10 +146,6 @@ const options = {
             isActive: {
               type: 'boolean',
               description: 'Whether the company is active'
-            },
-            createdBy: {
-              type: 'string',
-              description: 'ID of the user who created the company'
             }
           }
         },
@@ -259,10 +255,6 @@ const options = {
             isActive: {
               type: 'boolean',
               description: 'Whether the product is active'
-            },
-            createdBy: {
-              type: 'string',
-              description: 'User ID to attribute creation to'
             }
           }
         },
@@ -320,12 +312,6 @@ const options = {
             },
             isActive: {
               type: 'boolean'
-            },
-            assignedAt: {
-              type: 'string',
-              format: 'date-time',
-              description: 'Assignment timestamp',
-              example: null
             }
           }
         },

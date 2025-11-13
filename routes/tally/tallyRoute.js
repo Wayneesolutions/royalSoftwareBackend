@@ -99,10 +99,6 @@ const tallyRoute = express.Router();
  *                         type: string
  *                       pincode:
  *                         type: string
- *               createdBy:
- *                 type: string
- *                 description: Optional ObjectId of an existing system user who should be recorded as the company creator.
- *                 example: "64f2e7b90b0c5f2d88a12345"
  *     responses:
  *       201:
  *         description: Company created successfully
