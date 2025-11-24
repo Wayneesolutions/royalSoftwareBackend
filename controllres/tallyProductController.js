@@ -161,15 +161,33 @@ export const upsertCompanyProductFromTally = async (req, res) => {
       const baseData = {
         productCode,
         productName,
+        partNo: normalizeString(item.partNo),
+        itemAlias: normalizeString(item.itemAlias),
         description: normalizeString(item.description),
+        parent: normalizeString(item.parent),
         category,
         subCategory: normalizeString(item.subCategory),
         brand: normalizeString(item.brand),
+        baseUnits: normalizeString(item.baseUnits),
+        additionalUnits: normalizeString(item.additionalUnits),
         price,
+        stdPurcRate: normalizeNumber(item.stdPurcRate),
+        stdSaleRate: normalizeNumber(item.stdSaleRate),
         stock,
         gstRate,
+        itemGstPer: normalizeNumber(item.itemGstPer),
+        itemHsn: normalizeString(item.itemHsn),
+        itemHsnDesc: normalizeString(item.itemHsnDesc),
+        openingBalance: normalizeNumber(item.openingBalance),
+        itemOpRate: normalizeNumber(item.itemOpRate),
         companyId: company._id,
         isActive: normalizeBoolean(item.isActive, true),
+        isFinishItem: normalizeBoolean(item.isFinishItem, false),
+        other1: normalizeString(item.other1),
+        other2: normalizeString(item.other2),
+        other3: normalizeString(item.other3),
+        other4: normalizeString(item.other4),
+        other5: normalizeString(item.other5),
       };
 
       const existingProduct = await Product.findOne({
@@ -181,18 +199,18 @@ export const upsertCompanyProductFromTally = async (req, res) => {
         ? item.createdBy
         : company.createdBy;
 
-      if (!creatorId) {
-        creatorId = await buildContactlessUser();
-      }
+      // if (!creatorId) {
+      //   creatorId = await buildContactlessUser();
+      // }
 
-      if (!creatorId) {
-        results.push({
-          productCode,
-          success: false,
-          message: 'Unable to determine creator for product',
-        });
-        continue;
-      }
+      // if (!creatorId) {
+      //   results.push({
+      //     productCode,
+      //     success: false,
+      //     message: 'Unable to determine creator for product',
+      //   });
+      //   continue;
+      // }
 
       let product;
 
@@ -212,9 +230,12 @@ export const upsertCompanyProductFromTally = async (req, res) => {
         });
       }
 
+      // Convert to plain object to ensure all fields (including non-schema fields) are included
+      const productObj = product.toObject ? product.toObject() : product;
+
       results.push({
         success: true,
-        product,
+        product: productObj,
       });
     }
 

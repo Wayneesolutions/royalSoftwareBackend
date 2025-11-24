@@ -69,10 +69,14 @@ const tallyRoute = express.Router();
  *               maxUser:
  *                 type: integer
  *                 minimum: 1
+ *                 maximum: 100
  *                 example: 100
  *               gstin:
  *                 type: string
  *                 example: "29ABCDE1234F2Z5"
+ *               tallySerialId:
+ *                 type: string
+ *                 example: "TALLY-SERIAL-001"
  *               contactDetails:
  *                 type: object
  *                 properties:
@@ -128,6 +132,13 @@ tallyRoute.get('/companies', listCompaniesForTally);
 
 /**
  * @swagger
+ * tags:
+ *   name: Tally
+ *   description: Endpoints for integrating with Tally ERP
+ */
+
+/**
+ * @swagger
  * /api/v1/tally/products:
  *   post:
  *     summary: Sync products from Tally
@@ -141,10 +152,216 @@ tallyRoute.get('/companies', listCompaniesForTally);
  *         application/json:
  *           schema:
  *             oneOf:
- *               - $ref: '#/components/schemas/TallyProductPayload'
+ *               - type: object
+ *                 required:
+ *                   - companyGuid
+ *                   - productCode
+ *                   - productName
+ *                 properties:
+ *                   companyGuid:
+ *                     type: string
+ *                     description: Company's numeric GUID
+ *                     example: "12345"
+ *                   productCode:
+ *                     type: string
+ *                     description: Unique product code
+ *                     example: "PROD001"
+ *                   productName:
+ *                     type: string
+ *                     description: Name of the product (Stock Item Name)
+ *                     example: "Premium Paint 5L"
+ *                   partNo:
+ *                     type: string
+ *                     description: Part number
+ *                     example: "PN-12345"
+ *                   itemAlias:
+ *                     type: string
+ *                     description: Item alias/alternate name
+ *                     example: "PP5L"
+ *                   description:
+ *                     type: string
+ *                     description: Product description
+ *                     example: "High quality premium paint"
+ *                   parent:
+ *                     type: string
+ *                     description: Parent category
+ *                     example: "Paints"
+ *                   category:
+ *                     type: string
+ *                     description: Product category
+ *                     example: "Interior Paints"
+ *                   subCategory:
+ *                     type: string
+ *                     description: Product sub-category
+ *                     example: "Premium"
+ *                   brand:
+ *                     type: string
+ *                     description: Brand name
+ *                     example: "Royal"
+ *                   baseUnits:
+ *                     type: string
+ *                     description: Base unit of measurement
+ *                     example: "Liters"
+ *                   additionalUnits:
+ *                     type: string
+ *                     description: Additional units
+ *                     example: "Gallons"
+ *                   price:
+ *                     type: number
+ *                     format: double
+ *                     description: Product price
+ *                     example: 1500.50
+ *                   stdPurcRate:
+ *                     type: number
+ *                     format: double
+ *                     description: Standard purchase rate
+ *                     example: 1200.00
+ *                   stdSaleRate:
+ *                     type: number
+ *                     format: double
+ *                     description: Standard sale rate
+ *                     example: 1500.50
+ *                   stock:
+ *                     type: number
+ *                     format: double
+ *                     description: Current stock quantity
+ *                     example: 100
+ *                   gstRate:
+ *                     type: number
+ *                     format: double
+ *                     description: GST rate percentage
+ *                     example: 18
+ *                   itemGstPer:
+ *                     type: number
+ *                     format: double
+ *                     description: Item GST percentage
+ *                     example: 18
+ *                   itemHsn:
+ *                     type: string
+ *                     description: HSN code
+ *                     example: "32091010"
+ *                   itemHsnDesc:
+ *                     type: string
+ *                     description: HSN description
+ *                     example: "Paints and varnishes"
+ *                   openingBalance:
+ *                     type: number
+ *                     format: double
+ *                     description: Opening balance quantity
+ *                     example: 50
+ *                   itemOpRate:
+ *                     type: number
+ *                     format: double
+ *                     description: Item opening rate
+ *                     example: 1400.00
+ *                   companyCode:
+ *                     type: string
+ *                     description: Company code
+ *                     example: "ROYAL01"
+ *                   isActive:
+ *                     type: boolean
+ *                     description: Whether the product is active
+ *                     example: true
+ *                   isFinishItem:
+ *                     type: boolean
+ *                     description: Whether it's a finished item
+ *                     example: true
+ *                   other1:
+ *                     type: string
+ *                     description: Additional field 1
+ *                     example: "Custom field data 1"
+ *                   other2:
+ *                     type: string
+ *                     description: Additional field 2
+ *                     example: "Custom field data 2"
+ *                   other3:
+ *                     type: string
+ *                     description: Additional field 3
+ *                     example: "Custom field data 3"
+ *                   other4:
+ *                     type: string
+ *                     description: Additional field 4
+ *                     example: "Custom field data 4"
+ *                   other5:
+ *                     type: string
+ *                     description: Additional field 5
+ *                     example: "Custom field data 5"
  *               - type: array
  *                 items:
- *                   $ref: '#/components/schemas/TallyProductPayload'
+ *                   type: object
+ *                   required:
+ *                     - companyGuid
+ *                     - productCode
+ *                     - productName
+ *                   properties:
+ *                     companyGuid:
+ *                       type: string
+ *                     productCode:
+ *                       type: string
+ *                     productName:
+ *                       type: string
+ *                     partNo:
+ *                       type: string
+ *                     itemAlias:
+ *                       type: string
+ *                     description:
+ *                       type: string
+ *                     parent:
+ *                       type: string
+ *                     category:
+ *                       type: string
+ *                     subCategory:
+ *                       type: string
+ *                     brand:
+ *                       type: string
+ *                     baseUnits:
+ *                       type: string
+ *                     additionalUnits:
+ *                       type: string
+ *                     price:
+ *                       type: number
+ *                       format: double
+ *                     stdPurcRate:
+ *                       type: number
+ *                       format: double
+ *                     stdSaleRate:
+ *                       type: number
+ *                       format: double
+ *                     stock:
+ *                       type: number
+ *                       format: double
+ *                     gstRate:
+ *                       type: number
+ *                       format: double
+ *                     itemGstPer:
+ *                       type: number
+ *                       format: double
+ *                     itemHsn:
+ *                       type: string
+ *                     itemHsnDesc:
+ *                       type: string
+ *                     openingBalance:
+ *                       type: number
+ *                       format: double
+ *                     itemOpRate:
+ *                       type: number
+ *                       format: double
+ *                     companyCode:
+ *                       type: string
+ *                     isActive:
+ *                       type: boolean
+ *                     isFinishItem:
+ *                       type: boolean
+ *                     other1:
+ *                       type: string
+ *                     other2:
+ *                       type: string
+ *                     other3:
+ *                       type: string
+ *                     other4:
+ *                       type: string
+ *                     other5:
+ *                       type: string
  *     responses:
  *       200:
  *         description: Products synced successfully
