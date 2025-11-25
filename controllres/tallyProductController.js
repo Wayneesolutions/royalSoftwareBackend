@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import Company from '../models/company/companyModel.js';
 import Product from '../models/product/productModel.js';
 import User from '../models/user/userModel.js';
@@ -451,27 +452,23 @@ export const upsertCompanyProductFromTally = async (req, res) => {
         continue;
       }
 
-      let creatorId = normalizeString(item.createdBy)
-        ? item.createdBy
-        : company.createdBy;
-
-      // if (!creatorId) {
-      //   creatorId = await buildContactlessUser();
-      // }
-
-      // if (!creatorId) {
-      //   results.push({
-      //     productCode,
-      //     success: false,
-      //     message: 'Unable to determine creator for product',
-      //   });
-      //   continue;
-      // }
+      // For Tally products, createdBy is optional
+      // Try to get from item, then company, otherwise use null
+      let creatorId = null;
+      if (item.createdBy) {
+        // Validate if createdBy is a valid ObjectId
+        if (mongoose.Types.ObjectId.isValid(item.createdBy)) {
+          creatorId = item.createdBy;
+        }
+      } else if (company.createdBy) {
+        creatorId = company.createdBy;
+      }
+      // If still null, that's fine - createdBy is optional for Tally products
 
       // Create new product only if it doesn't exist
       const product = await Product.create({
         ...baseData,
-        createdBy: creatorId,
+        createdBy: creatorId || null,
       });
 
       // Convert to plain object to ensure all fields (including non-schema fields) are included
