@@ -52,6 +52,12 @@ const companySchema = new mongoose.Schema({
         unique: true,
         trim: true
     },
+    tallySerialId: {
+        type: String,
+        unique: true,
+        sparse: true,
+        trim: true
+    },
     contactDetails: {
         email: {
             type: String,
@@ -121,6 +127,7 @@ companySchema.index({ companyEmail: 1 });
 companySchema.index({ companyMobile: 1 });
 companySchema.index({ guid: 1 });
 companySchema.index({ isActive: 1 });
+companySchema.index({ tallySerialId: 1 });
 // Ensure sparse unique index for gstin so multiple documents without gstin are allowed
 companySchema.index({ gstin: 1 }, { unique: true, sparse: true });
 
