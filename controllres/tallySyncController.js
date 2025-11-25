@@ -235,8 +235,9 @@ export const createCompanyFromTally = async (req, res) => {
         results.push({
           companyCode: normalizedCode,
           companyName: item.companyName || normalizeString(item.companyName),
-          success: true,
-          message: 'Company already exists. Returning existing record.',
+          success: false,
+          message: 'Company already exists. Duplicate companies are not allowed.',
+          error: 'DUPLICATE_COMPANY',
           data: existingCompany,
           meta: {
             duplicate: true,
@@ -294,8 +295,9 @@ export const createCompanyFromTally = async (req, res) => {
             results.push({
               companyCode: normalizedCode,
               companyName: item.companyName || normalizeString(item.companyName),
-              success: true,
-              message: 'Company already exists. Returning existing record.',
+              success: false,
+              message: 'Company already exists. Duplicate companies are not allowed.',
+              error: 'DUPLICATE_COMPANY',
               data: existingCompany,
               meta: {
                 duplicate: true,
