@@ -212,17 +212,6 @@ export const upsertCompanyProductFromTally = async (req, res) => {
             company = await Company.findById(rawDoc._id);
           }
           
-          // Debug: Log if still not found to help diagnose
-          if (!company && process.env.NODE_ENV === 'development') {
-            const allCompanies = await collection.find({}).toArray();
-            console.log(`[DEBUG] Searching for GUID: ${guid} (type: ${typeof guid})`);
-            console.log(`[DEBUG] Total companies in DB: ${allCompanies.length}`);
-            console.log(`[DEBUG] Sample GUIDs in DB:`, allCompanies.slice(0, 5).map(c => ({ 
-              guid: c.guid, 
-              type: typeof c.guid,
-              companyName: c.companyName 
-            })));
-          }
         } catch (error) {
           console.error('Error in direct MongoDB query for GUID:', error);
         }
@@ -238,23 +227,6 @@ export const upsertCompanyProductFromTally = async (req, res) => {
           error: 'COMPANY_NOT_FOUND',
         });
         continue;
-      }
-
-      // Debug: Log incoming payload structure in development
-      if (process.env.NODE_ENV === 'development') {
-        console.log('[DEBUG] Incoming Tally product payload keys:', Object.keys(item));
-        console.log('[DEBUG] Sample payload values:', {
-          name: item.name || item.Name,
-          PArtno: item.PArtno || item.partNo,
-          ItemAlias: item.ItemAlias || item.itemAlias,
-          Description: item.Description || item.description,
-          Category: item.Category || item.category,
-          Stdpurcrate: item.Stdpurcrate || item.stdPurcRate,
-          StdSalerate: item.StdSalerate || item.stdSaleRate,
-          Itemgstper: item.Itemgstper || item.itemGstPer,
-          Itemhsn: item.Itemhsn || item.itemHsn,
-          OPENINGBALANCE: item.OPENINGBALANCE || item.openingBalance,
-        });
       }
 
       const productCode = normalizeString(item.productCode);
@@ -461,10 +433,23 @@ export const upsertCompanyProductFromTally = async (req, res) => {
         other5: normalizeString(item.other5),
       };
 
+      // Check for duplicate product (same productCode and companyId)
       const existingProduct = await Product.findOne({
         productCode,
         companyId: company._id,
       });
+
+      if (existingProduct) {
+        results.push({
+          productCode,
+          productName: productName || name,
+          success: false,
+          message: `Product with code "${productCode}" already exists for this company. Duplicate products are not allowed.`,
+          error: 'DUPLICATE_PRODUCT',
+          existingProductId: existingProduct._id,
+        });
+        continue;
+      }
 
       let creatorId = normalizeString(item.createdBy)
         ? item.createdBy
@@ -483,23 +468,11 @@ export const upsertCompanyProductFromTally = async (req, res) => {
       //   continue;
       // }
 
-      let product;
-
-      if (existingProduct) {
-        product = await Product.findByIdAndUpdate(
-          existingProduct._id,
-          {
-            ...baseData,
-            updatedBy: creatorId,
-          },
-          { new: true }
-        );
-      } else {
-        product = await Product.create({
-          ...baseData,
-          createdBy: creatorId,
-        });
-      }
+      // Create new product only if it doesn't exist
+      const product = await Product.create({
+        ...baseData,
+        createdBy: creatorId,
+      });
 
       // Convert to plain object to ensure all fields (including non-schema fields) are included
       const productObj = product.toObject ? product.toObject() : product;
