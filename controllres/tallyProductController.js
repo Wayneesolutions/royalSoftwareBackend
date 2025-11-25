@@ -6,6 +6,18 @@ import { XMLParser } from 'fast-xml-parser';
 const normalizeString = (value, fallback = '') =>
   typeof value === 'string' ? value.trim() : fallback;
 
+const normalizeGuid = (value) => {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const trimmed = value.toString().trim();
+  if (!trimmed) {
+    return null;
+  }
+  // GUID is alphanumeric, return as string
+  return trimmed;
+};
+
 const normalizeNumber = (value, fallback = 0) => {
   const parsed =
     typeof value === 'number'
@@ -106,9 +118,16 @@ const parseIncomingPayload = (req) => {
   throw new Error('INVALID_TALLY_PAYLOAD');
 };
 
+/**
+ * Upsert products from Tally ERP
+ * Accepts single product object or array of products for batch processing
+ * Each product is processed independently - success/failure of one doesn't affect others
+ * Returns results array with status for each product
+ */
 export const upsertCompanyProductFromTally = async (req, res) => {
   try {
     const parsedBody = parseIncomingPayload(req);
+    // Support both single product and array of products
     const payload = Array.isArray(parsedBody) ? parsedBody : [parsedBody];
 
     if (payload.length === 0) {
@@ -121,30 +140,128 @@ export const upsertCompanyProductFromTally = async (req, res) => {
     const results = [];
 
     for (const item of payload) {
-      const guid = normalizeString(item.companyGuid || item.guid || item.companyGUID);
+      const rawGuid = item.companyGuid || item.guid || item.companyGUID;
+      const guid = normalizeGuid(rawGuid);
 
       if (!guid) {
         results.push({
-          productCode: item.productCode,
+          productCode: item.productCode || normalizeString(item.productCode),
+          productName: item.productName || normalizeString(item.productName),
           success: false,
-          message: 'Missing company guid',
+          message: 'Missing company GUID. Please provide a valid company GUID.',
+          error: 'MISSING_GUID',
         });
         continue;
       }
 
-      const company = await Company.findOne({ guid: Number(guid) || guid });
+      // Try to find company by GUID (alphanumeric string)
+      // Escape special regex characters in GUID
+      const escapedGuid = guid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      // Build query conditions to handle both string and numeric GUIDs (backward compatibility)
+      const numericGuid = Number(guid);
+      const isNumeric = !Number.isNaN(numericGuid) && Number.isFinite(numericGuid);
+      
+      // Try multiple query strategies
+      const queryConditions = [
+        { guid: guid }, // Exact string match
+        { guid: { $regex: new RegExp(`^${escapedGuid}$`, 'i') } } // Case-insensitive string match
+      ];
+      
+      // If GUID is numeric, also try as number (for backward compatibility with old data)
+      if (isNumeric) {
+        queryConditions.push(
+          { guid: numericGuid }, // Number match
+          { guid: String(numericGuid) } // String representation of number
+        );
+      }
+      
+      // Try all conditions
+      let company = null;
+      for (const condition of queryConditions) {
+        company = await Company.findOne(condition);
+        if (company) break;
+      }
+      
+      // Final attempt: Use $or query to search all possibilities at once
+      if (!company) {
+        company = await Company.findOne({ $or: queryConditions });
+      }
+      
+      // Last resort: Direct MongoDB query to bypass Mongoose type coercion
+      // This handles cases where GUID might be stored as number in DB but schema expects string
+      if (!company) {
+        try {
+          const collection = Company.collection;
+          const directQuery = {
+            $or: [
+              { guid: guid },
+              { guid: { $regex: new RegExp(`^${escapedGuid}$`, 'i') } }
+            ]
+          };
+          
+          if (isNumeric) {
+            directQuery.$or.push(
+              { guid: numericGuid },
+              { guid: String(numericGuid) }
+            );
+          }
+          
+          const rawDoc = await collection.findOne(directQuery);
+          if (rawDoc) {
+            company = await Company.findById(rawDoc._id);
+          }
+          
+          // Debug: Log if still not found to help diagnose
+          if (!company && process.env.NODE_ENV === 'development') {
+            const allCompanies = await collection.find({}).toArray();
+            console.log(`[DEBUG] Searching for GUID: ${guid} (type: ${typeof guid})`);
+            console.log(`[DEBUG] Total companies in DB: ${allCompanies.length}`);
+            console.log(`[DEBUG] Sample GUIDs in DB:`, allCompanies.slice(0, 5).map(c => ({ 
+              guid: c.guid, 
+              type: typeof c.guid,
+              companyName: c.companyName 
+            })));
+          }
+        } catch (error) {
+          console.error('Error in direct MongoDB query for GUID:', error);
+        }
+      }
+
       if (!company) {
         results.push({
-          productCode: item.productCode,
+          productCode: item.productCode || normalizeString(item.productCode),
+          productName: item.productName || normalizeString(item.productName),
+          guid: guid,
           success: false,
-          message: 'Company not found for provided guid',
+          message: `Company not found for GUID: ${guid}. Please ensure the company is registered in the system with this GUID.`,
+          error: 'COMPANY_NOT_FOUND',
         });
         continue;
+      }
+
+      // Debug: Log incoming payload structure in development
+      if (process.env.NODE_ENV === 'development') {
+        console.log('[DEBUG] Incoming Tally product payload keys:', Object.keys(item));
+        console.log('[DEBUG] Sample payload values:', {
+          name: item.name || item.Name,
+          PArtno: item.PArtno || item.partNo,
+          ItemAlias: item.ItemAlias || item.itemAlias,
+          Description: item.Description || item.description,
+          Category: item.Category || item.category,
+          Stdpurcrate: item.Stdpurcrate || item.stdPurcRate,
+          StdSalerate: item.StdSalerate || item.stdSaleRate,
+          Itemgstper: item.Itemgstper || item.itemGstPer,
+          Itemhsn: item.Itemhsn || item.itemHsn,
+          OPENINGBALANCE: item.OPENINGBALANCE || item.openingBalance,
+        });
       }
 
       const productCode = normalizeString(item.productCode);
       const productName = normalizeString(item.productName);
-      if (!productCode || !productName) {
+      const name = normalizeString(item.name || item.Name || item.productName);
+      
+      if (!productCode || (!productName && !name)) {
         results.push({
           productCode,
           success: false,
@@ -156,20 +273,188 @@ export const upsertCompanyProductFromTally = async (req, res) => {
       const price = normalizeNumber(item.price ?? item.unitPrice, 0);
       const stock = normalizeNumber(item.stock ?? item.quantity, 0);
       const gstRate = normalizeNumber(item.gstRate, 18);
-      const category = normalizeString(item.category, 'General');
+      const category = normalizeString(item.category || item.Category, 'General');
 
+      // Helper function to get value with multiple field name variations
+      const getFieldValue = (fieldVariations, defaultValue = '') => {
+        for (const field of fieldVariations) {
+          if (item[field] !== undefined && item[field] !== null && item[field] !== '') {
+            return item[field];
+          }
+        }
+        return defaultValue;
+      };
+
+      // Helper function to get number value with multiple field name variations
+      const getNumberValue = (fieldVariations, defaultValue = 0) => {
+        for (const field of fieldVariations) {
+          if (item[field] !== undefined && item[field] !== null && item[field] !== '') {
+            return normalizeNumber(item[field], defaultValue);
+          }
+        }
+        return defaultValue;
+      };
+
+      // Helper function to get boolean value with multiple field name variations
+      const getBooleanValue = (fieldVariations, defaultValue = false) => {
+        for (const field of fieldVariations) {
+          if (item[field] !== undefined && item[field] !== null && item[field] !== '') {
+            return normalizeBoolean(item[field], defaultValue);
+          }
+        }
+        return defaultValue;
+      };
+
+      // Stockitem Master Fields - Accepts ALL fields from Tally
+      // This mapping accepts exact Tally field names as specified in Stockitem Master:
+      // Name, PArtno, ItemAlias, Description, Parent, Category, Baseunits, additionalunits,
+      // Stdpurcrate, StdSalerate, Itemgstper, Itemhsn, Itemhsndesc, OPENINGBALANCE,
+      // Itemoprate, CompanyCode, IsfinishItem, Other1, Other2, Other3, Other4, Other5
+      // Priority: Exact Tally field names first, then common variations for flexibility
       const baseData = {
+        // Name - exact Tally field name
+        name: normalizeString(
+          getFieldValue(['Name', 'name', 'NAME', 'productName', 'ProductName', 'PRODUCTNAME']) || 
+          name || productName
+        ),
+        
+        // PArtno - exact Tally field name (note the capital P and A)
+        partNo: normalizeString(
+          getFieldValue(['PArtno', 'partNo', 'PartNo', 'PARTNO', 'partno', 'Part_No', 'PART_NO'])
+        ),
+        
+        // ItemAlias - exact Tally field name
+        itemAlias: normalizeString(
+          getFieldValue(['ItemAlias', 'itemAlias', 'ITEMALIAS', 'itemalias', 'Item_Alias', 'ITEM_ALIAS'])
+        ),
+        
+        // Description - exact Tally field name
+        description: normalizeString(
+          getFieldValue(['Description', 'description', 'DESCRIPTION', 'desc', 'Desc', 'DESC'])
+        ),
+        
+        // Parent - exact Tally field name
+        parent: normalizeString(
+          getFieldValue(['Parent', 'parent', 'PARENT', 'ParentItem', 'parentItem', 'parent_item'])
+        ),
+        
+        // Category - exact Tally field name
+        category: normalizeString(
+          getFieldValue(['Category', 'category', 'CATEGORY', 'cat', 'Cat', 'CAT']) || category || 'General'
+        ),
+        
+        // Baseunits - exact Tally field name
+        baseUnits: normalizeString(
+          getFieldValue(['Baseunits', 'baseUnits', 'baseunits', 'BASEUNITS', 'BaseUnits', 'unit', 'Unit', 'UNIT', 'Base_Units'])
+        ),
+        
+        // additionalunits - exact Tally field name (lowercase 'a')
+        additionalUnits: normalizeString(
+          getFieldValue(['additionalunits', 'additionalUnits', 'AdditionalUnits', 'ADDITIONALUNITS', 'Additional_Units'])
+        ),
+        
+        // Stdpurcrate - exact Tally field name
+        stdPurcRate: getNumberValue(
+          ['Stdpurcrate', 'stdPurcRate', 'StdPurcRate', 'STDPURCRATE', 'stdPurchaseRate', 'StandardPurchaseRate', 'purchaseRate', 'PurchaseRate']
+        ),
+        
+        // StdSalerate - exact Tally field name
+        stdSaleRate: (() => {
+          const value = getNumberValue(
+            ['StdSalerate', 'stdSaleRate', 'StdSaleRate', 'STDSALERATE', 'stdSalesRate', 'StandardSaleRate', 'saleRate', 'SaleRate']
+          );
+          return value || price || 0;
+        })(),
+        
+        // Itemgstper - exact Tally field name
+        itemGstPer: (() => {
+          const value = getNumberValue(
+            ['Itemgstper', 'itemGstPer', 'ItemGstPer', 'ITEMGSTPER', 'gstRate', 'GstRate', 'GSTRATE', 'gst', 'GST', 'GSTPercent', 'gstPercent']
+          );
+          return value || gstRate || 0;
+        })(),
+        
+        // Itemhsn - exact Tally field name
+        itemHsn: normalizeString(
+          getFieldValue(['Itemhsn', 'itemHsn', 'ItemHsn', 'ITEMHSN', 'hsn', 'Hsn', 'HSN', 'HSNCode', 'hsnCode', 'HSN_Code'])
+        ),
+        
+        // Itemhsndesc - exact Tally field name
+        itemHsnDesc: normalizeString(
+          getFieldValue(['Itemhsndesc', 'itemHsnDesc', 'ItemHsnDesc', 'ITEMHSNDESC', 'hsnDesc', 'HsnDesc', 'HSNDESC', 'hsnDescription', 'HsnDescription'])
+        ),
+        
+        // OPENINGBALANCE - exact Tally field name (all caps)
+        openingBalance: getNumberValue(
+          ['OPENINGBALANCE', 'openingBalance', 'OpeningBalance', 'OPENING_BALANCE', 'opening', 'Opening', 'Opening_Balance']
+        ),
+        
+        // Itemoprate - exact Tally field name
+        itemOpRate: getNumberValue(
+          ['Itemoprate', 'itemOpRate', 'ItemOpRate', 'ITEMOPRATE', 'openingRate', 'OpeningRate', 'Opening_Rate']
+        ),
+        
+        // CompanyCode - exact Tally field name
+        companyCode: normalizeString(
+          getFieldValue(['CompanyCode', 'companyCode', 'COMPANYCODE', 'company_code']) || company.companyCode || ''
+        ),
+        
+        // IsfinishItem - exact Tally field name
+        isFinishItem: getBooleanValue(
+          ['IsfinishItem', 'isFinishItem', 'IsFinishItem', 'ISFINISHITEM', 'finishItem', 'FinishItem', 'is_finish_item']
+        ),
+        
+        // Other1 - exact Tally field name
+        other1: normalizeString(
+          getFieldValue(['Other1', 'other1', 'OTHER1', 'otherOne', 'OtherOne', 'other_1'])
+        ),
+        
+        // Other2 - exact Tally field name
+        other2: normalizeString(
+          getFieldValue(['Other2', 'other2', 'OTHER2', 'otherTwo', 'OtherTwo', 'other_2'])
+        ),
+        
+        // Other3 - exact Tally field name
+        other3: normalizeString(
+          getFieldValue(['Other3', 'other3', 'OTHER3', 'otherThree', 'OtherThree', 'other_3'])
+        ),
+        
+        // Other4 - exact Tally field name
+        other4: normalizeString(
+          getFieldValue(['Other4', 'other4', 'OTHER4', 'otherFour', 'OtherFour', 'other_4'])
+        ),
+        
+        // Other5 - exact Tally field name
+        other5: normalizeString(
+          getFieldValue(['Other5', 'other5', 'OTHER5', 'otherFive', 'OtherFive', 'other_5'])
+        ),
+        
+        // Legacy fields for backward compatibility
         productCode,
-        productName,
-        description: normalizeString(item.description),
-        category,
-        subCategory: normalizeString(item.subCategory),
-        brand: normalizeString(item.brand),
-        price,
-        stock,
-        gstRate,
+        productName: productName || name,
+        subCategory: normalizeString(
+          getFieldValue(['subCategory', 'SubCategory', 'SUBCATEGORY', 'subcategory', 'subCat', 'SubCat', 'sub_category'])
+        ),
+        brand: normalizeString(
+          getFieldValue(['brand', 'Brand', 'BRAND', 'brandName', 'BrandName', 'brand_name'])
+        ),
+        price: (() => {
+          // Use stdSaleRate if available, otherwise use price
+          const stdSale = getNumberValue(['StdSalerate', 'stdSaleRate', 'StdSaleRate', 'STDSALERATE']);
+          return stdSale || price || 0;
+        })(),
+        stock: (() => {
+          // Use openingBalance if available, otherwise use stock
+          const opening = getNumberValue(['OPENINGBALANCE', 'openingBalance', 'OpeningBalance']);
+          return opening || stock || 0;
+        })(),
+        gstRate: (() => {
+          // Use itemGstPer if available, otherwise use gstRate
+          const itemGst = getNumberValue(['Itemgstper', 'itemGstPer', 'ItemGstPer', 'ITEMGSTPER']);
+          return itemGst || gstRate || 0;
+        })(),
         companyId: company._id,
-        isActive: normalizeBoolean(item.isActive, true),
+        isActive: normalizeBoolean(item.isActive || item.IsActive || item.ISACTIVE, true),
       };
 
       const existingProduct = await Product.findOne({

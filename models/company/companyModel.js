@@ -47,9 +47,10 @@ const companySchema = new mongoose.Schema({
         trim: true
     },
     guid: { 
-        type: Number, 
+        type: String, 
         required: true, 
-        unique: true 
+        unique: true,
+        trim: true
     },
     contactDetails: {
         email: {

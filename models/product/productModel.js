@@ -2,24 +2,110 @@ import mongoose from "mongoose";
 
 const productSchema = new mongoose.Schema(
   {
-    productCode: {
+    // Stockitem Master Fields
+    name: {
       type: String,
       required: true,
-      unique: true,
       trim: true,
     },
-    productName: {
+    partNo: {
       type: String,
-      required: true,
+      trim: true,
+    },
+    itemAlias: {
+      type: String,
       trim: true,
     },
     description: {
       type: String,
       trim: true,
     },
+    parent: {
+      type: String,
+      trim: true,
+    },
     category: {
       type: String,
       required: true,
+      trim: true,
+    },
+    baseUnits: {
+      type: String,
+      trim: true,
+    },
+    additionalUnits: {
+      type: String,
+      trim: true,
+    },
+    stdPurcRate: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    stdSaleRate: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    itemGstPer: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    itemHsn: {
+      type: String,
+      trim: true,
+    },
+    itemHsnDesc: {
+      type: String,
+      trim: true,
+    },
+    openingBalance: {
+      type: Number,
+      default: 0,
+    },
+    itemOpRate: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    companyCode: {
+      type: String,
+      trim: true,
+    },
+    isFinishItem: {
+      type: Boolean,
+      default: false,
+    },
+    other1: {
+      type: String,
+      trim: true,
+    },
+    other2: {
+      type: String,
+      trim: true,
+    },
+    other3: {
+      type: String,
+      trim: true,
+    },
+    other4: {
+      type: String,
+      trim: true,
+    },
+    other5: {
+      type: String,
+      trim: true,
+    },
+    // Legacy fields (kept for backward compatibility)
+    productCode: {
+      type: String,
+      unique: true,
+      sparse: true,
+      trim: true,
+    },
+    productName: {
+      type: String,
       trim: true,
     },
     subCategory: {
@@ -32,7 +118,6 @@ const productSchema = new mongoose.Schema(
     },
     price: {
       type: Number,
-      required: true,
       min: 0,
     },
     stock: {
@@ -73,11 +158,15 @@ const productSchema = new mongoose.Schema(
 productSchema.index({ companyId: 1, isActive: 1 });
 productSchema.index({ productCode: 1 });
 productSchema.index({ productName: 1 });
+productSchema.index({ name: 1 });
+productSchema.index({ partNo: 1 });
 productSchema.index({ category: 1 });
+productSchema.index({ companyCode: 1 });
+productSchema.index({ itemHsn: 1 });
 
 // Virtual for selling price after discount
 productSchema.virtual('sellingPrice').get(function() {
-  return this.price;
+  return this.stdSaleRate || this.price || 0;
 });
 
 // Method to check if product is in stock
@@ -104,7 +193,7 @@ productSchema.statics.getByCompany = function(companyId, filters = {}) {
     companyId, 
     isActive: true, 
     ...filters 
-  }).sort({ productName: 1 });
+  }).sort({ name: 1, productName: 1 });
 };
 
 const Product = mongoose.model('Product', productSchema);

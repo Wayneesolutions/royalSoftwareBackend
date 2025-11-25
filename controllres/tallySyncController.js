@@ -152,11 +152,12 @@ export const createCompanyFromTally = async (req, res) => {
       creatorId = creator._id;
     }
 
-    const guid = toNumber(payload.guid);
-    if (!Number.isFinite(guid)) {
+    // GUID is alphanumeric string
+    const guid = payload.guid ? String(payload.guid).trim() : null;
+    if (!guid || guid === '') {
       return res.status(400).json({
         success: false,
-        message: 'Invalid guid: must be a numeric value',
+        message: 'Invalid guid: GUID is required and must be a non-empty alphanumeric string',
       });
     }
 

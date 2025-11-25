@@ -11,11 +11,7 @@ const normalizeGuid = (value) => {
     return null;
   }
 
-  const numeric = Number(trimmed);
-  if (!Number.isNaN(numeric)) {
-    return numeric;
-  }
-
+  // GUID is alphanumeric, return as string
   return trimmed;
 };
 
@@ -31,21 +27,22 @@ export const getDealersByCompanyGuid = async (req, res) => {
       });
     }
 
+    // Try exact match first
     let company = await Company.findOne({ guid: normalizedGuid }).lean();
 
-    if (!company && typeof normalizedGuid === 'number') {
-      company = await Company.findOne({ guid: normalizedGuid.toString() }).lean();
-    } else if (!company && typeof normalizedGuid === 'string') {
-      const numericGuid = Number(normalizedGuid);
-      if (!Number.isNaN(numericGuid)) {
-        company = await Company.findOne({ guid: numericGuid }).lean();
-      }
+    // If not found, try case-insensitive search
+    if (!company) {
+      company = await Company.findOne({ 
+        guid: { $regex: new RegExp(`^${normalizedGuid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } 
+      }).lean();
     }
 
     if (!company) {
       return res.status(404).json({
         success: false,
-        message: 'Company not found for provided guid',
+        message: `Company not found for GUID: ${normalizedGuid}. Please ensure the company is registered in the system with this GUID.`,
+        error: 'COMPANY_NOT_FOUND',
+        guid: normalizedGuid,
       });
     }
 

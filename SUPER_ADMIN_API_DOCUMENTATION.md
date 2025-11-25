@@ -271,7 +271,7 @@ POST /create-company
   "companyEmail": "info@royalcompany.com",
   "companyCode": "ROYAL001",
   "maxUser": 100,
-  "guid": 12345,
+  "guid": "ABC12345",
   "contactDetails": {
     "email": "contact@royalcompany.com",
     "phone": "+1234567890",
@@ -299,7 +299,7 @@ POST /create-company
     "companyEmail": "info@royalcompany.com",
     "companyMobile": "+1234567890",
     "maxUser": 100,
-    "guid": 12345,
+    "guid": "ABC12345",
     "isActive": true,
     "createdBy": "super_admin_id",
     "createdAt": "2024-01-01T00:00:00.000Z"
@@ -333,7 +333,7 @@ GET /list-all-companies?page=1&limit=10&search=royal
         "companyEmail": "info@royalcompany.com",
         "companyMobile": "+1234567890",
         "maxUser": 100,
-        "guid": 12345,
+        "guid": "ABC12345",
         "isActive": true,
         "createdBy": {
           "name": "Super Admin",
@@ -419,7 +419,7 @@ DELETE /delete-company/{companyId}
   companyEmail: String (unique, required),
   companyCode: String (unique, required),
   maxUser: Number (required, min: 1),
-  guid: Number (unique, required),
+  guid: String (unique, required, alphanumeric),
   contactDetails: {
     email: String,
     phone: String,
@@ -516,7 +516,7 @@ curl -X POST http://localhost:5000/api/v1/superadmin/login \
 curl -X POST http://localhost:5000/api/v1/superadmin/create-company \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_TOKEN" \
-  -d '{"companyName":"Test Company","companyState":"Maharashtra","companyCountry":"India","companyMobile":"+1234567890","companyEmail":"test@company.com","companyCode":"TEST001","maxUser":50,"guid":12345}'
+  -d '{"companyName":"Test Company","companyState":"Maharashtra","companyCountry":"India","companyMobile":"+1234567890","companyEmail":"test@company.com","companyCode":"TEST001","maxUser":50,"guid":"ABC12345"}'
 
 # 4. Create Admin for Company
 curl -X POST http://localhost:5000/api/v1/superadmin/create-admin \

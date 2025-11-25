@@ -125,8 +125,9 @@ const options = {
               description: 'Maximum number of users allowed'
             },
             guid: {
-              type: 'number',
-              description: 'Tally GUID for synchronization'
+              type: 'string',
+              description: 'Tally GUID for synchronization (alphanumeric string)',
+              example: 'ABC12345'
             },
             contactDetails: {
               type: 'object',
@@ -210,27 +211,156 @@ const options = {
       schemas: {
         TallyProductPayload: {
           type: 'object',
-          required: ['companyGuid', 'productCode', 'productName', 'price'],
+          required: ['companyGuid', 'productCode', 'productName'],
+          description: 'Product payload from Tally ERP. Supports all Stockitem Master fields. Can be sent as a single object or as part of an array for batch processing.',
+          example: {
+            companyGuid: 'ABC12345',
+            productCode: 'PROD001',
+            productName: 'Sample Product',
+            Name: 'Sample Product',
+            PArtno: 'PART001',
+            ItemAlias: 'Sample Alias',
+            Description: 'Product description',
+            Category: 'Electronics',
+            Baseunits: 'PCS',
+            additionalunits: 'BOX',
+            Stdpurcrate: 100.50,
+            StdSalerate: 150.75,
+            Itemgstper: 18,
+            Itemhsn: '12345678',
+            Itemhsndesc: 'HSN Description',
+            OPENINGBALANCE: 100,
+            Itemoprate: 120.00,
+            CompanyCode: 'COMP001',
+            IsfinishItem: true,
+            Other1: 'Custom Field 1',
+            Other2: 'Custom Field 2'
+          },
           properties: {
             companyGuid: {
               type: 'string',
-              description: 'GUID of the company in Tally'
+              description: 'GUID of the company in Tally (alphanumeric string)',
+              example: 'ABC12345'
             },
+            // Stockitem Master Fields
+            Name: {
+              type: 'string',
+              description: 'Product name (Stockitem Master field)',
+              example: 'Product Name'
+            },
+            PArtno: {
+              type: 'string',
+              description: 'Part number (Stockitem Master field)',
+              example: 'PART001'
+            },
+            ItemAlias: {
+              type: 'string',
+              description: 'Item alias (Stockitem Master field)',
+              example: 'Alias Name'
+            },
+            Description: {
+              type: 'string',
+              description: 'Product description (Stockitem Master field)'
+            },
+            Parent: {
+              type: 'string',
+              description: 'Parent item (Stockitem Master field)'
+            },
+            Category: {
+              type: 'string',
+              description: 'Product category (Stockitem Master field)',
+              example: 'Electronics'
+            },
+            Baseunits: {
+              type: 'string',
+              description: 'Base units (Stockitem Master field)',
+              example: 'PCS'
+            },
+            additionalunits: {
+              type: 'string',
+              description: 'Additional units (Stockitem Master field)',
+              example: 'BOX'
+            },
+            Stdpurcrate: {
+              type: 'number',
+              description: 'Standard purchase rate (Stockitem Master field)',
+              example: 100.50
+            },
+            StdSalerate: {
+              type: 'number',
+              description: 'Standard sale rate (Stockitem Master field)',
+              example: 150.75
+            },
+            Itemgstper: {
+              type: 'number',
+              description: 'Item GST percentage (Stockitem Master field)',
+              example: 18
+            },
+            Itemhsn: {
+              type: 'string',
+              description: 'Item HSN code (Stockitem Master field)',
+              example: '12345678'
+            },
+            Itemhsndesc: {
+              type: 'string',
+              description: 'Item HSN description (Stockitem Master field)'
+            },
+            OPENINGBALANCE: {
+              type: 'number',
+              description: 'Opening balance (Stockitem Master field)',
+              example: 100
+            },
+            Itemoprate: {
+              type: 'number',
+              description: 'Item opening rate (Stockitem Master field)',
+              example: 120.00
+            },
+            CompanyCode: {
+              type: 'string',
+              description: 'Company code (Stockitem Master field)'
+            },
+            IsfinishItem: {
+              type: 'boolean',
+              description: 'Is finish item (Stockitem Master field)',
+              example: true
+            },
+            Other1: {
+              type: 'string',
+              description: 'Other field 1 (Stockitem Master field)'
+            },
+            Other2: {
+              type: 'string',
+              description: 'Other field 2 (Stockitem Master field)'
+            },
+            Other3: {
+              type: 'string',
+              description: 'Other field 3 (Stockitem Master field)'
+            },
+            Other4: {
+              type: 'string',
+              description: 'Other field 4 (Stockitem Master field)'
+            },
+            Other5: {
+              type: 'string',
+              description: 'Other field 5 (Stockitem Master field)'
+            },
+            // Legacy/Alternative field names (for backward compatibility)
             productCode: {
               type: 'string',
-              description: 'Unique product code'
+              description: 'Unique product code (required)',
+              example: 'PROD001'
             },
             productName: {
               type: 'string',
-              description: 'Product name'
+              description: 'Product name (alternative to Name field)'
             },
             description: {
               type: 'string',
-              description: 'Product description'
+              description: 'Product description (alternative to Description field)'
             },
             category: {
               type: 'string',
-              description: 'Product category'
+              description: 'Product category (alternative to Category field)'
             },
             subCategory: {
               type: 'string',
@@ -242,19 +372,23 @@ const options = {
             },
             price: {
               type: 'number',
-              description: 'Unit price of the product'
+              description: 'Unit price of the product (alternative to StdSalerate)',
+              example: 150.75
             },
             stock: {
               type: 'number',
-              description: 'Current stock quantity'
+              description: 'Current stock quantity (alternative to OPENINGBALANCE)',
+              example: 100
             },
             gstRate: {
               type: 'number',
-              description: 'GST rate for the product'
+              description: 'GST rate for the product (alternative to Itemgstper)',
+              example: 18
             },
             isActive: {
               type: 'boolean',
-              description: 'Whether the product is active'
+              description: 'Whether the product is active',
+              default: true
             }
           }
         },
@@ -264,7 +398,8 @@ const options = {
           properties: {
             companyGuid: {
               type: 'string',
-              description: 'GUID of the company in Tally'
+              description: 'GUID of the company in Tally (alphanumeric string)',
+              example: 'ABC12345'
             },
             name: {
               type: 'string'
@@ -388,18 +523,42 @@ const options = {
         },
         TallyProduct: {
           type: 'object',
+          description: 'Product response with all Stockitem Master fields',
           properties: {
             _id: { type: 'string' },
-            productCode: { type: 'string' },
-            productName: { type: 'string' },
-            description: { type: 'string' },
-            category: { type: 'string' },
-            subCategory: { type: 'string' },
-            brand: { type: 'string' },
-            price: { type: 'number' },
-            stock: { type: 'number' },
-            gstRate: { type: 'number' },
-            isActive: { type: 'boolean' },
+            // Stockitem Master Fields
+            name: { type: 'string', description: 'Product name' },
+            partNo: { type: 'string', description: 'Part number' },
+            itemAlias: { type: 'string', description: 'Item alias' },
+            description: { type: 'string', description: 'Product description' },
+            parent: { type: 'string', description: 'Parent item' },
+            category: { type: 'string', description: 'Product category' },
+            baseUnits: { type: 'string', description: 'Base units' },
+            additionalUnits: { type: 'string', description: 'Additional units' },
+            stdPurcRate: { type: 'number', description: 'Standard purchase rate' },
+            stdSaleRate: { type: 'number', description: 'Standard sale rate' },
+            itemGstPer: { type: 'number', description: 'Item GST percentage' },
+            itemHsn: { type: 'string', description: 'Item HSN code' },
+            itemHsnDesc: { type: 'string', description: 'Item HSN description' },
+            openingBalance: { type: 'number', description: 'Opening balance' },
+            itemOpRate: { type: 'number', description: 'Item opening rate' },
+            companyCode: { type: 'string', description: 'Company code' },
+            isFinishItem: { type: 'boolean', description: 'Is finish item' },
+            other1: { type: 'string', description: 'Other field 1' },
+            other2: { type: 'string', description: 'Other field 2' },
+            other3: { type: 'string', description: 'Other field 3' },
+            other4: { type: 'string', description: 'Other field 4' },
+            other5: { type: 'string', description: 'Other field 5' },
+            // Legacy fields
+            productCode: { type: 'string', description: 'Product code' },
+            productName: { type: 'string', description: 'Product name' },
+            subCategory: { type: 'string', description: 'Sub category' },
+            brand: { type: 'string', description: 'Brand' },
+            price: { type: 'number', description: 'Price' },
+            stock: { type: 'number', description: 'Stock quantity' },
+            gstRate: { type: 'number', description: 'GST rate' },
+            companyId: { type: 'string', description: 'Company ID' },
+            isActive: { type: 'boolean', description: 'Is active' },
             createdAt: { type: 'string', format: 'date-time' },
             updatedAt: { type: 'string', format: 'date-time' }
           }

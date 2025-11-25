@@ -247,7 +247,7 @@ GET /api/v1/tally/companies
       "companyCode": "COMP001",
       "companyEmail": "info@company.com",
       "companyMobile": "+1234567890",
-      "guid": 12345,
+      "guid": "ABC12345",
       "tallySettings": {
         "isConnected": false,
         "lastSync": null,

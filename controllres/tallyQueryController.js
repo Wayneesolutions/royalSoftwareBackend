@@ -13,11 +13,7 @@ const normalizeGuid = (value) => {
     return null;
   }
 
-  const numeric = Number(trimmed);
-  if (!Number.isNaN(numeric)) {
-    return numeric;
-  }
-
+  // GUID is alphanumeric, return as string
   return trimmed;
 };
 
@@ -27,15 +23,14 @@ const findCompanyByGuid = async (rawGuid) => {
     return null;
   }
 
+  // Try exact match first
   let company = await Company.findOne({ guid: normalizedGuid }).lean();
 
-  if (!company && typeof normalizedGuid === 'number') {
-    company = await Company.findOne({ guid: normalizedGuid.toString() }).lean();
-  } else if (!company && typeof normalizedGuid === 'string') {
-    const numericGuid = Number(normalizedGuid);
-    if (!Number.isNaN(numericGuid)) {
-      company = await Company.findOne({ guid: numericGuid }).lean();
-    }
+  // If not found, try case-insensitive search
+  if (!company) {
+    company = await Company.findOne({ 
+      guid: { $regex: new RegExp(`^${normalizedGuid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } 
+    }).lean();
   }
 
   return company;

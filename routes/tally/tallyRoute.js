@@ -45,8 +45,9 @@ const tallyRoute = express.Router();
  *               - maxUser
  *             properties:
  *               guid:
- *                 type: integer
- *                 example: 12345
+ *                 type: string
+ *                 description: Company GUID (alphanumeric string)
+ *                 example: 'ABC12345'
  *               companyCode:
  *                 type: string
  *                 example: ROYAL01
@@ -132,26 +133,139 @@ tallyRoute.get('/companies', listCompaniesForTally);
  *   post:
  *     summary: Sync products from Tally
  *     description: >
- *       Accepts product information pushed from Tally ERP (single product or array) and upserts
- *       them into Royal Software. Products are linked to a company via the company's numeric GUID.
+ *       Accepts product information pushed from Tally ERP. Can accept a single product object or an array
+ *       of multiple products for batch processing. All products are upserted (created or updated) into
+ *       Royal Software. Products are linked to a company via the company's alphanumeric GUID.
+ *       
+ *       Supports all Stockitem Master fields: Name, PArtno, ItemAlias, Description, Parent, Category,
+ *       Baseunits, additionalunits, Stdpurcrate, StdSalerate, Itemgstper, Itemhsn, Itemhsndesc,
+ *       OPENINGBALANCE, Itemoprate, CompanyCode, IsfinishItem, Other1-Other5.
+ *       
+ *       When sending multiple products, each product is processed independently. The response includes
+ *       a results array with the status of each product (success or failure).
  *     tags: [Tally]
  *     requestBody:
  *       required: true
+ *       description: Single product object or array of product objects
  *       content:
  *         application/json:
  *           schema:
  *             oneOf:
  *               - $ref: '#/components/schemas/TallyProductPayload'
  *               - type: array
+ *                 description: Array of products for batch processing
  *                 items:
  *                   $ref: '#/components/schemas/TallyProductPayload'
+ *                 example:
+ *                   - companyGuid: "ABC12345"
+ *                     productCode: "PROD001"
+ *                     productName: "Product 1"
+ *                     Name: "Product 1"
+ *                     Category: "Electronics"
+ *                     StdSalerate: 150.75
+ *                     Itemgstper: 18
+ *                   - companyGuid: "ABC12345"
+ *                     productCode: "PROD002"
+ *                     productName: "Product 2"
+ *                     Name: "Product 2"
+ *                     Category: "Accessories"
+ *                     StdSalerate: 200.50
+ *                     Itemgstper: 18
  *     responses:
  *       200:
- *         description: Products synced successfully
+ *         description: All products synced successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 results:
+ *                   type: array
+ *                   description: Array of results, one for each product processed
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       success:
+ *                         type: boolean
+ *                       product:
+ *                         $ref: '#/components/schemas/TallyProduct'
+ *             example:
+ *               success: true
+ *               results:
+ *                 - success: true
+ *                   product:
+ *                     _id: "69205108354a88c52269d9c4"
+ *                     name: "Product 1"
+ *                     productCode: "PROD001"
+ *                     category: "Electronics"
+ *                     stdSaleRate: 150.75
  *       207:
- *         description: Partial success (some products processed, others failed)
+ *         description: Partial success - some products processed successfully, others failed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: false
+ *                 results:
+ *                   type: array
+ *                   items:
+ *                     oneOf:
+ *                       - type: object
+ *                         properties:
+ *                           success:
+ *                             type: boolean
+ *                           product:
+ *                             $ref: '#/components/schemas/TallyProduct'
+ *                       - type: object
+ *                         properties:
+ *                           success:
+ *                             type: boolean
+ *                           productCode:
+ *                             type: string
+ *                           message:
+ *                             type: string
+ *                           error:
+ *                             type: string
+ *             example:
+ *               success: false
+ *               results:
+ *                 - success: true
+ *                   product:
+ *                     _id: "69205108354a88c52269d9c4"
+ *                     name: "Product 1"
+ *                     productCode: "PROD001"
+ *                 - success: false
+ *                   productCode: "PROD002"
+ *                   message: "Company not found for GUID: XYZ123"
+ *                   error: "COMPANY_NOT_FOUND"
  *       400:
- *         description: Validation error or missing fields
+ *         description: Validation error or missing required fields
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 results:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       success:
+ *                         type: boolean
+ *                       message:
+ *                         type: string
+ *                       error:
+ *                         type: string
  *       500:
  *         description: Server error while syncing products
  */
@@ -170,7 +284,7 @@ tallyRoute.post('/products', upsertCompanyProductFromTally);
  *         required: true
  *         schema:
  *           type: string
- *         description: Company GUID as provided by Tally
+ *         description: Company GUID as provided by Tally (alphanumeric string)
  *     responses:
  *       200:
  *         description: Products returned successfully
@@ -196,7 +310,7 @@ tallyRoute.get('/companies/:guid/products', listProductsByCompanyGuid);
  *         required: true
  *         schema:
  *           type: string
- *         description: Company GUID as provided by Tally
+ *         description: Company GUID as provided by Tally (alphanumeric string)
  *     responses:
  *       200:
  *         description: Users returned successfully
@@ -222,7 +336,7 @@ tallyRoute.get('/companies/:guid/users', listUsersByCompanyGuid);
  *         required: true
  *         schema:
  *           type: string
- *         description: Company GUID as provided by Tally
+ *         description: Company GUID as provided by Tally (alphanumeric string)
  *     responses:
  *       200:
  *         description: Orders returned successfully

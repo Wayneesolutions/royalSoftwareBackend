@@ -26,11 +26,7 @@ const normalizeGuid = (value) => {
     return null;
   }
 
-  const numeric = Number(trimmed);
-  if (!Number.isNaN(numeric)) {
-    return numeric;
-  }
-
+  // GUID is alphanumeric, return as string
   return trimmed;
 };
 
@@ -185,22 +181,23 @@ export const upsertUserFromTally = async (req, res) => {
         continue;
       }
 
+      // Try exact match first
       let company = await Company.findOne({ guid: normalizedGuid }).lean();
 
-      if (!company && typeof normalizedGuid === 'number') {
-        company = await Company.findOne({ guid: normalizedGuid.toString() }).lean();
-      } else if (!company && typeof normalizedGuid === 'string') {
-        const numericGuid = Number(normalizedGuid);
-        if (!Number.isNaN(numericGuid)) {
-          company = await Company.findOne({ guid: numericGuid }).lean();
-        }
+      // If not found, try case-insensitive search
+      if (!company) {
+        company = await Company.findOne({ 
+          guid: { $regex: new RegExp(`^${normalizedGuid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } 
+        }).lean();
       }
 
       if (!company) {
         results.push({
-          userName: item.userName,
+          userName: item.userName || normalizeString(item.userName),
+          guid: normalizedGuid,
           success: false,
-          message: 'Company not found for provided guid',
+          message: `Company not found for GUID: ${normalizedGuid}. Please ensure the company is registered in the system with this GUID.`,
+          error: 'COMPANY_NOT_FOUND',
         });
         continue;
       }

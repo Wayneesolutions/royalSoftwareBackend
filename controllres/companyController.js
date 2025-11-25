@@ -86,24 +86,32 @@ export const createCompany = async (req, res) => {
       delete req.body.gstin;
     }
 
-    // If guid not provided, generate a unique 5-digit GUID (numeric). If provided, coerce to number/string and accept.
+    // If guid not provided, generate a unique alphanumeric GUID. If provided, accept as string (alphanumeric).
     if (!req.body.guid) {
       let candidate;
       let attempts = 0;
       do {
-        // 5-digit number between 10000 and 99999
-        candidate = Math.floor(10000 + Math.random() * 90000);
+        // Generate alphanumeric GUID: 8 characters (letters and numbers)
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        candidate = '';
+        for (let i = 0; i < 8; i++) {
+          candidate += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
         attempts += 1;
         // Avoid infinite loops
         if (attempts > 10) break;
       } while (await Company.exists({ guid: candidate }));
       req.body.guid = candidate;
     } else {
-      // Accept guid from frontend; support both numeric or string
-      const incoming = req.body.guid;
-      // If numeric-like, store as number; else store as string
-      const numVal = Number(incoming);
-      req.body.guid = Number.isFinite(numVal) && String(incoming).trim() !== '' ? numVal : String(incoming).trim();
+      // Accept guid from frontend as alphanumeric string
+      const incoming = String(req.body.guid).trim();
+      if (!incoming) {
+        return res.status(400).json({
+          success: false,
+          message: 'GUID cannot be empty'
+        });
+      }
+      req.body.guid = incoming;
     }
 
     // Check if companyCode exists

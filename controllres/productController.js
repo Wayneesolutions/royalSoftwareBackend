@@ -5,10 +5,32 @@ import Company from '../models/company/companyModel.js';
 export const createProduct = async (req, res) => {
   try {
     const {
+      // Stockitem Master Fields
+      name,
+      partNo,
+      itemAlias,
+      description,
+      parent,
+      category,
+      baseUnits,
+      additionalUnits,
+      stdPurcRate,
+      stdSaleRate,
+      itemGstPer,
+      itemHsn,
+      itemHsnDesc,
+      openingBalance,
+      itemOpRate,
+      companyCode,
+      isFinishItem,
+      other1,
+      other2,
+      other3,
+      other4,
+      other5,
+      // Legacy fields
       productCode,
       productName,
-      description,
-      category,
       subCategory,
       brand,
       price,
@@ -37,18 +59,43 @@ export const createProduct = async (req, res) => {
     }
 
     const product = new Product({
-      productCode,
-      productName,
+      // Stockitem Master Fields
+      name: name || productName || '',
+      partNo,
+      itemAlias,
       description,
+      parent,
       category,
+      baseUnits,
+      additionalUnits,
+      stdPurcRate: typeof stdPurcRate === 'number' ? stdPurcRate : parseFloat(stdPurcRate || 0),
+      stdSaleRate: typeof stdSaleRate === 'number' ? stdSaleRate : parseFloat(stdSaleRate || 0),
+      itemGstPer: (() => {
+        const parsed = typeof itemGstPer === 'number' ? itemGstPer : parseFloat(itemGstPer ?? '');
+        return Number.isFinite(parsed) ? parsed : (gstRate ? (typeof gstRate === 'number' ? gstRate : parseFloat(gstRate ?? '')) : 0);
+      })(),
+      itemHsn,
+      itemHsnDesc,
+      openingBalance: typeof openingBalance === 'number' ? openingBalance : parseFloat(openingBalance || 0),
+      itemOpRate: typeof itemOpRate === 'number' ? itemOpRate : parseFloat(itemOpRate || 0),
+      companyCode,
+      isFinishItem: typeof isFinishItem === 'boolean' ? isFinishItem : false,
+      other1,
+      other2,
+      other3,
+      other4,
+      other5,
+      // Legacy fields
+      productCode,
+      productName: productName || name,
       subCategory,
       brand,
-      price: typeof price === 'number' ? price : parseFloat(price || 0),
+      price: typeof price === 'number' ? price : parseFloat(price || stdSaleRate || 0),
       stock: typeof stock === 'number' ? stock : parseInt(stock || 0, 10),
       gstRate: (() => {
         const parsed =
           typeof gstRate === 'number' ? gstRate : parseFloat(gstRate ?? '');
-        return Number.isFinite(parsed) ? parsed : 18;
+        return Number.isFinite(parsed) ? parsed : (itemGstPer ? (typeof itemGstPer === 'number' ? itemGstPer : parseFloat(itemGstPer ?? '')) : 18);
       })(),
       companyId,
       createdBy
@@ -109,6 +156,9 @@ export const getProducts = async (req, res) => {
       filter.$or = [
         { productCode: { $regex: search, $options: 'i' } },
         { productName: { $regex: search, $options: 'i' } },
+        { name: { $regex: search, $options: 'i' } },
+        { partNo: { $regex: search, $options: 'i' } },
+        { itemAlias: { $regex: search, $options: 'i' } },
         { description: { $regex: search, $options: 'i' } }
       ];
     }
@@ -127,7 +177,7 @@ export const getProducts = async (req, res) => {
     const products = await Product.find(filter)
       .populate('createdBy', 'name role')
       .populate('updatedBy', 'name role')
-      .sort({ productName: 1 })
+      .sort({ name: 1, productName: 1 })
       .skip(skip)
       .limit(parseInt(limit));
 
@@ -198,9 +248,31 @@ export const updateProduct = async (req, res) => {
   try {
     const { productId } = req.params;
     const {
-      productName,
+      // Stockitem Master Fields
+      name,
+      partNo,
+      itemAlias,
       description,
+      parent,
       category,
+      baseUnits,
+      additionalUnits,
+      stdPurcRate,
+      stdSaleRate,
+      itemGstPer,
+      itemHsn,
+      itemHsnDesc,
+      openingBalance,
+      itemOpRate,
+      companyCode,
+      isFinishItem,
+      other1,
+      other2,
+      other3,
+      other4,
+      other5,
+      // Legacy fields
+      productName,
       subCategory,
       brand,
       price,
@@ -215,9 +287,47 @@ export const updateProduct = async (req, res) => {
       updatedBy: userId
     };
 
-    if (productName !== undefined) updateData.productName = productName;
+    // Stockitem Master Fields
+    if (name !== undefined) updateData.name = name;
+    if (partNo !== undefined) updateData.partNo = partNo;
+    if (itemAlias !== undefined) updateData.itemAlias = itemAlias;
     if (description !== undefined) updateData.description = description;
+    if (parent !== undefined) updateData.parent = parent;
     if (category !== undefined) updateData.category = category;
+    if (baseUnits !== undefined) updateData.baseUnits = baseUnits;
+    if (additionalUnits !== undefined) updateData.additionalUnits = additionalUnits;
+    if (stdPurcRate !== undefined) {
+      updateData.stdPurcRate = typeof stdPurcRate === 'number' ? stdPurcRate : parseFloat(stdPurcRate);
+    }
+    if (stdSaleRate !== undefined) {
+      updateData.stdSaleRate = typeof stdSaleRate === 'number' ? stdSaleRate : parseFloat(stdSaleRate);
+    }
+    if (itemGstPer !== undefined) {
+      const parsed = typeof itemGstPer === 'number' ? itemGstPer : parseFloat(itemGstPer);
+      if (!Number.isNaN(parsed)) updateData.itemGstPer = parsed;
+    }
+    if (itemHsn !== undefined) updateData.itemHsn = itemHsn;
+    if (itemHsnDesc !== undefined) updateData.itemHsnDesc = itemHsnDesc;
+    if (openingBalance !== undefined) {
+      updateData.openingBalance = typeof openingBalance === 'number' ? openingBalance : parseFloat(openingBalance);
+    }
+    if (itemOpRate !== undefined) {
+      const parsed = typeof itemOpRate === 'number' ? itemOpRate : parseFloat(itemOpRate);
+      if (!Number.isNaN(parsed)) updateData.itemOpRate = parsed;
+    }
+    if (companyCode !== undefined) updateData.companyCode = companyCode;
+    if (isFinishItem !== undefined) updateData.isFinishItem = isFinishItem;
+    if (other1 !== undefined) updateData.other1 = other1;
+    if (other2 !== undefined) updateData.other2 = other2;
+    if (other3 !== undefined) updateData.other3 = other3;
+    if (other4 !== undefined) updateData.other4 = other4;
+    if (other5 !== undefined) updateData.other5 = other5;
+    
+    // Legacy fields
+    if (productName !== undefined) {
+      updateData.productName = productName;
+      if (!updateData.name) updateData.name = productName;
+    }
     if (subCategory !== undefined) updateData.subCategory = subCategory;
     if (brand !== undefined) updateData.brand = brand;
     if (price !== undefined) {
@@ -231,6 +341,7 @@ export const updateProduct = async (req, res) => {
       const parsedGst = typeof gstRate === 'number' ? gstRate : parseFloat(gstRate);
       if (!Number.isNaN(parsedGst)) {
         updateData.gstRate = parsedGst;
+        if (!updateData.itemGstPer) updateData.itemGstPer = parsedGst;
       }
     }
 
