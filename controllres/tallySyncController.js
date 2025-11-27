@@ -121,6 +121,68 @@ const parseIncomingPayload = (req) => {
   throw new Error('INVALID_TALLY_PAYLOAD');
 };
 
+const buildGuidQueryConditions = (guid, escapedGuid, isNumeric, numericGuid) => {
+  const conditions = [
+    { guid },
+    { guid: { $regex: new RegExp(`^${escapedGuid}$`, 'i') } },
+  ];
+
+  if (isNumeric) {
+    conditions.push({ guid: numericGuid }, { guid: String(numericGuid) });
+  }
+
+  return conditions;
+};
+
+const findExistingCompanyByGuid = async (rawGuid) => {
+  const guid = rawGuid ? String(rawGuid).trim() : null;
+  if (!guid) {
+    return {
+      guid: null,
+      company: null,
+      error: 'MISSING_GUID',
+      message: 'Company GUID is required.',
+    };
+  }
+
+  const escapedGuid = guid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const numericGuid = Number(guid);
+  const isNumeric = Number.isFinite(numericGuid);
+  const queryConditions = buildGuidQueryConditions(guid, escapedGuid, isNumeric, numericGuid);
+
+  let company = null;
+  for (const condition of queryConditions) {
+    company = await Company.findOne(condition);
+    if (company) break;
+  }
+
+  if (!company) {
+    company = await Company.findOne({ $or: queryConditions });
+  }
+
+  if (!company) {
+    try {
+      const rawDoc = await Company.collection.findOne({ $or: queryConditions });
+      if (rawDoc) {
+        company = await Company.findById(rawDoc._id);
+      }
+    } catch (error) {
+      console.error('Direct Mongo query error for GUID lookup:', error);
+    }
+  }
+
+  if (!company) {
+    return {
+      guid,
+      company: null,
+      error: 'COMPANY_NOT_FOUND',
+      message: `Company not found for GUID: ${guid}`,
+    };
+  }
+
+  return { guid, company };
+};
+
 /**
  * Create companies from Tally ERP
  * Accepts single company object or array of companies for batch processing
@@ -349,6 +411,303 @@ export const createCompanyFromTally = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Failed to sync companies from Tally',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
+};
+
+export const updateCompanyFromTally = async (req, res) => {
+  try {
+    const parsedBody = parseIncomingPayload(req);
+    const payload = Array.isArray(parsedBody) ? parsedBody : [parsedBody];
+
+    if (!payload.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'Payload cannot be empty',
+      });
+    }
+
+    const results = [];
+
+    for (const item of payload) {
+      const guidSource = item.guid || item.companyGuid || item.companyGUID;
+      const { company, guid, error, message } = await findExistingCompanyByGuid(guidSource);
+      if (!company) {
+        results.push({
+          guid,
+          success: false,
+          message: message || 'Company not found for provided GUID.',
+          error: error || 'COMPANY_NOT_FOUND',
+        });
+        continue;
+      }
+
+      const updates = {};
+
+      if (!isBlank(item.companyName)) {
+        updates.companyName = String(item.companyName).trim();
+      }
+      if (!isBlank(item.companyState)) {
+        updates.companyState = String(item.companyState).trim();
+      }
+      if (!isBlank(item.companyCountry)) {
+        updates.companyCountry = String(item.companyCountry).trim();
+      }
+      if (!isBlank(item.companyMobile)) {
+        updates.companyMobile = String(item.companyMobile).trim();
+      }
+      if (!isBlank(item.companyEmail)) {
+        updates.companyEmail = String(item.companyEmail).trim().toLowerCase();
+      }
+      if (!isBlank(item.maxUser)) {
+        const maxUser = toNumber(item.maxUser);
+        if (!Number.isFinite(maxUser) || maxUser < 1) {
+          results.push({
+            guid,
+            success: false,
+            message: 'Invalid maxUser: must be a positive number',
+            error: 'INVALID_MAX_USER',
+          });
+          continue;
+        }
+        updates.maxUser = maxUser;
+      }
+
+      if (!isBlank(item.companyCode)) {
+        const normalizedCode = String(item.companyCode).trim().toUpperCase();
+        if (normalizedCode !== company.companyCode) {
+          const duplicateCode = await Company.findOne({
+            companyCode: normalizedCode,
+            _id: { $ne: company._id },
+          });
+          if (duplicateCode) {
+            results.push({
+              guid,
+              success: false,
+              message: `Company code ${normalizedCode} already exists`,
+              error: 'DUPLICATE_COMPANY_CODE',
+            });
+            continue;
+          }
+          updates.companyCode = normalizedCode;
+        }
+      }
+
+      if (!isBlank(item.tallySerialId)) {
+        const serial = String(item.tallySerialId).trim();
+        if (serial !== company.tallySerialId) {
+          const duplicateSerial = await Company.findOne({
+            tallySerialId: serial,
+            _id: { $ne: company._id },
+          });
+          if (duplicateSerial) {
+            results.push({
+              guid,
+              success: false,
+              message: `Tally serial ID ${serial} already exists`,
+              error: 'DUPLICATE_TALLY_SERIAL',
+            });
+            continue;
+          }
+          updates.tallySerialId = serial;
+        }
+      }
+
+      if (!isBlank(item.gstin)) {
+        updates.gstin = String(item.gstin).trim();
+      }
+
+      if (!isBlank(item.guid) && String(item.guid).trim() !== company.guid) {
+        const newGuid = String(item.guid).trim();
+        const duplicateGuid = await Company.findOne({
+          guid: newGuid,
+          _id: { $ne: company._id },
+        });
+        if (duplicateGuid) {
+          results.push({
+            guid,
+            success: false,
+            message: `GUID ${newGuid} already exists`,
+            error: 'DUPLICATE_GUID',
+          });
+          continue;
+        }
+        updates.guid = newGuid;
+      }
+
+      const contactDetails = cleanContactDetails(item.contactDetails);
+      if (contactDetails) {
+        updates.contactDetails = contactDetails;
+      }
+
+      if (item.settings && typeof item.settings === 'object') {
+        updates.settings = {
+          allowSelfApproval: item.settings.allowSelfApproval ?? company.settings?.allowSelfApproval ?? true,
+          requireOrderApproval: item.settings.requireOrderApproval ?? company.settings?.requireOrderApproval ?? true,
+          maxOrderAmount: toNumber(item.settings.maxOrderAmount) || company.settings?.maxOrderAmount || 100000,
+        };
+      }
+
+      if (Object.keys(updates).length === 0) {
+        results.push({
+          guid,
+          success: false,
+          message: 'No updatable fields were provided in the payload',
+          error: 'EMPTY_UPDATE',
+        });
+        continue;
+      }
+
+      const updatedCompany = await Company.findByIdAndUpdate(
+        company._id,
+        { $set: updates },
+        { new: true }
+      );
+
+      results.push({
+        success: true,
+        data: updatedCompany,
+      });
+    }
+
+    const failures = results.filter((item) => !item.success);
+    const status = failures.length === results.length ? 400 : failures.length > 0 ? 207 : 200;
+
+    return res.status(status).json({
+      success: failures.length === 0,
+      results,
+    });
+  } catch (error) {
+    console.error('Error updating companies from Tally:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update companies from Tally',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
+};
+
+export const deleteCompanyFromTally = async (req, res) => {
+  try {
+    const parsedBody = parseIncomingPayload(req);
+    const payload = Array.isArray(parsedBody) ? parsedBody : [parsedBody];
+
+    if (!payload.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'Payload cannot be empty',
+      });
+    }
+
+    const results = [];
+
+    for (const item of payload) {
+      const guidSource = item.guid || item.companyGuid || item.companyGUID;
+      const { company, guid, message, error } = await findExistingCompanyByGuid(guidSource);
+
+      if (!company) {
+        results.push({
+          guid,
+          success: false,
+          message: message || 'Company not found for provided GUID.',
+          error: error || 'COMPANY_NOT_FOUND',
+        });
+        continue;
+      }
+
+      await Company.deleteOne({ _id: company._id });
+
+      results.push({
+        success: true,
+        guid: company.guid,
+        companyId: company._id,
+        companyCode: company.companyCode,
+      });
+    }
+
+    const failures = results.filter((item) => !item.success);
+    const status =
+      failures.length === results.length
+        ? 404
+        : failures.length > 0
+          ? 207
+          : 200;
+
+    return res.status(status).json({
+      success: failures.length === 0,
+      results,
+    });
+  } catch (error) {
+    console.error('Error deleting companies from Tally:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to delete companies',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
+};
+
+export const searchCompaniesForTally = async (req, res) => {
+  try {
+    const {
+      query,
+      companyCode,
+      guid,
+      tallySerialId,
+      limit = 50,
+      isActive,
+    } = req.query;
+
+    const filter = {};
+    const orFilters = [];
+
+    if (guid) {
+      filter.guid = guid;
+    }
+
+    if (companyCode) {
+      filter.companyCode = new RegExp(`^${companyCode}$`, 'i');
+    }
+
+    if (tallySerialId) {
+      filter.tallySerialId = tallySerialId;
+    }
+
+    if (query) {
+      const regex = new RegExp(query, 'i');
+      orFilters.push(
+        { companyName: regex },
+        { companyCode: regex },
+        { companyEmail: regex },
+        { guid: regex },
+        { tallySerialId: regex }
+      );
+    }
+
+    if (orFilters.length) {
+      filter.$or = orFilters;
+    }
+
+    if (isActive !== undefined) {
+      filter.isActive = ['true', '1', true].includes(isActive);
+    }
+
+    const limitValue = Math.min(Number(limit) || 50, 200);
+    const companies = await Company.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(limitValue);
+
+    return res.json({
+      success: true,
+      count: companies.length,
+      data: companies,
+    });
+  } catch (error) {
+    console.error('Error searching companies for Tally:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to search companies',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
   }

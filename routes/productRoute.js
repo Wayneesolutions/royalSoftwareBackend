@@ -42,9 +42,20 @@ const productRoute = express.Router();
  *             properties:
  *               productCode:
  *                 type: string
+ *                 description: Unique product identifier per company
  *               productName:
  *                 type: string
+ *                 description: Display name shown to users
+ *               name:
+ *                 type: string
+ *                 description: Optional internal name (defaults to productName)
+ *               partNo:
+ *                 type: string
+ *               itemAlias:
+ *                 type: string
  *               description:
+ *                 type: string
+ *               parent:
  *                 type: string
  *               category:
  *                 type: string
@@ -52,10 +63,47 @@ const productRoute = express.Router();
  *                 type: string
  *               brand:
  *                 type: string
+ *               baseUnits:
+ *                 type: string
+ *               additionalUnits:
+ *                 type: string
+ *               stdPurcRate:
+ *                 type: number
+ *               stdSaleRate:
+ *                 type: number
  *               price:
  *                 type: number
  *               stock:
+ *                 type: integer
+ *               itemGstPer:
  *                 type: number
+ *               gstRate:
+ *                 type: number
+ *               itemHsn:
+ *                 type: string
+ *               itemHsnDesc:
+ *                 type: string
+ *               openingBalance:
+ *                 type: number
+ *               itemOpRate:
+ *                 type: number
+ *               companyCode:
+ *                 type: string
+ *                 description: Optional override; defaults to the auth user's company code
+ *               isFinishItem:
+ *                 type: boolean
+ *               isActive:
+ *                 type: boolean
+ *               other1:
+ *                 type: string
+ *               other2:
+ *                 type: string
+ *               other3:
+ *                 type: string
+ *               other4:
+ *                 type: string
+ *               other5:
+ *                 type: string
  *     responses:
  *       201:
  *         description: Product created successfully
@@ -97,6 +145,18 @@ productRoute.post('/', requireAuth, authorizeRoles(['admin', 'zonal', 'rsm', 'as
  *           type: string
  *       - in: query
  *         name: isActive
+ *         schema:
+ *           type: boolean
+ *       - in: query
+ *         name: brand
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: parent
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: isFinishItem
  *         schema:
  *           type: boolean
  *     responses:
@@ -192,18 +252,66 @@ productRoute.get('/:productId', requireAuth, authorizeRoles(['admin', 'zonal', '
  *           schema:
  *             type: object
  *             properties:
+ *               productCode:
+ *                 type: string
  *               productName:
+ *                 type: string
+ *               name:
+ *                 type: string
+ *               partNo:
+ *                 type: string
+ *               itemAlias:
  *                 type: string
  *               description:
  *                 type: string
+ *               parent:
+ *                 type: string
  *               category:
  *                 type: string
+ *               subCategory:
+ *                 type: string
+ *               brand:
+ *                 type: string
+ *               baseUnits:
+ *                 type: string
+ *               additionalUnits:
+ *                 type: string
+ *               stdPurcRate:
+ *                 type: number
+ *               stdSaleRate:
+ *                 type: number
  *               price:
  *                 type: number
  *               stock:
- *                 type: object
- *               isAvailable:
+ *                 type: integer
+ *               itemGstPer:
+ *                 type: number
+ *               gstRate:
+ *                 type: number
+ *               itemHsn:
+ *                 type: string
+ *               itemHsnDesc:
+ *                 type: string
+ *               openingBalance:
+ *                 type: number
+ *               itemOpRate:
+ *                 type: number
+ *               companyCode:
+ *                 type: string
+ *               isFinishItem:
  *                 type: boolean
+ *               isActive:
+ *                 type: boolean
+ *               other1:
+ *                 type: string
+ *               other2:
+ *                 type: string
+ *               other3:
+ *                 type: string
+ *               other4:
+ *                 type: string
+ *               other5:
+ *                 type: string
  *     responses:
  *       200:
  *         description: Product updated successfully

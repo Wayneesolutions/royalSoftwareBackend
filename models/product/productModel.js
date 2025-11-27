@@ -100,7 +100,6 @@ const productSchema = new mongoose.Schema(
     // Legacy fields (kept for backward compatibility)
     productCode: {
       type: String,
-      unique: true,
       sparse: true,
       trim: true,
     },
@@ -158,6 +157,10 @@ const productSchema = new mongoose.Schema(
 // Index for better query performance
 productSchema.index({ companyId: 1, isActive: 1 });
 productSchema.index({ productCode: 1 });
+productSchema.index(
+  { companyId: 1, productCode: 1 },
+  { unique: true, sparse: true, partialFilterExpression: { productCode: { $exists: true, $nin: [null, ''] } } }
+);
 productSchema.index({ productName: 1 });
 productSchema.index({ name: 1 });
 productSchema.index({ partNo: 1 });
@@ -198,5 +201,26 @@ productSchema.statics.getByCompany = function(companyId, filters = {}) {
 };
 
 const Product = mongoose.model('Product', productSchema);
+
+const dropLegacyProductCodeIndex = async () => {
+  try {
+    await Product.collection.dropIndex('productCode_1');
+    if (process.env.NODE_ENV !== 'test') {
+      console.log('[ProductModel] Dropped legacy productCode_1 index');
+    }
+  } catch (error) {
+    const indexNotFound =
+      error?.code === 27 || error?.message?.includes('index not found');
+    if (!indexNotFound && process.env.NODE_ENV !== 'test') {
+      console.warn('[ProductModel] Unable to drop legacy productCode_1 index:', error.message);
+    }
+  }
+};
+
+if (mongoose.connection.readyState === 1) {
+  dropLegacyProductCodeIndex();
+} else {
+  mongoose.connection.once('connected', dropLegacyProductCodeIndex);
+}
 
 export default Product;

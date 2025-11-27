@@ -1,123 +1,323 @@
 import Product from '../models/product/productModel.js';
 import Company from '../models/company/companyModel.js';
 
+class InvalidProductPayloadError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'InvalidProductPayloadError';
+    this.statusCode = 400;
+  }
+}
+
+const normalizeString = (value, fallback = undefined) => {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  const trimmed = String(value).trim();
+  return trimmed === '' ? fallback : trimmed;
+};
+
+const normalizeNumber = (value, fallback = undefined) => {
+  if (value === undefined || value === null || value === '') {
+    return fallback;
+  }
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const normalizeInteger = (value, fallback = undefined) => {
+  const parsed = normalizeNumber(value, fallback);
+  if (parsed === undefined) {
+    return fallback;
+  }
+  return Math.trunc(parsed);
+};
+
+const normalizeBoolean = (value, fallback = false) => {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const lowered = value.trim().toLowerCase();
+    if (['true', '1', 'yes'].includes(lowered)) {
+      return true;
+    }
+    if (['false', '0', 'no'].includes(lowered)) {
+      return false;
+    }
+  }
+
+  if (typeof value === 'number') {
+    return value === 1;
+  }
+
+  return fallback;
+};
+
+const resolveName = (payload) =>
+  normalizeString(payload?.name) || normalizeString(payload?.productName);
+
+const resolveCategory = (payload) => normalizeString(payload?.category, 'General');
+
+const resolveProductCode = (payload) => normalizeString(payload?.productCode);
+
+const buildCreateProductPayload = (payload, context) => {
+  const {
+    companyId,
+    companyCode,
+    createdBy,
+    name,
+    category,
+    productCode,
+  } = context;
+
+  const stdPurcRate = normalizeNumber(payload.stdPurcRate, 0);
+  const priceInput = normalizeNumber(payload.price);
+  const stdSaleRateInput = normalizeNumber(payload.stdSaleRate);
+  const stdSaleRate = stdSaleRateInput ?? priceInput ?? 0;
+  const resolvedPrice = priceInput ?? stdSaleRate;
+
+  const gstRateInput = normalizeNumber(payload.gstRate);
+  const itemGstInput = normalizeNumber(payload.itemGstPer);
+  const resolvedGstRate = gstRateInput ?? itemGstInput ?? 18;
+  const resolvedItemGst = itemGstInput ?? resolvedGstRate;
+
+  return {
+    name,
+    partNo: normalizeString(payload.partNo),
+    itemAlias: normalizeString(payload.itemAlias),
+    description: normalizeString(payload.description),
+    parent: normalizeString(payload.parent),
+    category,
+    baseUnits: normalizeString(payload.baseUnits),
+    additionalUnits: normalizeString(payload.additionalUnits),
+    stdPurcRate,
+    stdSaleRate,
+    itemGstPer: resolvedItemGst,
+    itemHsn: normalizeString(payload.itemHsn),
+    itemHsnDesc: normalizeString(payload.itemHsnDesc),
+    openingBalance: normalizeNumber(payload.openingBalance, 0),
+    itemOpRate: normalizeNumber(payload.itemOpRate, 0),
+    companyCode: normalizeString(payload.companyCode, companyCode),
+    isFinishItem: normalizeBoolean(payload.isFinishItem, false),
+    other1: normalizeString(payload.other1),
+    other2: normalizeString(payload.other2),
+    other3: normalizeString(payload.other3),
+    other4: normalizeString(payload.other4),
+    other5: normalizeString(payload.other5),
+    productCode,
+    productName: normalizeString(payload.productName, name),
+    subCategory: normalizeString(payload.subCategory),
+    brand: normalizeString(payload.brand),
+    price: resolvedPrice,
+    stock: normalizeInteger(payload.stock, 0),
+    gstRate: resolvedGstRate,
+    companyId,
+    isActive: normalizeBoolean(payload.isActive, true),
+    createdBy,
+  };
+};
+
+const buildUpdateProductPayload = (payload, currentProduct, companyCodeFallback) => {
+  const updateData = {};
+  const hasOwn = (key) => Object.prototype.hasOwnProperty.call(payload, key);
+
+  if (hasOwn('productCode')) {
+    const updatedCode = normalizeString(payload.productCode);
+    if (!updatedCode) {
+      throw new InvalidProductPayloadError('Product code cannot be empty');
+    }
+    updateData.productCode = updatedCode;
+  }
+
+  if (hasOwn('name') || hasOwn('productName')) {
+    const resolvedName = normalizeString(payload.name) || normalizeString(payload.productName);
+    if (resolvedName) {
+      updateData.name = resolvedName;
+    }
+
+    if (hasOwn('productName')) {
+      const resolvedProductName =
+        normalizeString(payload.productName, resolvedName || currentProduct.productName);
+      updateData.productName = resolvedProductName;
+    } else if (resolvedName) {
+      updateData.productName = resolvedName;
+    }
+  }
+
+  const stringFields = [
+    'partNo',
+    'itemAlias',
+    'description',
+    'parent',
+    'category',
+    'baseUnits',
+    'additionalUnits',
+    'itemHsn',
+    'itemHsnDesc',
+    'companyCode',
+    'subCategory',
+    'brand',
+    'other1',
+    'other2',
+    'other3',
+    'other4',
+    'other5',
+  ];
+
+  stringFields.forEach((field) => {
+    if (!hasOwn(field)) {
+      return;
+    }
+    let fallback = '';
+    if (field === 'category') {
+      fallback = currentProduct.category || 'General';
+    } else if (field === 'companyCode') {
+      fallback = companyCodeFallback || currentProduct.companyCode;
+    }
+    const value = normalizeString(payload[field], fallback);
+    updateData[field] = value ?? fallback;
+  });
+
+  const numberFields = [
+    'stdPurcRate',
+    'stdSaleRate',
+    'openingBalance',
+    'itemOpRate',
+    'price',
+    'gstRate',
+    'itemGstPer',
+  ];
+
+  numberFields.forEach((field) => {
+    if (!hasOwn(field)) {
+      return;
+    }
+    const value = normalizeNumber(payload[field]);
+    if (value === undefined) {
+      throw new InvalidProductPayloadError(`Invalid value provided for ${field}`);
+    }
+    updateData[field] = value;
+  });
+
+  if (hasOwn('stock')) {
+    const stockValue = normalizeInteger(payload.stock);
+    if (stockValue === undefined) {
+      throw new InvalidProductPayloadError('Invalid value provided for stock');
+    }
+    updateData.stock = stockValue;
+  }
+
+  if (hasOwn('price') && !hasOwn('stdSaleRate') && updateData.price !== undefined) {
+    updateData.stdSaleRate = updateData.price;
+  }
+
+  if (hasOwn('stdSaleRate') && !hasOwn('price') && updateData.stdSaleRate !== undefined) {
+    updateData.price = updateData.stdSaleRate;
+  }
+
+  if (hasOwn('gstRate') && !hasOwn('itemGstPer') && updateData.gstRate !== undefined) {
+    updateData.itemGstPer = updateData.gstRate;
+  }
+
+  if (hasOwn('itemGstPer') && !hasOwn('gstRate') && updateData.itemGstPer !== undefined) {
+    updateData.gstRate = updateData.itemGstPer;
+  }
+
+  const booleanFields = ['isFinishItem', 'isActive'];
+  booleanFields.forEach((field) => {
+    if (!hasOwn(field)) {
+      return;
+    }
+    updateData[field] = normalizeBoolean(
+      payload[field],
+      typeof currentProduct[field] === 'boolean' ? currentProduct[field] : false,
+    );
+  });
+
+  return updateData;
+};
+
 // Create a new product
 export const createProduct = async (req, res) => {
   try {
-    const {
-      // Stockitem Master Fields
-      name,
-      partNo,
-      itemAlias,
-      description,
-      parent,
-      category,
-      baseUnits,
-      additionalUnits,
-      stdPurcRate,
-      stdSaleRate,
-      itemGstPer,
-      itemHsn,
-      itemHsnDesc,
-      openingBalance,
-      itemOpRate,
-      companyCode,
-      isFinishItem,
-      other1,
-      other2,
-      other3,
-      other4,
-      other5,
-      // Legacy fields
-      productCode,
-      productName,
-      subCategory,
-      brand,
-      price,
-      stock,
-      gstRate
-    } = req.body;
+    const userDetails = req.user?.userDetails;
+    const companyRef = userDetails?.defaultCompany;
 
-    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
-    const createdBy = req.user.userDetails._id;
+    const companyId = companyRef?._id || companyRef;
+    const createdBy = userDetails?._id;
 
-    console.log('createProduct - User:', req.user.userDetails.name, 'Role:', req.user.userDetails.role);
-    console.log('createProduct - Company ID:', companyId);
-    console.log('createProduct - Created By:', createdBy);
+    if (!companyId || !createdBy) {
+      return res.status(400).json({
+        success: false,
+        message: 'Unable to determine company or user context',
+      });
+    }
 
-    // Check if product code already exists
+    const company = await Company.findById(companyId).select('companyCode');
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: 'Default company not found. Please contact support.',
+      });
+    }
+
+    const derivedName = resolveName(req.body);
+    if (!derivedName) {
+      return res.status(400).json({
+        success: false,
+        message: 'Product name is required',
+      });
+    }
+
+    const derivedCategory = resolveCategory(req.body);
+    const derivedProductCode = resolveProductCode(req.body);
+
+    if (!derivedProductCode) {
+      return res.status(400).json({
+        success: false,
+        message: 'Product code is required',
+      });
+    }
+
     const existingProduct = await Product.findOne({
-      productCode,
-      companyId
+      productCode: derivedProductCode,
+      companyId,
     });
 
     if (existingProduct) {
       return res.status(400).json({
         success: false,
-        message: 'Product code already exists'
+        message: 'Product code already exists for this company',
       });
     }
 
-    const product = new Product({
-      // Stockitem Master Fields
-      name: name || productName || '',
-      partNo,
-      itemAlias,
-      description,
-      parent,
-      category,
-      baseUnits,
-      additionalUnits,
-      stdPurcRate: typeof stdPurcRate === 'number' ? stdPurcRate : parseFloat(stdPurcRate || 0),
-      stdSaleRate: typeof stdSaleRate === 'number' ? stdSaleRate : parseFloat(stdSaleRate || 0),
-      itemGstPer: (() => {
-        const parsed = typeof itemGstPer === 'number' ? itemGstPer : parseFloat(itemGstPer ?? '');
-        return Number.isFinite(parsed) ? parsed : (gstRate ? (typeof gstRate === 'number' ? gstRate : parseFloat(gstRate ?? '')) : 0);
-      })(),
-      itemHsn,
-      itemHsnDesc,
-      openingBalance: typeof openingBalance === 'number' ? openingBalance : parseFloat(openingBalance || 0),
-      itemOpRate: typeof itemOpRate === 'number' ? itemOpRate : parseFloat(itemOpRate || 0),
-      companyCode,
-      isFinishItem: typeof isFinishItem === 'boolean' ? isFinishItem : false,
-      other1,
-      other2,
-      other3,
-      other4,
-      other5,
-      // Legacy fields
-      productCode,
-      productName: productName || name,
-      subCategory,
-      brand,
-      price: typeof price === 'number' ? price : parseFloat(price || stdSaleRate || 0),
-      stock: typeof stock === 'number' ? stock : parseInt(stock || 0, 10),
-      gstRate: (() => {
-        const parsed =
-          typeof gstRate === 'number' ? gstRate : parseFloat(gstRate ?? '');
-        return Number.isFinite(parsed) ? parsed : (itemGstPer ? (typeof itemGstPer === 'number' ? itemGstPer : parseFloat(itemGstPer ?? '')) : 18);
-      })(),
+    const productPayload = buildCreateProductPayload(req.body, {
       companyId,
-      createdBy
+      companyCode: company.companyCode,
+      createdBy,
+      name: derivedName,
+      category: derivedCategory,
+      productCode: derivedProductCode,
     });
 
-    await product.save();
-
-    console.log('createProduct - Product saved successfully:', product._id);
-    console.log('createProduct - Product company ID:', product.companyId);
+    const product = await Product.create(productPayload);
 
     res.status(201).json({
       success: true,
       message: 'Product created successfully',
-      product
+      product,
     });
-
   } catch (error) {
     console.error('Create product error:', error);
     res.status(500).json({
       success: false,
       message: 'Server error',
-      error: error.message
+      error: error.message,
     });
   }
 };
@@ -125,33 +325,36 @@ export const createProduct = async (req, res) => {
 // Get all products for a company
 export const getProducts = async (req, res) => {
   try {
-    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+    const companyId =
+      req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
     const {
       page = 1,
       limit = 10,
       category,
       search,
-      isActive
+      isActive,
+      brand,
+      parent,
+      isFinishItem,
     } = req.query;
 
-    console.log('getProducts - User:', req.user.userDetails.name, 'Role:', req.user.userDetails.role);
-    console.log('getProducts - Company ID:', companyId);
-    console.log('getProducts - User Details:', req.user.userDetails);
-    console.log('getProducts - Query params:', req.query);
+    const parsedPage = Math.max(parseInt(page, 10) || 1, 1);
+    const parsedLimit = Math.max(Math.min(parseInt(limit, 10) || 10, 100), 1);
 
     if (!companyId) {
-      console.log('getProducts - ERROR: No company ID found for user');
       return res.status(400).json({
         success: false,
-        message: 'User does not have a default company assigned'
+        message: 'User does not have a default company assigned',
       });
     }
 
     const filter = { companyId };
 
-    // Apply filters
     if (category) filter.category = category;
+    if (brand) filter.brand = brand;
+    if (parent) filter.parent = parent;
     if (isActive !== undefined) filter.isActive = isActive === 'true';
+    if (isFinishItem !== undefined) filter.isFinishItem = isFinishItem === 'true';
     if (search) {
       filter.$or = [
         { productCode: { $regex: search, $options: 'i' } },
@@ -163,39 +366,31 @@ export const getProducts = async (req, res) => {
       ];
     }
 
-    const skip = (page - 1) * limit;
-
-    console.log('getProducts - Filter:', filter);
-
-    // Debug: Check all products in database
-    const allProducts = await Product.find({});
-    console.log('getProducts - All products in DB:', allProducts.length);
-    allProducts.forEach(p => {
-      console.log(`  - Product: ${p.productName} (ID: ${p._id}, Company: ${p.companyId})`);
-    });
+    const skip = (parsedPage - 1) * parsedLimit;
 
     const products = await Product.find(filter)
+      .select(
+        'name productName productCode partNo itemAlias description parent category subCategory brand baseUnits additionalUnits stdPurcRate stdSaleRate price stock itemGstPer itemHsn itemHsnDesc gstRate companyCode isFinishItem other1 other2 other3 other4 other5 isActive createdAt updatedAt',
+      )
       .populate('createdBy', 'name role')
       .populate('updatedBy', 'name role')
       .sort({ name: 1, productName: 1 })
       .skip(skip)
-      .limit(parseInt(limit));
+      .limit(parsedLimit)
+      .lean();
 
     const totalProducts = await Product.countDocuments(filter);
-
-    console.log('getProducts - Found products:', products.length);
-    console.log('getProducts - Total products:', totalProducts);
 
     res.json({
       success: true,
       products,
       pagination: {
-        currentPage: parseInt(page),
-        totalPages: Math.ceil(totalProducts / limit),
+        currentPage: parsedPage,
+        totalPages: Math.ceil(totalProducts / parsedLimit),
         totalProducts,
-        hasNext: page < Math.ceil(totalProducts / limit),
-        hasPrev: page > 1
-      }
+        hasNext: parsedPage < Math.ceil(totalProducts / parsedLimit),
+        hasPrev: parsedPage > 1,
+      },
     });
 
   } catch (error) {
@@ -212,7 +407,8 @@ export const getProducts = async (req, res) => {
 export const getProductById = async (req, res) => {
   try {
     const { productId } = req.params;
-    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+    const companyId =
+      req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
 
     const product = await Product.findOne({
       _id: productId,
@@ -247,126 +443,70 @@ export const getProductById = async (req, res) => {
 export const updateProduct = async (req, res) => {
   try {
     const { productId } = req.params;
-    const {
-      // Stockitem Master Fields
-      name,
-      partNo,
-      itemAlias,
-      description,
-      parent,
-      category,
-      baseUnits,
-      additionalUnits,
-      stdPurcRate,
-      stdSaleRate,
-      itemGstPer,
-      itemHsn,
-      itemHsnDesc,
-      openingBalance,
-      itemOpRate,
-      companyCode,
-      isFinishItem,
-      other1,
-      other2,
-      other3,
-      other4,
-      other5,
-      // Legacy fields
-      productName,
-      subCategory,
-      brand,
-      price,
-      stock,
-      isActive,
-      gstRate
-    } = req.body;
-    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+    const companyId =
+      req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
     const userId = req.user.userDetails._id;
 
-    const updateData = {
-      updatedBy: userId
-    };
-
-    // Stockitem Master Fields
-    if (name !== undefined) updateData.name = name;
-    if (partNo !== undefined) updateData.partNo = partNo;
-    if (itemAlias !== undefined) updateData.itemAlias = itemAlias;
-    if (description !== undefined) updateData.description = description;
-    if (parent !== undefined) updateData.parent = parent;
-    if (category !== undefined) updateData.category = category;
-    if (baseUnits !== undefined) updateData.baseUnits = baseUnits;
-    if (additionalUnits !== undefined) updateData.additionalUnits = additionalUnits;
-    if (stdPurcRate !== undefined) {
-      updateData.stdPurcRate = typeof stdPurcRate === 'number' ? stdPurcRate : parseFloat(stdPurcRate);
-    }
-    if (stdSaleRate !== undefined) {
-      updateData.stdSaleRate = typeof stdSaleRate === 'number' ? stdSaleRate : parseFloat(stdSaleRate);
-    }
-    if (itemGstPer !== undefined) {
-      const parsed = typeof itemGstPer === 'number' ? itemGstPer : parseFloat(itemGstPer);
-      if (!Number.isNaN(parsed)) updateData.itemGstPer = parsed;
-    }
-    if (itemHsn !== undefined) updateData.itemHsn = itemHsn;
-    if (itemHsnDesc !== undefined) updateData.itemHsnDesc = itemHsnDesc;
-    if (openingBalance !== undefined) {
-      updateData.openingBalance = typeof openingBalance === 'number' ? openingBalance : parseFloat(openingBalance);
-    }
-    if (itemOpRate !== undefined) {
-      const parsed = typeof itemOpRate === 'number' ? itemOpRate : parseFloat(itemOpRate);
-      if (!Number.isNaN(parsed)) updateData.itemOpRate = parsed;
-    }
-    if (companyCode !== undefined) updateData.companyCode = companyCode;
-    if (isFinishItem !== undefined) updateData.isFinishItem = isFinishItem;
-    if (other1 !== undefined) updateData.other1 = other1;
-    if (other2 !== undefined) updateData.other2 = other2;
-    if (other3 !== undefined) updateData.other3 = other3;
-    if (other4 !== undefined) updateData.other4 = other4;
-    if (other5 !== undefined) updateData.other5 = other5;
-    
-    // Legacy fields
-    if (productName !== undefined) {
-      updateData.productName = productName;
-      if (!updateData.name) updateData.name = productName;
-    }
-    if (subCategory !== undefined) updateData.subCategory = subCategory;
-    if (brand !== undefined) updateData.brand = brand;
-    if (price !== undefined) {
-      updateData.price = typeof price === 'number' ? price : parseFloat(price);
-    }
-    if (stock !== undefined) {
-      updateData.stock = typeof stock === 'number' ? stock : parseInt(stock, 10);
-    }
-    if (isActive !== undefined) updateData.isActive = isActive;
-    if (gstRate !== undefined) {
-      const parsedGst = typeof gstRate === 'number' ? gstRate : parseFloat(gstRate);
-      if (!Number.isNaN(parsedGst)) {
-        updateData.gstRate = parsedGst;
-        if (!updateData.itemGstPer) updateData.itemGstPer = parsedGst;
-      }
-    }
-
-    const product = await Product.findOneAndUpdate(
-      { _id: productId, companyId },
-      updateData,
-      { new: true, runValidators: true }
-    )
-      .populate('createdBy', 'name role')
-      .populate('updatedBy', 'name role');
+    const product = await Product.findOne({
+      _id: productId,
+      companyId,
+    });
 
     if (!product) {
       return res.status(404).json({
         success: false,
-        message: 'Product not found'
+        message: 'Product not found',
       });
     }
+
+    const company = await Company.findById(companyId).select('companyCode');
+
+    const updateData = buildUpdateProductPayload(req.body, product, company?.companyCode);
+    updateData.updatedBy = userId;
+
+    if (Object.keys(updateData).length === 1 && updateData.updatedBy) {
+      return res.status(400).json({
+        success: false,
+        message: 'No fields provided to update',
+      });
+    }
+
+    if (updateData.productCode) {
+      const duplicateProduct = await Product.findOne({
+        _id: { $ne: productId },
+        productCode: updateData.productCode,
+        companyId,
+      });
+
+      if (duplicateProduct) {
+        return res.status(400).json({
+          success: false,
+          message: 'Product code already exists for this company',
+        });
+      }
+    }
+
+    const updatedProduct = await Product.findOneAndUpdate(
+      { _id: productId, companyId },
+      updateData,
+      { new: true, runValidators: true },
+    )
+      .populate('createdBy', 'name role')
+      .populate('updatedBy', 'name role');
 
     res.json({
       success: true,
       message: 'Product updated successfully',
-      product
+      product: updatedProduct,
     });
 
   } catch (error) {
+    if (error instanceof InvalidProductPayloadError) {
+      return res.status(error.statusCode).json({
+        success: false,
+        message: error.message,
+      });
+    }
     console.error('Update product error:', error);
     res.status(500).json({
       success: false,

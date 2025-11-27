@@ -33,6 +33,9 @@ const normalizeGuid = (value) => {
 const normalizeString = (value, fallback = '') =>
   typeof value === 'string' ? value.trim() : fallback;
 
+const normalizeEmail = (value) =>
+  value ? value.toString().trim().toLowerCase() : '';
+
 const normalizeRole = (value) => {
   if (!value) return '';
   const lower = value.toString().trim().toLowerCase();
@@ -83,6 +86,27 @@ const mapAddress = (input = {}) => ({
   pincode: normalizeString(input.pincode),
   country: normalizeString(input.country, 'India'),
 });
+
+const findCompanyByGuidFlexible = async (rawGuid) => {
+  const normalizedGuid = normalizeGuid(rawGuid);
+  if (!normalizedGuid) {
+    return { company: null, guid: null };
+  }
+
+  let company = await Company.findOne({ guid: normalizedGuid }).lean();
+  if (!company) {
+    company = await Company.findOne({
+      guid: {
+        $regex: new RegExp(
+          `^${normalizedGuid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`,
+          'i'
+        ),
+      },
+    }).lean();
+  }
+
+  return { company, guid: normalizedGuid };
+};
 
 const xmlParser = new XMLParser({
   ignoreAttributes: false,
@@ -168,28 +192,9 @@ export const upsertUserFromTally = async (req, res) => {
     const results = [];
 
     for (const item of payload) {
-      const normalizedGuid = normalizeGuid(
-        item.companyGuid || item.guid || item.companyGUID
-      );
-
-      if (!normalizedGuid) {
-        results.push({
-          userName: item.userName,
-          success: false,
-          message: 'Missing company guid',
-        });
-        continue;
-      }
-
-      // Try exact match first
-      let company = await Company.findOne({ guid: normalizedGuid }).lean();
-
-      // If not found, try case-insensitive search
-      if (!company) {
-        company = await Company.findOne({ 
-          guid: { $regex: new RegExp(`^${normalizedGuid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } 
-        }).lean();
-      }
+      const guidSource = item.companyGuid || item.guid || item.companyGUID;
+      const { company, guid: normalizedGuid } =
+        await findCompanyByGuidFlexible(guidSource);
 
       if (!company) {
         results.push({
@@ -323,6 +328,316 @@ export const upsertUserFromTally = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Failed to sync users from Tally',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
+};
+
+export const updateUsersFromTally = async (req, res) => {
+  try {
+    const parsedBody = parseIncomingPayload(req);
+    const payload = Array.isArray(parsedBody) ? parsedBody : [parsedBody];
+    const pathGuid = normalizeGuid(req.params.guid);
+
+    if (!payload.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'Payload cannot be empty',
+      });
+    }
+
+    if (!pathGuid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Company GUID in path is required',
+        error: 'MISSING_COMPANY_GUID',
+      });
+    }
+
+    const { company, guid: normalizedGuid } =
+      await findCompanyByGuidFlexible(pathGuid);
+
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: 'Company not found for provided GUID.',
+        error: 'COMPANY_NOT_FOUND',
+      });
+    }
+
+    const results = [];
+
+    for (const item of payload) {
+      const guid = normalizedGuid;
+
+      const email = normalizeEmail(item.email || item.userEmail);
+      if (!email) {
+        results.push({
+          guid,
+          success: false,
+          message: 'User email is required for updates',
+          error: 'MISSING_EMAIL',
+        });
+        continue;
+      }
+
+      const user = await User.findOne({
+        email,
+        'companies.companyId': company._id,
+      });
+
+      if (!user) {
+        results.push({
+          guid,
+          email,
+          success: false,
+          message: 'User not found for provided company and email',
+          error: 'USER_NOT_FOUND',
+        });
+        continue;
+      }
+
+      const updates = {};
+      let companyUpdates = {};
+
+      if (Object.prototype.hasOwnProperty.call(item, 'name')) {
+        const name = normalizeString(item.name);
+        if (name) {
+          updates.name = name;
+        }
+      }
+
+      if (Object.prototype.hasOwnProperty.call(item, 'mobile')) {
+        const mobile = normalizeString(item.mobile);
+        if (!mobile) {
+          results.push({
+            guid,
+            email,
+            success: false,
+            message: 'Mobile cannot be empty when provided',
+            error: 'INVALID_MOBILE',
+          });
+          continue;
+        }
+
+        const existingMobile = await User.findOne({
+          mobile,
+          _id: { $ne: user._id },
+        });
+        if (existingMobile) {
+          results.push({
+            guid,
+            email,
+            success: false,
+            message: 'Another user already uses this mobile number',
+            error: 'MOBILE_IN_USE',
+          });
+          continue;
+        }
+        updates.mobile = mobile;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(item, 'role')) {
+        const role = normalizeRole(item.role);
+        if (!role) {
+          results.push({
+            guid,
+            email,
+            success: false,
+            message: 'Invalid role provided',
+            error: 'INVALID_ROLE',
+          });
+          continue;
+        }
+        updates.role = role;
+        companyUpdates.role = role;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(item, 'isActive')) {
+        const isActive = normalizeBoolean(item.isActive, user.isActive);
+        updates.isActive = isActive;
+        companyUpdates.isActive = isActive;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(item, 'address')) {
+        updates.address = mapAddress(item.address);
+      }
+
+      if (item.password) {
+        updates.password = await bcrypt.hash(item.password, 10);
+      }
+
+      if (Object.keys(updates).length === 0 && Object.keys(companyUpdates).length === 0) {
+        results.push({
+          guid,
+          email,
+          success: false,
+          message: 'No updatable fields provided',
+          error: 'EMPTY_UPDATE',
+        });
+        continue;
+      }
+
+      const updateQuery = { $set: { ...updates } };
+      if (companyUpdates.role) {
+        updateQuery.$set['companies.$.role'] = companyUpdates.role;
+      }
+      if (Object.prototype.hasOwnProperty.call(companyUpdates, 'isActive')) {
+        updateQuery.$set['companies.$.isActive'] = companyUpdates.isActive;
+      }
+
+      await User.updateOne(
+        { _id: user._id, 'companies.companyId': company._id },
+        updateQuery
+      );
+
+      const updatedUser = await User.findById(user._id).select('-password').lean();
+
+      results.push({
+        success: true,
+        user: updatedUser,
+      });
+    }
+
+    const failures = results.filter((item) => !item.success);
+    const status =
+      failures.length === results.length
+        ? 400
+        : failures.length > 0
+          ? 207
+          : 200;
+
+    return res.status(status).json({
+      success: failures.length === 0,
+      results,
+    });
+  } catch (error) {
+    if (error.message === 'INVALID_TALLY_PAYLOAD' || error.message === 'INVALID_XML_PAYLOAD') {
+      return res.status(400).json({
+        success: false,
+        message: 'Unable to parse Tally payload. Ensure the payload is valid JSON or XML.',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      });
+    }
+
+    console.error('Error updating users from Tally:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update users from Tally',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
+};
+
+export const deleteUsersFromTally = async (req, res) => {
+  try {
+    const parsedBody = parseIncomingPayload(req);
+    const payload = Array.isArray(parsedBody) ? parsedBody : [parsedBody];
+    const pathGuid = normalizeGuid(req.params.guid);
+
+    if (!payload.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'Payload cannot be empty',
+      });
+    }
+
+    if (!pathGuid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Company GUID in path is required',
+        error: 'MISSING_COMPANY_GUID',
+      });
+    }
+
+    const { company, guid: normalizedGuid } =
+      await findCompanyByGuidFlexible(pathGuid);
+
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: 'Company not found for provided GUID.',
+        error: 'COMPANY_NOT_FOUND',
+      });
+    }
+
+    const results = [];
+
+    for (const item of payload) {
+      const guid = normalizedGuid;
+
+      if (!company) {
+        results.push({
+          guid,
+          success: false,
+          message: 'Company not found for provided GUID.',
+          error: 'COMPANY_NOT_FOUND',
+        });
+        continue;
+      }
+
+      const email = normalizeEmail(item.email || item.userEmail);
+      if (!email) {
+        results.push({
+          guid,
+          success: false,
+          message: 'User email is required for deletion',
+          error: 'MISSING_EMAIL',
+        });
+        continue;
+      }
+
+      const user = await User.findOne({
+        email,
+        'companies.companyId': company._id,
+      });
+
+      if (!user) {
+        results.push({
+          guid,
+          email,
+          success: false,
+          message: 'User not found for provided company and email',
+          error: 'USER_NOT_FOUND',
+        });
+        continue;
+      }
+
+      await User.deleteOne({ _id: user._id });
+
+      results.push({
+        success: true,
+        guid,
+        email,
+        userId: user._id,
+      });
+    }
+
+    const failures = results.filter((item) => !item.success);
+    const status =
+      failures.length === results.length
+        ? 404
+        : failures.length > 0
+          ? 207
+          : 200;
+
+    return res.status(status).json({
+      success: failures.length === 0,
+      results,
+    });
+  } catch (error) {
+    if (error.message === 'INVALID_TALLY_PAYLOAD' || error.message === 'INVALID_XML_PAYLOAD') {
+      return res.status(400).json({
+        success: false,
+        message: 'Unable to parse Tally payload. Ensure the payload is valid JSON or XML.',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      });
+    }
+
+    console.error('Error deleting users from Tally:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to delete users from Tally',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
   }
