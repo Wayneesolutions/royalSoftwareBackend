@@ -14,7 +14,7 @@ const authRoute = express.Router();
  * @swagger
  * /api/v1/auth/login:
  *   post:
- *     summary: Universal login for all user types
+ *     summary: Universal login for all user types (email or mobile)
  *     tags: [Authentication]
  *     requestBody:
  *       required: true
@@ -23,12 +23,12 @@ const authRoute = express.Router();
  *           schema:
  *             type: object
  *             required:
- *               - email
+ *               - emailOrMobile
  *               - password
  *             properties:
- *               email:
+ *               emailOrMobile:
  *                 type: string
- *                 format: email
+ *                 description: User email address or mobile number
  *               password:
  *                 type: string
  *     responses:

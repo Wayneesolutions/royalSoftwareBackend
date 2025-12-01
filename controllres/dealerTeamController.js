@@ -91,6 +91,24 @@ export const createSubDealer = async (req, res) => {
       });
     }
 
+    // Check user limit for the company
+    if (company.maxUser) {
+      // Count current active users for this company (excluding admin and superadmin)
+      const currentUserCount = await User.countDocuments({
+        'companies.companyId': companyId,
+        'companies.isActive': true,
+        isActive: true,
+        role: { $nin: ['admin', 'superadmin'] }
+      });
+
+      if (currentUserCount >= company.maxUser) {
+        return res.status(400).json({
+          success: false,
+          message: `Company has reached its user limit. Maximum allowed users: ${company.maxUser}. Current users: ${currentUserCount}. Cannot create more users.`
+        });
+      }
+    }
+
     const hashedPassword = await bcrypt.hash(password, 10);
 
     // Create sub-dealer

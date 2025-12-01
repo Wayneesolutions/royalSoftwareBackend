@@ -217,57 +217,57 @@ export const createCompanyFromTally = async (req, res) => {
 
     for (const item of payload) {
       // Validate required fields for this company
-      const missingFields = requiredFields.filter((field) =>
+    const missingFields = requiredFields.filter((field) =>
         isBlank(item[field])
-      );
+    );
 
-      if (missingFields.length > 0) {
+    if (missingFields.length > 0) {
         results.push({
           companyCode: item.companyCode || normalizeString(item.companyCode),
           companyName: item.companyName || normalizeString(item.companyName),
-          success: false,
-          message: `Missing required fields: ${missingFields.join(', ')}`,
+        success: false,
+        message: `Missing required fields: ${missingFields.join(', ')}`,
           error: 'MISSING_FIELDS',
-        });
+      });
         continue;
-      }
+    }
 
-      let creatorId = null;
+    let creatorId = null;
       if (!isBlank(item.createdBy)) {
         const creator = await User.findById(item.createdBy).select('_id name role');
-        if (!creator) {
+      if (!creator) {
           results.push({
             companyCode: item.companyCode || normalizeString(item.companyCode),
             companyName: item.companyName || normalizeString(item.companyName),
-            success: false,
-            message: 'Invalid createdBy: user not found',
+          success: false,
+          message: 'Invalid createdBy: user not found',
             error: 'INVALID_CREATOR',
-          });
+        });
           continue;
-        }
-        creatorId = creator._id;
       }
+      creatorId = creator._id;
+    }
 
-      // GUID is alphanumeric string
+    // GUID is alphanumeric string
       const guid = item.guid ? String(item.guid).trim() : null;
-      if (!guid || guid === '') {
+    if (!guid || guid === '') {
         results.push({
           companyCode: item.companyCode || normalizeString(item.companyCode),
           companyName: item.companyName || normalizeString(item.companyName),
-          success: false,
-          message: 'Invalid guid: GUID is required and must be a non-empty alphanumeric string',
+        success: false,
+        message: 'Invalid guid: GUID is required and must be a non-empty alphanumeric string',
           error: 'INVALID_GUID',
-        });
+      });
         continue;
-      }
+    }
 
       const maxUser = toNumber(item.maxUser);
-      if (!Number.isFinite(maxUser) || maxUser < 1) {
+    if (!Number.isFinite(maxUser) || maxUser < 1) {
         results.push({
           companyCode: item.companyCode || normalizeString(item.companyCode),
           companyName: item.companyName || normalizeString(item.companyName),
-          success: false,
-          message: 'Invalid maxUser: must be a positive number',
+        success: false,
+        message: 'Invalid maxUser: must be a positive number',
           error: 'INVALID_MAX_USER',
         });
         continue;
@@ -289,41 +289,41 @@ export const createCompanyFromTally = async (req, res) => {
         duplicateConditions.push({ tallySerialId });
       }
 
-      const existingCompany = await Company.findOne({
+    const existingCompany = await Company.findOne({
         $or: duplicateConditions,
-      });
+    });
 
-      if (existingCompany) {
+    if (existingCompany) {
         results.push({
           companyCode: normalizedCode,
           companyName: item.companyName || normalizeString(item.companyName),
           success: false,
           message: 'Company already exists. Duplicate companies are not allowed.',
           error: 'DUPLICATE_COMPANY',
-          data: existingCompany,
-          meta: {
-            duplicate: true,
-            matchedOn: {
-              guid: existingCompany.guid === guid,
+        data: existingCompany,
+        meta: {
+          duplicate: true,
+          matchedOn: {
+            guid: existingCompany.guid === guid,
               companyCode: existingCompany.companyCode === normalizedCode,
               tallySerialId: tallySerialId ? existingCompany.tallySerialId === tallySerialId : false,
-            },
           },
-        });
+        },
+      });
         continue;
-      }
+    }
 
-      const companyData = {
+    const companyData = {
         companyName: String(item.companyName).trim(),
         companyState: String(item.companyState).trim(),
         companyCountry: String(item.companyCountry).trim(),
-        companyMobile: normalizedMobile,
-        companyEmail: normalizedEmail,
-        companyCode: normalizedCode,
-        maxUser,
-        guid,
-        createdBy: creatorId,
-      };
+      companyMobile: normalizedMobile,
+      companyEmail: normalizedEmail,
+      companyCode: normalizedCode,
+      maxUser,
+      guid,
+      createdBy: creatorId,
+    };
 
       if (!isBlank(item.gstin)) {
         companyData.gstin = String(item.gstin).trim();
@@ -334,16 +334,16 @@ export const createCompanyFromTally = async (req, res) => {
       }
 
       const contactDetails = cleanContactDetails(item.contactDetails);
-      if (contactDetails) {
-        companyData.contactDetails = contactDetails;
-      }
+    if (contactDetails) {
+      companyData.contactDetails = contactDetails;
+    }
 
       try {
-        const company = await Company.create(companyData);
+    const company = await Company.create(companyData);
         results.push({
-          success: true,
-          message: 'Company synced from Tally successfully',
-          data: company,
+      success: true,
+      message: 'Company synced from Tally successfully',
+      data: company,
         });
       } catch (createError) {
         // Handle duplicate key errors (in case of race conditions)

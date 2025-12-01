@@ -48,7 +48,7 @@ export const adminCreation = async (req, res) => {
  * @swagger
  * /api/v1/admin/login:
  *   post:
- *     summary: Admin login with company details
+ *     summary: Admin login with company details (email or mobile)
  *     tags: [Admin]
  *     requestBody:
  *       required: true
@@ -57,12 +57,12 @@ export const adminCreation = async (req, res) => {
  *           schema:
  *             type: object
  *             required:
- *               - email
+ *               - emailOrMobile
  *               - password
  *             properties:
- *               email:
+ *               emailOrMobile:
  *                 type: string
- *                 format: email
+ *                 description: Admin email address or mobile number
  *               password:
  *                 type: string
  *     responses:
@@ -74,16 +74,37 @@ export const adminCreation = async (req, res) => {
 // Admin Login
 export const adminLogin = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { emailOrMobile, email, mobile, password } = req.body;
 
-    if (!email || !password) {
+    // Support both old format (email) and new format (emailOrMobile)
+    const identifier = emailOrMobile || email || mobile;
+
+    if (!identifier || !password) {
       return res.status(400).json({
         success: false, 
-        message: "Email and password required" 
+        message: "Email/Mobile and password required" 
       });
     }
 
-    const admin = await User.findOne({ email, role: "admin" })
+    // Determine if identifier is email or mobile
+    const isEmail = identifier.includes('@');
+    const isMobile = /^[0-9]{10,}$/.test(identifier.replace(/[\s\-+()]/g, ''));
+
+    // Build query to find admin by email or mobile
+    let adminQuery = { role: "admin" };
+    if (isEmail) {
+      adminQuery.email = identifier.toLowerCase().trim();
+    } else if (isMobile) {
+      adminQuery.mobile = identifier.replace(/[\s\-+()]/g, '');
+    } else {
+      // Try both email and mobile
+      adminQuery.$or = [
+        { email: identifier.toLowerCase().trim() },
+        { mobile: identifier.replace(/[\s\-+()]/g, '') }
+      ];
+    }
+
+    const admin = await User.findOne(adminQuery)
       .select('-password')
       .populate('defaultCompany', 'companyName companyCode companyEmail companyMobile contactDetails')
       .populate('companies.companyId', 'companyName companyCode companyEmail companyMobile contactDetails');
@@ -96,7 +117,7 @@ export const adminLogin = async (req, res) => {
     }
 
     // Verify password
-    const adminWithPassword = await User.findOne({ email, role: "admin" });
+    const adminWithPassword = await User.findOne({ _id: admin._id, role: "admin" });
     const isPasswordCorrect = await bcrypt.compare(password, adminWithPassword.password);
     if (!isPasswordCorrect) {
       return res.status(401).json({
@@ -410,6 +431,33 @@ export const createUser = async (req, res) => {
         success: false,
         message: "Access denied to this company"
       });
+    }
+
+    // Get company to check user limit
+    const company = await Company.findById(companyId);
+    if (!company) {
+      return res.status(400).json({
+        success: false,
+        message: "Company not found"
+      });
+    }
+
+    // Check user limit for the company
+    if (company.maxUser) {
+      // Count current active users for this company (excluding admin and superadmin)
+      const currentUserCount = await User.countDocuments({
+        'companies.companyId': companyId,
+        'companies.isActive': true,
+        isActive: true,
+        role: { $nin: ['admin', 'superadmin'] }
+      });
+
+      if (currentUserCount >= company.maxUser) {
+        return res.status(400).json({
+          success: false,
+          message: `Company has reached its user limit. Maximum allowed users: ${company.maxUser}. Current users: ${currentUserCount}. Cannot create more users.`
+        });
+      }
     }
 
     // Check if user already exists with same mobile or email

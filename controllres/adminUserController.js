@@ -221,7 +221,18 @@ export const getUsersByRole = async (req, res) => {
  *       201:
  *         description: User created successfully
  *       400:
- *         description: Bad request
+ *         description: Bad request (validation error, user already exists, or company user limit reached)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: false
+ *                 message:
+ *                   type: string
+ *                   example: "Company has reached its user limit. Maximum allowed users: 10. Current users: 10. Cannot create more users."
  *       403:
  *         description: Access denied
  */
@@ -287,6 +298,24 @@ export const createUser = async (req, res) => {
         success: false,
         message: 'Company not found'
       });
+    }
+
+    // Check user limit for the company
+    if (company.maxUser) {
+      // Count current active users for this company (excluding admin and superadmin)
+      const currentUserCount = await User.countDocuments({
+        'companies.companyId': companyId,
+        'companies.isActive': true,
+        isActive: true,
+        role: { $nin: ['admin', 'superadmin'] }
+      });
+
+      if (currentUserCount >= company.maxUser) {
+        return res.status(400).json({
+          success: false,
+          message: `Company has reached its user limit. Maximum allowed users: ${company.maxUser}. Current users: ${currentUserCount}. Cannot create more users.`
+        });
+      }
     }
 
     // Set hierarchy level based on role

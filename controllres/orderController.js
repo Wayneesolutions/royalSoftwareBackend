@@ -234,14 +234,6 @@ export const createOrder = async (req, res) => {
         });
       }
 
-      // Check stock availability
-      if (!product.isInStock(item.quantity)) {
-        return res.status(400).json({
-          success: false,
-          message: `Insufficient stock for product ${product.productName}. Available: ${product.stock}`
-        });
-      }
-
       const unitPrice = product.sellingPrice;
       const discountPercent = item.discount || 0;
       const gstRateInput = item.gstRate !== undefined ? item.gstRate : product.gstRate;
@@ -344,14 +336,6 @@ export const createOrder = async (req, res) => {
 
     // Save order
     await order.save();
-
-    // Update product stock
-    for (const item of items) {
-      await Product.findByIdAndUpdate(
-        item.productId,
-        { $inc: { stock: -item.quantity } }
-      );
-    }
 
     // Populate order details
     await order.populate([
@@ -920,14 +904,6 @@ export const deleteOrder = async (req, res) => {
         success: false,
         message: 'Order not found'
       });
-    }
-
-    // Restore product stock
-    for (const item of order.items) {
-      await Product.findByIdAndUpdate(
-        item.productId,
-        { $inc: { stock: item.quantity } }
-      );
     }
 
     res.json({

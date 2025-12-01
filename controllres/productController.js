@@ -66,7 +66,7 @@ const resolveCategory = (payload) => normalizeString(payload?.category, 'General
 const resolveProductCode = (payload) => normalizeString(payload?.productCode);
 
 const buildCreateProductPayload = (payload, context) => {
-  const {
+    const {
     companyId,
     companyCode,
     createdBy,
@@ -87,16 +87,16 @@ const buildCreateProductPayload = (payload, context) => {
   const resolvedItemGst = itemGstInput ?? resolvedGstRate;
 
   return {
-    name,
+      name,
     partNo: normalizeString(payload.partNo),
     itemAlias: normalizeString(payload.itemAlias),
     description: normalizeString(payload.description),
     parent: normalizeString(payload.parent),
-    category,
+      category,
     baseUnits: normalizeString(payload.baseUnits),
     additionalUnits: normalizeString(payload.additionalUnits),
-    stdPurcRate,
-    stdSaleRate,
+      stdPurcRate,
+      stdSaleRate,
     itemGstPer: resolvedItemGst,
     itemHsn: normalizeString(payload.itemHsn),
     itemHsnDesc: normalizeString(payload.itemHsnDesc),
@@ -109,7 +109,7 @@ const buildCreateProductPayload = (payload, context) => {
     other3: normalizeString(payload.other3),
     other4: normalizeString(payload.other4),
     other5: normalizeString(payload.other5),
-    productCode,
+      productCode,
     productName: normalizeString(payload.productName, name),
     subCategory: normalizeString(payload.subCategory),
     brand: normalizeString(payload.brand),

@@ -286,6 +286,28 @@ export const upsertUserFromTally = async (req, res) => {
         continue;
       }
 
+      // Check user limit for the company (only for non-admin/superadmin roles)
+      if (company.maxUser && role !== 'admin' && role !== 'superadmin') {
+        // Count current active users for this company (excluding admin and superadmin)
+        const currentUserCount = await User.countDocuments({
+          'companies.companyId': company._id,
+          'companies.isActive': true,
+          isActive: true,
+          role: { $nin: ['admin', 'superadmin'] }
+        });
+
+        if (currentUserCount >= company.maxUser) {
+          results.push({
+            userName: item.userName,
+            guid: normalizedGuid,
+            success: false,
+            message: `Company has reached its user limit. Maximum allowed users: ${company.maxUser}. Current users: ${currentUserCount}. Cannot create more users.`,
+            error: 'USER_LIMIT_REACHED',
+          });
+          continue;
+        }
+      }
+
       const hashedPassword = await bcrypt.hash(password, 10);
 
       const createdUser = await User.create({

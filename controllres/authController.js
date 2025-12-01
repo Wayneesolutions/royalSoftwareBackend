@@ -7,7 +7,7 @@ import Company from '../models/company/companyModel.js';
  * @swagger
  * /api/v1/auth/login:
  *   post:
- *     summary: Universal login for all user types
+ *     summary: Universal login for all user types (email or mobile)
  *     tags: [Authentication]
  *     requestBody:
  *       required: true
@@ -16,12 +16,12 @@ import Company from '../models/company/companyModel.js';
  *           schema:
  *             type: object
  *             required:
- *               - email
+ *               - emailOrMobile
  *               - password
  *             properties:
- *               email:
+ *               emailOrMobile:
  *                 type: string
- *                 format: email
+ *                 description: User email address or mobile number
  *               password:
  *                 type: string
  *     responses:
@@ -32,17 +32,40 @@ import Company from '../models/company/companyModel.js';
  */
 export const universalLogin = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { emailOrMobile, email, mobile, password } = req.body;
 
-    if (!email || !password) {
+    // Support both old format (email) and new format (emailOrMobile)
+    const identifier = emailOrMobile || email || mobile;
+
+    if (!identifier || !password) {
       return res.status(400).json({
         success: false,
-        message: 'Email and password are required'
+        message: 'Email/Mobile and password are required'
       });
     }
 
-    // Find user by email (with password for verification)
-    const userWithPassword = await User.findOne({ email });
+    // Determine if identifier is email or mobile (mobile is typically numeric)
+    const isEmail = identifier.includes('@');
+    const isMobile = /^[0-9]{10,}$/.test(identifier.replace(/[\s\-+()]/g, ''));
+
+    // Build query to find user by email or mobile
+    let userQuery = {};
+    if (isEmail) {
+      userQuery = { email: identifier.toLowerCase().trim() };
+    } else if (isMobile) {
+      userQuery = { mobile: identifier.replace(/[\s\-+()]/g, '') };
+    } else {
+      // Try both email and mobile
+      userQuery = {
+        $or: [
+          { email: identifier.toLowerCase().trim() },
+          { mobile: identifier.replace(/[\s\-+()]/g, '') }
+        ]
+      };
+    }
+
+    // Find user by email or mobile (with password for verification)
+    const userWithPassword = await User.findOne(userQuery);
 
     if (!userWithPassword || !userWithPassword.isActive) {
       return res.status(401).json({
@@ -61,7 +84,7 @@ export const universalLogin = async (req, res) => {
     }
 
     // Get user data with populated fields (without password)
-    const user = await User.findOne({ email })
+    const user = await User.findOne({ _id: userWithPassword._id })
       .select('-password')
       .populate('defaultCompany', 'companyName companyCode companyEmail companyMobile contactDetails')
       .populate('companies.companyId', 'companyName companyCode companyEmail companyMobile contactDetails')
