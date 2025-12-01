@@ -227,27 +227,59 @@ export const getUsersByCompany = async (req, res) => {
       query.role = role
     }
 
-    // Apply hierarchy-based filtering
+    // Helper function to get all child user IDs recursively
+    const getAllChildUserIdsRecursive = async (parentUserId, companyId) => {
+      const childUserIds = [];
+      
+      // Get direct children
+      const directChildren = await User.find({
+        'hierarchy.parentUser': parentUserId,
+        'companies.companyId': companyId,
+        'companies.isActive': true,
+        isActive: true
+      }).select('_id');
+      
+      const directChildIds = directChildren.map(child => child._id.toString());
+      childUserIds.push(...directChildIds);
+      
+      // Recursively get children of children
+      for (const childId of directChildIds) {
+        const nestedChildren = await getAllChildUserIdsRecursive(childId, companyId);
+        childUserIds.push(...nestedChildren);
+      }
+      
+      return childUserIds;
+    };
+
+    // Apply hierarchy-based filtering based on actual parent-child relationships
     if (user.role !== 'superadmin') {
-      // For non-superadmin users, only show users they have access to based on hierarchy
       if (user.role === 'admin') {
-        // Admin can see all users in their company
-        // No additional filtering needed
-      } else if (user.role === 'zonal') {
-        // Zonal can see RSM, ASM, Salesman, Dealers, Distributors under them
-        query.role = { $in: ['rsm', 'asm', 'salesman', 'dealers', 'distibutors'] }
-      } else if (user.role === 'rsm') {
-        // RSM can see ASM, Salesman, Dealers, Distributors under them
-        query.role = { $in: ['asm', 'salesman', 'dealers', 'distibutors'] }
-      } else if (user.role === 'asm') {
-        // ASM can see Salesman, Dealers, Distributors under them
-        query.role = { $in: ['salesman', 'dealers', 'distibutors'] }
-      } else if (user.role === 'salesman') {
-        // Salesman can see Dealers, Distributors under them
-        query.role = { $in: ['dealers', 'distibutors'] }
+        // Admin can see all users in their company (except superadmin)
+        query.role = { $nin: ['superadmin'] };
       } else {
-        // Dealers, Distributors, SubDealers can only see their own data
-        query._id = userId
+        // For other roles, only show their child users (based on actual parent-child relationship)
+        const childUserIds = await getAllChildUserIdsRecursive(userId, targetCompanyId);
+        
+        if (childUserIds.length === 0) {
+          // No child users, return empty result
+          return res.json({
+            success: true,
+            message: 'Users retrieved successfully',
+            data: {
+              users: [],
+              pagination: {
+                currentPage: parseInt(page),
+                totalPages: 0,
+                totalUsers: 0,
+                hasNextPage: false,
+                hasPrevPage: false
+              }
+            }
+          });
+        }
+        
+        // Filter to only show child users
+        query._id = { $in: childUserIds };
       }
     }
 
@@ -271,11 +303,24 @@ export const getUsersByCompany = async (req, res) => {
     const hasNextPage = parseInt(page) < totalPages
     const hasPrevPage = parseInt(page) > 1
 
+    // Format users to ensure hierarchy is always included
+    const formattedUsers = users.map(user => {
+      const userObj = user.toObject ? user.toObject() : user;
+      // Ensure hierarchy field is always present
+      if (!userObj.hierarchy) {
+        userObj.hierarchy = {
+          parentUser: null,
+          level: null
+        };
+      }
+      return userObj;
+    });
+
     res.json({
       success: true,
       message: 'Users retrieved successfully',
       data: {
-        users,
+        users: formattedUsers,
         pagination: {
           currentPage: parseInt(page),
           totalPages,

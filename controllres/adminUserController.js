@@ -103,10 +103,23 @@ export const getUsersByCompany = async (req, res) => {
     const totalUsers = await User.countDocuments(query);
     const totalPages = Math.ceil(totalUsers / limit);
 
+    // Format users to ensure hierarchy is always included
+    const formattedUsers = users.map(user => {
+      const userObj = user.toObject ? user.toObject() : user;
+      // Ensure hierarchy field is always present
+      if (!userObj.hierarchy) {
+        userObj.hierarchy = {
+          parentUser: null,
+          level: null
+        };
+      }
+      return userObj;
+    });
+
     return res.json({
       success: true,
       data: {
-        users,
+        users: formattedUsers,
         pagination: {
           currentPage: parseInt(page),
           totalPages,

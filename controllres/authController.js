@@ -32,17 +32,27 @@ import Company from '../models/company/companyModel.js';
  */
 export const universalLogin = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    // Accept both 'email' and 'emailOrMobile' for backward compatibility
+    const { email, emailOrMobile, password } = req.body;
+    
+    // Use emailOrMobile if provided, otherwise fall back to email
+    const userIdentifier = emailOrMobile || email;
 
-    if (!email || !password) {
+    if (!userIdentifier || !password) {
       return res.status(400).json({
         success: false,
         message: 'Email and password are required'
       });
     }
 
-    // Find user by email (with password for verification)
-    const userWithPassword = await User.findOne({ email });
+    // Find user by email or mobile (with password for verification)
+    // Check if the identifier is an email or mobile number
+    const isEmail = userIdentifier.includes('@');
+    const userQuery = isEmail 
+      ? { email: userIdentifier }
+      : { mobile: userIdentifier };
+    
+    const userWithPassword = await User.findOne(userQuery);
 
     if (!userWithPassword || !userWithPassword.isActive) {
       return res.status(401).json({
@@ -61,7 +71,7 @@ export const universalLogin = async (req, res) => {
     }
 
     // Get user data with populated fields (without password)
-    const user = await User.findOne({ email })
+    const user = await User.findOne(userQuery)
       .select('-password')
       .populate('defaultCompany', 'companyName companyCode companyEmail companyMobile contactDetails')
       .populate('companies.companyId', 'companyName companyCode companyEmail companyMobile contactDetails')

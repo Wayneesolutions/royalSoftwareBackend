@@ -372,15 +372,31 @@ export const getCompanyData = async (req, res) => {
 // Create User for Company
 export const createUser = async (req, res) => {
   try {
-    const { name, email, mobile, password, role, userName, address } = req.body;
+    const { name, email, mobile, password, role, userName, address, parentUserId } = req.body;
     const adminId = req.user.userId;
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
 
     // Validate required fields
+    console.log('Create User Request Body:', {
+      name: !!name,
+      mobile: !!mobile,
+      password: !!password,
+      role: !!role,
+      email: !!email,
+      hasAddress: !!address
+    });
+
     if (!name || !mobile || !password || !role) {
+      const missingFields = [];
+      if (!name) missingFields.push('name');
+      if (!mobile) missingFields.push('mobile');
+      if (!password) missingFields.push('password');
+      if (!role) missingFields.push('role');
+      
+      console.log('Missing required fields:', missingFields);
       return res.status(400).json({
         success: false,
-        message: "Name, mobile, password, and role are required"
+        message: `Missing required fields: ${missingFields.join(', ')}`
       });
     }
 
@@ -421,10 +437,160 @@ export const createUser = async (req, res) => {
     });
 
     if (existingUser) {
-      return res.status(400).json({
-        success: false,
-        message: "User with this mobile number or email already exists"
+      console.log('User already exists:', {
+        existingUserId: existingUser._id,
+        existingEmail: existingUser.email,
+        existingMobile: existingUser.mobile,
+        requestedEmail: email,
+        requestedMobile: mobile
       });
+
+      // Check if user already has access to this company
+      const companyIdStr = companyId.toString();
+      // Handle both ObjectId and populated company objects
+      const hasCompanyAccess = existingUser.companies.some(
+        comp => {
+          const compId = comp.companyId?._id ? comp.companyId._id.toString() : comp.companyId?.toString();
+          return compId === companyIdStr;
+        }
+      );
+
+      if (hasCompanyAccess) {
+        // Check if the assignment is active
+        const companyAssignment = existingUser.companies.find(
+          comp => {
+            const compId = comp.companyId?._id ? comp.companyId._id.toString() : comp.companyId?.toString();
+            return compId === companyIdStr;
+          }
+        );
+
+        if (companyAssignment && companyAssignment.isActive) {
+          return res.status(400).json({
+            success: false,
+            message: "User is already assigned to this company"
+          });
+        } else {
+          // Reactivate the assignment
+          companyAssignment.isActive = true;
+          companyAssignment.assignedBy = adminId;
+          companyAssignment.assignedAt = new Date();
+          
+          // Update hierarchy if parentUserId is provided
+          if (parentUserId) {
+            const parentUser = await User.findOne({
+              _id: parentUserId,
+              'companies.companyId': companyId,
+              'companies.isActive': true,
+              isActive: true
+            });
+            
+            if (parentUser) {
+              existingUser.hierarchy = {
+                parentUser: parentUserId,
+                level: getRoleLevel(role)
+              };
+            }
+          }
+          
+          await existingUser.save();
+
+          // Update company's user count
+          await Company.findByIdAndUpdate(companyId, {
+            $inc: { currentUsers: 1 }
+          });
+
+          const updatedUser = await User.findById(existingUser._id)
+            .select('-password')
+            .populate('defaultCompany', 'companyName companyCode companyEmail companyMobile contactDetails')
+            .populate('companies.companyId', 'companyName companyCode companyEmail companyMobile contactDetails')
+            .populate('hierarchy.parentUser', 'name email role');
+
+          return res.status(200).json({
+            success: true,
+            message: "User company assignment reactivated",
+            user: {
+              _id: updatedUser._id,
+              name: updatedUser.name,
+              email: updatedUser.email,
+              mobile: updatedUser.mobile,
+              role: updatedUser.role,
+              userName: updatedUser.userName,
+              address: updatedUser.address,
+              isActive: updatedUser.isActive,
+              hierarchy: updatedUser.hierarchy || {
+                parentUser: null,
+                level: null
+              },
+              companies: updatedUser.companies
+            }
+          });
+        }
+      } else {
+        // User exists but doesn't have access to this company - add the company
+        existingUser.companies.push({
+          companyId: companyId,
+          role: role,
+          isActive: true,
+          assignedBy: adminId,
+          assignedAt: new Date()
+        });
+
+        // Update defaultCompany if user doesn't have one
+        if (!existingUser.defaultCompany) {
+          existingUser.defaultCompany = companyId;
+        }
+
+        await existingUser.save();
+
+        // Update company's user count
+        await Company.findByIdAndUpdate(companyId, {
+          $inc: { currentUsers: 1 }
+        });
+
+        // Update hierarchy if parentUserId is provided
+        if (parentUserId) {
+          const parentUser = await User.findOne({
+            _id: parentUserId,
+            'companies.companyId': companyId,
+            'companies.isActive': true,
+            isActive: true
+          });
+          
+          if (parentUser) {
+            existingUser.hierarchy = {
+              parentUser: parentUserId,
+              level: getRoleLevel(role)
+            };
+            await existingUser.save();
+          }
+        }
+
+        const updatedUser = await User.findById(existingUser._id)
+          .select('-password')
+          .populate('defaultCompany', 'companyName companyCode companyEmail companyMobile contactDetails')
+          .populate('companies.companyId', 'companyName companyCode companyEmail companyMobile contactDetails')
+          .populate('hierarchy.parentUser', 'name email role');
+
+        return res.status(200).json({
+          success: true,
+          message: "User assigned to company successfully",
+          user: {
+            _id: updatedUser._id,
+            name: updatedUser.name,
+            email: updatedUser.email,
+            mobile: updatedUser.mobile,
+            role: updatedUser.role,
+            userName: updatedUser.userName,
+            address: updatedUser.address,
+            isActive: updatedUser.isActive,
+            hierarchy: updatedUser.hierarchy || {
+              parentUser: null,
+              level: null
+            },
+            companies: updatedUser.companies
+          }
+        });
+      }
     }
 
     // Hash the password
@@ -438,6 +604,26 @@ export const createUser = async (req, res) => {
       pincode: address?.pincode || '',
       country: address?.country || 'India'
     };
+
+    // Determine parent user - use parentUserId if provided, otherwise default to adminId
+    let finalParentUserId = adminId;
+    if (parentUserId) {
+      // Validate that the parent user exists and is in the same company
+      const parentUser = await User.findOne({
+        _id: parentUserId,
+        'companies.companyId': companyId,
+        'companies.isActive': true,
+        isActive: true
+      });
+      
+      if (!parentUser) {
+        return res.status(400).json({
+          success: false,
+          message: "Parent user not found or not active in this company"
+        });
+      }
+      finalParentUserId = parentUserId;
+    }
 
     // Create new user
     const newUser = await User.create({
@@ -457,7 +643,7 @@ export const createUser = async (req, res) => {
         assignedAt: new Date()
       }],
       hierarchy: {
-        parentUser: adminId,
+        parentUser: finalParentUserId,
         level: getRoleLevel(role)
       },
       createdBy: adminId
@@ -468,26 +654,154 @@ export const createUser = async (req, res) => {
       $inc: { currentUsers: 1 }
     });
 
+    // Fetch the created user with populated hierarchy
+    const createdUser = await User.findById(newUser._id)
+      .select('-password')
+      .populate('hierarchy.parentUser', 'name email role')
+      .populate('companies.companyId', 'companyName companyCode');
+
     res.status(201).json({
       success: true,
       message: "User created successfully",
       user: {
-        _id: newUser._id,
-        name: newUser.name,
-        email: newUser.email,
-        mobile: newUser.mobile,
-        role: newUser.role,
-        userName: newUser.userName,
-        address: newUser.address,
-        isActive: newUser.isActive
+        _id: createdUser._id,
+        name: createdUser.name,
+        email: createdUser.email,
+        mobile: createdUser.mobile,
+        role: createdUser.role,
+        userName: createdUser.userName,
+        address: createdUser.address,
+        isActive: createdUser.isActive,
+        hierarchy: createdUser.hierarchy || {
+          parentUser: null,
+          level: null
+        },
+        companies: createdUser.companies
       }
     });
 
   } catch (error) {
     console.error("Create user error:", error);
+    console.error("Error details:", {
+      message: error.message,
+      stack: error.stack,
+      name: error.name
+    });
     res.status(500).json({
       success: false,
-      message: "Server error"
+      message: "Server error",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// Helper function to get all child user IDs recursively (including nested children)
+// This function gets all users that are descendants of the given parent user
+const getAllChildUserIds = async (parentUserId, companyId) => {
+  const childUserIds = [];
+  
+  // Get direct children
+  const directChildren = await User.find({
+    'hierarchy.parentUser': parentUserId,
+    'companies.companyId': companyId,
+    'companies.isActive': true,
+    isActive: true
+  }).select('_id');
+  
+  const directChildIds = directChildren.map(child => child._id.toString());
+  childUserIds.push(...directChildIds);
+  
+  // Recursively get children of children
+  for (const childId of directChildIds) {
+    const nestedChildren = await getAllChildUserIds(childId, companyId);
+    childUserIds.push(...nestedChildren);
+  }
+  
+  // Remove duplicates
+  return [...new Set(childUserIds)];
+};
+
+// Get all users for parent selection
+export const getUsersForParentSelection = async (req, res) => {
+  try {
+    const adminId = req.user.userId;
+    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+    const { excludeUserId } = req.query; // Optional: exclude a specific user (for edit mode)
+
+    // Check if admin has access to the company
+    const admin = await User.findById(adminId).populate('defaultCompany');
+    if (!admin || !admin.defaultCompany) {
+      return res.status(403).json({
+        success: false,
+        message: "No company assigned to this admin"
+      });
+    }
+
+    // Convert companyId to string for comparison
+    const adminCompanyId = admin.defaultCompany._id.toString();
+    const targetCompanyId = companyId.toString();
+
+    if (adminCompanyId !== targetCompanyId) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied to this company"
+      });
+    }
+
+    // Build query - get all active users in the company (including admin)
+    const query = {
+      'companies.companyId': companyId,
+      'companies.isActive': true,
+      isActive: true
+    };
+
+    // Exclude the user being edited if provided
+    if (excludeUserId) {
+      query._id = { $ne: excludeUserId };
+    }
+
+    // Get all users (no pagination, no role filter - include all roles)
+    const users = await User.find(query)
+      .select('_id name email mobile role userName isActive hierarchy')
+      .populate('hierarchy.parentUser', 'name email role')
+      .sort({ 'hierarchy.level': 1, name: 1 });
+
+    // Format response
+    const formattedUsers = users.map(user => {
+      const userObj = user.toObject ? user.toObject() : user;
+      // Ensure hierarchy field is always present
+      if (!userObj.hierarchy) {
+        userObj.hierarchy = {
+          parentUser: null,
+          level: null
+        };
+      }
+      return {
+        _id: userObj._id,
+        name: userObj.name,
+        email: userObj.email || '',
+        mobile: userObj.mobile || '',
+        role: userObj.role,
+        userName: userObj.userName || '',
+        isActive: userObj.isActive,
+        hierarchy: userObj.hierarchy
+      };
+    });
+
+    res.json({
+      success: true,
+      data: {
+        users: formattedUsers,
+        total: formattedUsers.length
+      }
+    });
+
+  } catch (error) {
+    console.error("Get users for parent selection error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
@@ -519,24 +833,56 @@ export const getUsersByCompany = async (req, res) => {
       });
     }
 
-    // Build query - only active users, exclude admin and superadmin
+    // Build base query - only active users in the company
     const query = {
       'companies.companyId': companyId,
       'companies.isActive': true,
-      isActive: true, // Only show active users
-      role: { $nin: ['admin', 'superadmin'] }, // Exclude admin and superadmin users
-      _id: { $ne: adminId } // Exclude the admin user
+      isActive: true
     };
 
+    // Apply hierarchy-based filtering
+    // Admin can see all users in their company (except superadmin)
+    if (admin.role === 'admin') {
+      query.role = { $nin: ['admin', 'superadmin'] };
+      query._id = { $ne: adminId }; // Exclude the admin user
+    } else {
+      // For other roles (zonal, rsm, asm, etc.), only show their child users
+      // Get all child user IDs recursively
+      const childUserIds = await getAllChildUserIds(adminId, companyId);
+      
+      if (childUserIds.length === 0) {
+        // No child users, return empty result
+        return res.json({
+          success: true,
+          data: {
+            users: [],
+            company: await Company.findById(companyId).select('companyName companyCode maxUser currentUsers'),
+            pagination: {
+              currentPage: parseInt(page),
+              totalPages: 0,
+              totalUsers: 0,
+              hasNext: false,
+              hasPrev: false
+            }
+          }
+        });
+      }
+      
+      // Filter to only show child users
+      query._id = { $in: childUserIds };
+    }
+
     if (role) {
+      // Add role filter
       query.role = role;
     }
 
     // Get users with pagination
-    const skip = (page - 1) * limit;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
     const users = await User.find(query)
-      .select('name email mobile role userName isActive address companies.$ lastLogin createdAt')
+      .select('name email mobile role userName isActive address companies.$ lastLogin createdAt hierarchy')
       .populate('companies.companyId', 'companyName companyCode')
+      .populate('hierarchy.parentUser', 'name email role')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
@@ -547,10 +893,35 @@ export const getUsersByCompany = async (req, res) => {
     // Get company details
     const company = await Company.findById(companyId).select('companyName companyCode maxUser currentUsers');
 
+    // Format users to ensure hierarchy is always included
+    const formattedUsers = users.map(user => {
+      const userObj = user.toObject ? user.toObject() : user;
+      // Ensure hierarchy field is always present and properly formatted
+      if (!userObj.hierarchy) {
+        userObj.hierarchy = {
+          parentUser: null,
+          level: null
+        };
+      } else {
+        // Ensure hierarchy object structure is complete
+        if (!userObj.hierarchy.hasOwnProperty('parentUser')) {
+          userObj.hierarchy.parentUser = null;
+        }
+        if (!userObj.hierarchy.hasOwnProperty('level')) {
+          userObj.hierarchy.level = null;
+        }
+        // If parentUser is null or undefined, explicitly set it
+        if (!userObj.hierarchy.parentUser) {
+          userObj.hierarchy.parentUser = null;
+        }
+      }
+      return userObj;
+    });
+
     res.json({
       success: true,
       data: {
-        users,
+        users: formattedUsers,
         company,
         pagination: {
           currentPage: parseInt(page),

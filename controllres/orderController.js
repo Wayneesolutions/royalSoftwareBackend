@@ -376,9 +376,36 @@ export const createOrder = async (req, res) => {
   }
 };
 
+// Helper function to get all child user IDs recursively (including nested children)
+const getAllChildUserIdsForOrders = async (parentUserId, companyId) => {
+  const childUserIds = [];
+  
+  // Get direct children
+  const directChildren = await User.find({
+    'hierarchy.parentUser': parentUserId,
+    'companies.companyId': companyId,
+    'companies.isActive': true,
+    isActive: true
+  }).select('_id');
+  
+  const directChildIds = directChildren.map(child => child._id.toString());
+  childUserIds.push(...directChildIds);
+  
+  // Recursively get children of children
+  for (const childId of directChildIds) {
+    const nestedChildren = await getAllChildUserIdsForOrders(childId, companyId);
+    childUserIds.push(...nestedChildren);
+  }
+  
+  // Remove duplicates
+  return [...new Set(childUserIds)];
+};
+
 // Get all orders for a company
 export const getOrders = async (req, res) => {
   try {
+    const userId = req.user.userId;
+    const userRole = req.user.userDetails.role;
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
     const {
       page = 1,
@@ -394,20 +421,63 @@ export const getOrders = async (req, res) => {
 
     const filter = { companyId, isActive: true };
 
-    // Apply filters
-    if (status) filter.status = status;
-    if (customerId) filter.customerId = customerId;
-    if (orderType) filter.orderType = orderType; // Filter by orderType (e.g., 'zonal_created', 'admin_created')
-    if (createdBy) {
-      // Convert to ObjectId if it's a string
-      try {
+    // Apply hierarchy-based filtering for createdBy
+    // If user is not admin/superadmin, only show orders created by their child users
+    if (userRole !== 'admin' && userRole !== 'superadmin') {
+      // Get all child user IDs
+      const childUserIds = await getAllChildUserIdsForOrders(userId, companyId);
+      
+      // Include the current user's own orders
+      const allowedUserIds = [userId.toString(), ...childUserIds];
+      
+      // If createdBy is specified, check if it's in the allowed list
+      if (createdBy) {
+        const createdById = createdBy.toString();
+        if (!allowedUserIds.includes(createdById)) {
+          // User doesn't have access to this user's orders
+          return res.json({
+            success: true,
+            orders: [],
+            pagination: {
+              currentPage: parseInt(page),
+              totalPages: 0,
+              totalOrders: 0,
+              hasNext: false,
+              hasPrev: false
+            },
+            stats: {
+              totalOrders: 0,
+              totalAmount: 0,
+              pendingOrders: 0,
+              completedOrders: 0
+            }
+          });
+        }
         filter.createdBy = mongoose.Types.ObjectId.isValid(createdBy) 
           ? new mongoose.Types.ObjectId(createdBy) 
           : createdBy;
-      } catch (error) {
-        console.error('Error converting createdBy to ObjectId:', error);
+      } else {
+        // Filter to only show orders created by the user or their children
+        filter.createdBy = { $in: allowedUserIds.map(id => new mongoose.Types.ObjectId(id)) };
+      }
+    } else {
+      // Admin and superadmin can see all orders, but if createdBy is specified, use it
+      if (createdBy) {
+        // Convert to ObjectId if it's a string
+        try {
+          filter.createdBy = mongoose.Types.ObjectId.isValid(createdBy) 
+            ? new mongoose.Types.ObjectId(createdBy) 
+            : createdBy;
+        } catch (error) {
+          console.error('Error converting createdBy to ObjectId:', error);
+        }
       }
     }
+
+    // Apply other filters
+    if (status) filter.status = status;
+    if (customerId) filter.customerId = customerId;
+    if (orderType) filter.orderType = orderType; // Filter by orderType (e.g., 'zonal_created', 'admin_created')
     if (startDate || endDate) {
       filter.orderDate = {};
       if (startDate) filter.orderDate.$gte = new Date(startDate);
@@ -439,14 +509,22 @@ export const getOrders = async (req, res) => {
     // Calculate order statistics using the same filter
     const statsMatch = { ...filter }; 
     
-    // Convert createdBy to ObjectId if it's a string (for aggregation pipeline)
-    if (statsMatch.createdBy && typeof statsMatch.createdBy === 'string') {
-      try {
-        statsMatch.createdBy = new mongoose.Types.ObjectId(statsMatch.createdBy);
-      } catch (error) {
-        console.error('Error converting createdBy to ObjectId:', error);
-        // If conversion fails, remove it from filter
-        delete statsMatch.createdBy;
+    // Handle createdBy filter for aggregation pipeline
+    // If it's an object with $in, keep it as is
+    // If it's a string, convert to ObjectId
+    if (statsMatch.createdBy) {
+      if (typeof statsMatch.createdBy === 'string') {
+        try {
+          statsMatch.createdBy = new mongoose.Types.ObjectId(statsMatch.createdBy);
+        } catch (error) {
+          console.error('Error converting createdBy to ObjectId:', error);
+          delete statsMatch.createdBy;
+        }
+      } else if (statsMatch.createdBy.$in) {
+        // If it's an $in operator, convert all IDs to ObjectId
+        statsMatch.createdBy.$in = statsMatch.createdBy.$in.map(id => 
+          typeof id === 'string' ? new mongoose.Types.ObjectId(id) : id
+        );
       }
     }
     
