@@ -6,6 +6,7 @@ import {
   getCompanyData,
   createUser,
   getUsersByCompany,
+  getUsersForParentSelection,
   updateUserStatus,
   editUser,
   deleteUser
@@ -35,6 +36,7 @@ adminRoute.post('/switch-company', requireAuth, authorizeRoles(['admin']), switc
 
 // User management routes
 adminRoute.get('/users-by-company', requireAuth, authorizeRoles(['admin']), getUsersByCompany)
+adminRoute.get('/users-for-parent', requireAuth, authorizeRoles(['admin']), getUsersForParentSelection)
 adminRoute.get('/role/:role', requireAuth, authorizeRoles(['admin']), getUsersByRole)
 adminRoute.get('/get-user/:id', requireAuth, authorizeRoles(['admin']), getUserById)
 adminRoute.post('/create-user', requireAuth, authorizeRoles(['admin']), createUser)

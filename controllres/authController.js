@@ -32,39 +32,26 @@ import Company from '../models/company/companyModel.js';
  */
 export const universalLogin = async (req, res) => {
   try {
-    const { emailOrMobile, email, mobile, password } = req.body;
+    // Accept both 'email' and 'emailOrMobile' for backward compatibility
+    const { email, emailOrMobile, password } = req.body;
+    
+    // Use emailOrMobile if provided, otherwise fall back to email
+    const userIdentifier = emailOrMobile || email;
 
-    // Support both old format (email) and new format (emailOrMobile)
-    const identifier = emailOrMobile || email || mobile;
-
-    if (!identifier || !password) {
+    if (!userIdentifier || !password) {
       return res.status(400).json({
         success: false,
         message: 'Email/Mobile and password are required'
       });
     }
 
-    // Determine if identifier is email or mobile (mobile is typically numeric)
-    const isEmail = identifier.includes('@');
-    const isMobile = /^[0-9]{10,}$/.test(identifier.replace(/[\s\-+()]/g, ''));
-
-    // Build query to find user by email or mobile
-    let userQuery = {};
-    if (isEmail) {
-      userQuery = { email: identifier.toLowerCase().trim() };
-    } else if (isMobile) {
-      userQuery = { mobile: identifier.replace(/[\s\-+()]/g, '') };
-    } else {
-      // Try both email and mobile
-      userQuery = {
-        $or: [
-          { email: identifier.toLowerCase().trim() },
-          { mobile: identifier.replace(/[\s\-+()]/g, '') }
-        ]
-      };
-    }
-
     // Find user by email or mobile (with password for verification)
+    // Check if the identifier is an email or mobile number
+    const isEmail = userIdentifier.includes('@');
+    const userQuery = isEmail 
+      ? { email: userIdentifier }
+      : { mobile: userIdentifier };
+    
     const userWithPassword = await User.findOne(userQuery);
 
     if (!userWithPassword || !userWithPassword.isActive) {
@@ -84,7 +71,7 @@ export const universalLogin = async (req, res) => {
     }
 
     // Get user data with populated fields (without password)
-    const user = await User.findOne({ _id: userWithPassword._id })
+    const user = await User.findOne(userQuery)
       .select('-password')
       .populate('defaultCompany', 'companyName companyCode companyEmail companyMobile contactDetails')
       .populate('companies.companyId', 'companyName companyCode companyEmail companyMobile contactDetails')
