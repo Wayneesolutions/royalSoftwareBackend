@@ -1061,7 +1061,7 @@ export const updateUserStatus = async (req, res) => {
 export const editUser = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { name, email, mobile, role, userName, isActive, address } = req.body;
+    const { name, email, mobile, role, userName, isActive, address, parentUserId } = req.body;
     const adminId = req.user.userId;
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
 
@@ -1073,7 +1073,8 @@ export const editUser = async (req, res) => {
       role,
       userName,
       isActive,
-      address
+      address,
+      parentUserId
     });
 
     // Validate required fields
@@ -1142,6 +1143,10 @@ export const editUser = async (req, res) => {
       });
     }
 
+    // Store old role to check if it changed
+    const oldRole = userToEdit.role;
+    const roleChanged = oldRole !== role;
+
     // Update user details
     userToEdit.name = name;
     userToEdit.mobile = mobile;
@@ -1176,8 +1181,35 @@ export const editUser = async (req, res) => {
       userToEdit.companies[companyIndex].role = role;
     }
 
+    // Initialize hierarchy if it doesn't exist
+    if (!userToEdit.hierarchy) {
+      userToEdit.hierarchy = {};
+    }
+
     // Update hierarchy level if role changed
-    if (userToEdit.role !== role) {
+    if (roleChanged) {
+      userToEdit.hierarchy.level = getRoleLevel(role);
+    }
+
+    // Update parent user if parentUserId is provided
+    if (parentUserId) {
+      // Validate that the parent user exists and is in the same company
+      const parentUser = await User.findOne({
+        _id: parentUserId,
+        'companies.companyId': companyId,
+        'companies.isActive': true,
+        isActive: true
+      });
+      
+      if (!parentUser) {
+        return res.status(400).json({
+          success: false,
+          message: "Parent user not found or not active in this company"
+        });
+      }
+      
+      // Update hierarchy parent user
+      userToEdit.hierarchy.parentUser = parentUserId;
       userToEdit.hierarchy.level = getRoleLevel(role);
     }
 
@@ -1189,21 +1221,33 @@ export const editUser = async (req, res) => {
       email: userToEdit.email,
       mobile: userToEdit.mobile,
       role: userToEdit.role,
-      address: userToEdit.address
+      address: userToEdit.address,
+      parentUserId: userToEdit.hierarchy?.parentUser
     });
+
+    // Fetch the updated user with populated hierarchy and companies
+    const updatedUser = await User.findById(userToEdit._id)
+      .select('-password')
+      .populate('hierarchy.parentUser', 'name email role')
+      .populate('companies.companyId', 'companyName companyCode');
 
     res.json({
       success: true,
       message: "User updated successfully",
       user: {
-        _id: userToEdit._id,
-        name: userToEdit.name,
-        email: userToEdit.email,
-        mobile: userToEdit.mobile,
-        role: userToEdit.role,
-        userName: userToEdit.userName,
-        address: userToEdit.address,
-        isActive: userToEdit.isActive
+        _id: updatedUser._id,
+        name: updatedUser.name,
+        email: updatedUser.email,
+        mobile: updatedUser.mobile,
+        role: updatedUser.role,
+        userName: updatedUser.userName,
+        address: updatedUser.address,
+        isActive: updatedUser.isActive,
+        hierarchy: updatedUser.hierarchy || {
+          parentUser: null,
+          level: null
+        },
+        companies: updatedUser.companies
       }
     });
 
