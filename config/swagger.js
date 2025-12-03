@@ -81,9 +81,87 @@ const options = {
               type: 'object',
               properties: {
                 parentUser: {
-                  type: 'string',
-                  description: 'Parent user ID in hierarchy'
+                  oneOf: [
+                    { type: 'string', description: 'Parent user ID' },
+                    { 
+                      type: 'object',
+                      description: 'Populated parent user object',
+                      properties: {
+                        _id: { type: 'string' },
+                        name: { type: 'string' },
+                        email: { type: 'string' },
+                        role: { type: 'string' },
+                        mobile: { type: 'string' }
+                      }
+                    }
+                  ],
+                  nullable: true,
+                  description: 'Parent user in hierarchy'
+                },
+                level: {
+                  type: 'number',
+                  nullable: true,
+                  description: 'Hierarchy level'
                 }
+              }
+            },
+            groups: {
+              type: 'array',
+              description: 'Array of groups assigned to the user. Empty array if no group assigned.',
+              items: {
+                type: 'object',
+                properties: {
+                  groupId: {
+                    oneOf: [
+                      { type: 'string' },
+                      {
+                        type: 'object',
+                        properties: {
+                          _id: { type: 'string' },
+                          GroupGUID: { type: 'string' },
+                          GroupName: { type: 'string' },
+                          GroupParent: { type: 'string', nullable: true },
+                          cmpcode: { type: 'string' },
+                          Remarks: { type: 'string' },
+                          other1: { type: 'string' },
+                          other2: { type: 'string' },
+                          other3: { type: 'string' },
+                          other4: { type: 'string' }
+                        }
+                      }
+                    ]
+                  },
+                  groupGUID: { type: 'string' },
+                  GroupGUID: { type: 'string' },
+                  GroupName: { type: 'string' },
+                  GroupParent: { type: 'string', nullable: true },
+                  cmpcode: { type: 'string' },
+                  Remarks: { type: 'string' },
+                  Other1: { type: 'string' },
+                  Other2: { type: 'string' },
+                  Other3: { type: 'string' },
+                  Other4: { type: 'string' },
+                  isActive: { type: 'boolean' },
+                  assignedBy: { type: 'string' },
+                  assignedAt: { type: 'string', format: 'date-time' }
+                }
+              }
+            },
+            primaryGroup: {
+              type: 'object',
+              nullable: true,
+              description: 'Primary/default group for quick access. null if no group assigned.',
+              properties: {
+                _id: { type: 'string' },
+                GroupGUID: { type: 'string' },
+                GroupName: { type: 'string' },
+                GroupParent: { type: 'string', nullable: true },
+                cmpcode: { type: 'string' },
+                Remarks: { type: 'string' },
+                Other1: { type: 'string' },
+                Other2: { type: 'string' },
+                Other3: { type: 'string' },
+                Other4: { type: 'string' }
               }
             }
           }

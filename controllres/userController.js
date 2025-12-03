@@ -33,13 +33,28 @@ import Company from '../models/company/companyModel.js'
  */
 export const switchCompany = async (req, res) => {
   try {
-    const { companyId } = req.body
-    const userId = req.user.userId
+    // Accept companyId from body or query params
+    const companyId = req.body?.companyId || req.query?.companyId
+    const userId = req.user?.userId
+
+    console.log('Switch Company Request:', {
+      body: req.body,
+      query: req.query,
+      companyId: companyId,
+      userId: userId
+    })
 
     if (!companyId) {
       return res.status(400).json({
         success: false,
         message: 'Company ID is required'
+      })
+    }
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'User not authenticated'
       })
     }
 
@@ -101,7 +116,12 @@ export const switchCompany = async (req, res) => {
     }
 
     // Update default company
-    user.defaultCompany = targetCompanyEntry.companyId._id
+    // Handle both populated and non-populated companyId
+    const targetCompanyId = targetCompanyEntry.companyId._id 
+      ? targetCompanyEntry.companyId._id 
+      : targetCompanyEntry.companyId
+    
+    user.defaultCompany = targetCompanyId
 
     // Update active role to match the assignment
     if (targetCompanyEntry.role && user.role !== targetCompanyEntry.role) {
@@ -114,8 +134,21 @@ export const switchCompany = async (req, res) => {
       .select('-password')
       .populate('defaultCompany', 'companyName companyCode companyEmail companyMobile contactDetails')
       .populate('companies.companyId', 'companyName companyCode companyEmail companyMobile contactDetails')
-      .populate('hierarchy.parentUser', 'name email role')
+      .populate('hierarchy.parentUserId', 'name email role mobile')
+      .populate({
+        path: 'groups.groupId',
+        select: 'GroupGUID GroupName GroupParent cmpcode',
+        model: 'Group',
+        options: { strictPopulate: false }
+      })
       .populate('createdBy', 'name email')
+
+    if (!updatedUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found after update'
+      })
+    }
 
     return res.json({
       success: true,

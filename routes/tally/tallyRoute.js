@@ -22,6 +22,13 @@ import {
   listUsersByCompanyGuid,
   listApprovedOrdersByCompanyGuid,
 } from '../../controllres/tallyQueryController.js';
+import {
+  upsertGroupFromTally,
+  updateGroupFromTally,
+  deleteGroupFromTally,
+  searchGroupsForTally,
+  listGroupsByCompanyGuid,
+} from '../../controllres/tallyGroupController.js';
 
 const tallyRoute = express.Router();
 
@@ -38,6 +45,8 @@ const tallyRoute = express.Router();
  *     description: User synchronization endpoints for Tally ERP
  *   - name: Tally Orders
  *     description: Order retrieval endpoints for Tally ERP
+ *   - name: Tally Groups
+ *     description: Group synchronization endpoints for Tally ERP
  */
 
 /**
@@ -1268,6 +1277,392 @@ tallyRoute.get('/companies/:guid/orders/approved', listApprovedOrdersByCompanyGu
 tallyRoute.post('/users', upsertUserFromTally);
 tallyRoute.patch('/companies/:guid/users', updateUsersFromTally);
 tallyRoute.delete('/companies/:guid/users', deleteUsersFromTally);
+
+// ===================== GROUP APIS =====================
+
+/**
+ * @swagger
+ * /api/v1/tally/groups:
+ *   post:
+ *     summary: Sync groups from Tally
+ *     description: >
+ *       Accepts group information pushed from Tally ERP (JSON or XML payload). Can accept a single group object or an array
+ *       of multiple groups for batch processing. All groups are upserted (created or updated) into Royal Software.
+ *       Groups are identified by GroupGUID and cmpcode combination.
+ *     tags: [Tally Groups]
+ *     requestBody:
+ *       required: true
+ *       description: Single group object or array of group objects
+ *       content:
+ *         application/json:
+ *           schema:
+ *             oneOf:
+ *               - type: object
+ *                 required:
+ *                   - GroupGUID
+ *                   - GroupName
+ *                   - cmpcode
+ *                 properties:
+ *                   id:
+ *                     type: string
+ *                     description: Optional internal ID (not used for identification)
+ *                   GroupGUID:
+ *                     type: string
+ *                     description: Group GUID from Tally (alphanumeric string)
+ *                     example: "GRP001"
+ *                   GroupName:
+ *                     type: string
+ *                     description: Name of the group
+ *                     example: "Sales Group"
+ *                   GroupParent:
+ *                     type: string
+ *                     description: Parent group GUID (optional, for hierarchical groups)
+ *                     example: "GRP000"
+ *                   cmpcode:
+ *                     type: string
+ *                     description: Company code
+ *                     example: "ROYAL01"
+ *                   Remarks:
+ *                     type: string
+ *                     description: Additional remarks or notes
+ *                     example: "Main sales group"
+ *                   Other1:
+ *                     type: string
+ *                     description: Additional field 1
+ *                   Other2:
+ *                     type: string
+ *                     description: Additional field 2
+ *                   Other3:
+ *                     type: string
+ *                     description: Additional field 3
+ *                   Other4:
+ *                     type: string
+ *                     description: Additional field 4
+ *               - type: array
+ *                 description: Array of groups for batch processing
+ *                 items:
+ *                   type: object
+ *                   required:
+ *                     - GroupGUID
+ *                     - GroupName
+ *                     - cmpcode
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                     GroupGUID:
+ *                       type: string
+ *                     GroupName:
+ *                       type: string
+ *                     GroupParent:
+ *                       type: string
+ *                     cmpcode:
+ *                       type: string
+ *                     Remarks:
+ *                       type: string
+ *                     Other1:
+ *                       type: string
+ *                     Other2:
+ *                       type: string
+ *                     Other3:
+ *                       type: string
+ *                     Other4:
+ *                       type: string
+ *     responses:
+ *       200:
+ *         description: All groups synced successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 results:
+ *                   type: array
+ *                   description: Array of results, one for each group processed
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       success:
+ *                         type: boolean
+ *                       group:
+ *                         type: object
+ *                         properties:
+ *                           _id:
+ *                             type: string
+ *                           GroupGUID:
+ *                             type: string
+ *                           GroupName:
+ *                             type: string
+ *                           GroupParent:
+ *                             type: string
+ *                           cmpcode:
+ *                             type: string
+ *                           Remarks:
+ *                             type: string
+ *                           other1:
+ *                             type: string
+ *                           other2:
+ *                             type: string
+ *                           other3:
+ *                             type: string
+ *                           other4:
+ *                             type: string
+ *                       message:
+ *                         type: string
+ *       207:
+ *         description: Partial success - some groups processed successfully, others failed
+ *       400:
+ *         description: Validation error or missing required fields
+ *       500:
+ *         description: Server error while syncing groups
+ */
+tallyRoute.post('/groups', upsertGroupFromTally);
+
+/**
+ * @swagger
+ * /api/v1/tally/groups:
+ *   patch:
+ *     summary: Update groups from Tally
+ *     description: >
+ *       Accepts one or more group payloads. Each payload must include the GroupGUID and optionally cmpcode.
+ *       Only provided fields are updated; other fields remain unchanged.
+ *     tags: [Tally Groups]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             oneOf:
+ *               - type: object
+ *                 required:
+ *                   - GroupGUID
+ *                 properties:
+ *                   GroupGUID:
+ *                     type: string
+ *                     description: Group GUID used to locate the record
+ *                   GroupName:
+ *                     type: string
+ *                   GroupParent:
+ *                     type: string
+ *                   cmpcode:
+ *                     type: string
+ *                   Remarks:
+ *                     type: string
+ *                   Other1:
+ *                     type: string
+ *                   Other2:
+ *                     type: string
+ *                   Other3:
+ *                     type: string
+ *                   Other4:
+ *                     type: string
+ *               - type: array
+ *                 items:
+ *                   type: object
+ *                   required:
+ *                     - GroupGUID
+ *                   properties:
+ *                     GroupGUID:
+ *                       type: string
+ *                     GroupName:
+ *                       type: string
+ *                     GroupParent:
+ *                       type: string
+ *                     cmpcode:
+ *                       type: string
+ *                     Remarks:
+ *                       type: string
+ *                     Other1:
+ *                       type: string
+ *                     Other2:
+ *                       type: string
+ *                     Other3:
+ *                       type: string
+ *                     Other4:
+ *                       type: string
+ *     responses:
+ *       200:
+ *         description: All groups updated successfully
+ *       207:
+ *         description: Partial success (some updates failed)
+ *       400:
+ *         description: Missing GroupGUID or invalid payload
+ *       500:
+ *         description: Server error while updating groups
+ */
+tallyRoute.patch('/groups', updateGroupFromTally);
+
+/**
+ * @swagger
+ * /api/v1/tally/groups/delete:
+ *   delete:
+ *     summary: Delete one or multiple groups by GroupGUID
+ *     tags: [Tally Groups]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             oneOf:
+ *               - type: object
+ *                 required:
+ *                   - GroupGUID
+ *                 properties:
+ *                   GroupGUID:
+ *                     type: string
+ *                     description: Group GUID to delete
+ *                   cmpcode:
+ *                     type: string
+ *                     description: Optional company code for precise matching
+ *               - type: array
+ *                 items:
+ *                   type: object
+ *                   required:
+ *                     - GroupGUID
+ *                   properties:
+ *                     GroupGUID:
+ *                       type: string
+ *                       description: Group GUID to delete
+ *                     cmpcode:
+ *                       type: string
+ *                       description: Optional company code for precise matching
+ *     responses:
+ *       200:
+ *         description: All groups deleted successfully
+ *       207:
+ *         description: Partial success (some deletes failed)
+ *       404:
+ *         description: Groups not found
+ *       500:
+ *         description: Server error
+ */
+tallyRoute.delete('/groups/delete', deleteGroupFromTally);
+
+/**
+ * @swagger
+ * /api/v1/tally/groups/search:
+ *   get:
+ *     summary: Search groups by GUID, name, cmpcode, or parent
+ *     tags: [Tally Groups]
+ *     parameters:
+ *       - in: query
+ *         name: query
+ *         schema:
+ *           type: string
+ *         description: Free text search on GroupGUID, GroupName, Remarks, or cmpcode
+ *       - in: query
+ *         name: GroupGUID
+ *         schema:
+ *           type: string
+ *         description: Group GUID to search for
+ *       - in: query
+ *         name: GroupName
+ *         schema:
+ *           type: string
+ *         description: Group name to search for
+ *       - in: query
+ *         name: cmpcode
+ *         schema:
+ *           type: string
+ *         description: Company code to filter by
+ *       - in: query
+ *         name: GroupParent
+ *         schema:
+ *           type: string
+ *         description: Parent group GUID to filter by
+ *       - in: query
+ *         name: isActive
+ *         schema:
+ *           type: boolean
+ *         description: Filter by active status
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 50
+ *         description: Maximum number of results to return
+ *     responses:
+ *       200:
+ *         description: Groups returned successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 count:
+ *                   type: integer
+ *                 groups:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *       500:
+ *         description: Server error
+ */
+tallyRoute.get('/groups/search', searchGroupsForTally);
+
+/**
+ * @swagger
+ * /api/v1/tally/companies/{guid}/groups:
+ *   get:
+ *     summary: Fetch groups for a company by GUID
+ *     description: Returns all groups belonging to the company identified by the given GUID.
+ *     tags: [Tally Groups]
+ *     parameters:
+ *       - in: path
+ *         name: guid
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Company GUID as provided by Tally (alphanumeric string)
+ *     responses:
+ *       200:
+ *         description: Groups returned successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 count:
+ *                   type: integer
+ *                 groups:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       _id:
+ *                         type: string
+ *                       GroupGUID:
+ *                         type: string
+ *                       GroupName:
+ *                         type: string
+ *                       GroupParent:
+ *                         type: string
+ *                       cmpcode:
+ *                         type: string
+ *                       Remarks:
+ *                         type: string
+ *                       other1:
+ *                         type: string
+ *                       other2:
+ *                         type: string
+ *                       other3:
+ *                         type: string
+ *                       other4:
+ *                         type: string
+ *       400:
+ *         description: Missing or invalid GUID
+ *       404:
+ *         description: Company not found
+ *       500:
+ *         description: Server error while fetching groups
+ */
+tallyRoute.get('/companies/:guid/groups', listGroupsByCompanyGuid);
 
 export default tallyRoute;
 

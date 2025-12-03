@@ -259,7 +259,8 @@ export const createUser = async (req, res) => {
       role, 
       companyId, 
       parentUserId,
-      address 
+      address,
+      subdealerDetails
     } = req.body;
     const adminId = req.user.userId;
 
@@ -353,8 +354,28 @@ export const createUser = async (req, res) => {
       country: address?.country || 'India'
     };
 
+    // Prepare subdealer details if role is subdealer
+    let subdealerData = undefined;
+    if (role === 'subdealer' && subdealerDetails) {
+      subdealerData = {
+        SDName: subdealerDetails.SDName || subdealerDetails.sdName || '',
+        SDType: subdealerDetails.SDType || subdealerDetails.sdType || '',
+        SDAddress1: subdealerDetails.SDAddress1 || subdealerDetails.sdAddress1 || '',
+        SDAddress2: subdealerDetails.SDAddress2 || subdealerDetails.sdAddress2 || '',
+        SDAddress3: subdealerDetails.SDAddress3 || subdealerDetails.sdAddress3 || '',
+        SDState: subdealerDetails.SDState || subdealerDetails.sdState || '',
+        SDCountry: subdealerDetails.SDCountry || subdealerDetails.sdCountry || 'India',
+        SDPincode: subdealerDetails.SDPincode || subdealerDetails.sdPincode || '',
+        SDContactPerson: subdealerDetails.SDContactPerson || subdealerDetails.sdContactPerson || '',
+        SDMobileNo: subdealerDetails.SDMobileNo || subdealerDetails.sdMobileNo || '',
+        SDEmail: subdealerDetails.SDEmail || subdealerDetails.sdEmail || '',
+        SDGSTNType: subdealerDetails.SDGSTNType || subdealerDetails.sdGSTNType || '',
+        SDGSTNNumber: subdealerDetails.SDGSTNNumber || subdealerDetails.sdGSTNNumber || ''
+      };
+    }
+
     // Create user
-    const newUser = await User.create({
+    const userData = {
       email,
       password: hashedPassword,
       name,
@@ -372,7 +393,14 @@ export const createUser = async (req, res) => {
         level: roleLevels[role] || 5
       },
       createdBy: adminId
-    });
+    };
+
+    // Add subdealer details if role is subdealer
+    if (role === 'subdealer' && subdealerData) {
+      userData.subdealerDetails = subdealerData;
+    }
+
+    const newUser = await User.create(userData);
 
     // Return user without password
     const userResponse = await User.findById(newUser._id)
@@ -462,7 +490,8 @@ export const editUser = async (req, res) => {
       mobile, 
       role, 
       isActive,
-      address 
+      address,
+      subdealerDetails
     } = req.body;
     const adminId = req.user.userId;
 
@@ -559,6 +588,28 @@ export const editUser = async (req, res) => {
         pincode: address.pincode || userToEdit.address?.pincode || '',
         country: address.country || userToEdit.address?.country || 'India'
       };
+    }
+
+    // Update subdealer details if role is subdealer
+    if (role === 'subdealer' && subdealerDetails) {
+      updateData.subdealerDetails = {
+        SDName: subdealerDetails.SDName !== undefined ? subdealerDetails.SDName : (userToEdit.subdealerDetails?.SDName || ''),
+        SDType: subdealerDetails.SDType !== undefined ? subdealerDetails.SDType : (userToEdit.subdealerDetails?.SDType || ''),
+        SDAddress1: subdealerDetails.SDAddress1 !== undefined ? subdealerDetails.SDAddress1 : (userToEdit.subdealerDetails?.SDAddress1 || ''),
+        SDAddress2: subdealerDetails.SDAddress2 !== undefined ? subdealerDetails.SDAddress2 : (userToEdit.subdealerDetails?.SDAddress2 || ''),
+        SDAddress3: subdealerDetails.SDAddress3 !== undefined ? subdealerDetails.SDAddress3 : (userToEdit.subdealerDetails?.SDAddress3 || ''),
+        SDState: subdealerDetails.SDState !== undefined ? subdealerDetails.SDState : (userToEdit.subdealerDetails?.SDState || ''),
+        SDCountry: subdealerDetails.SDCountry !== undefined ? subdealerDetails.SDCountry : (userToEdit.subdealerDetails?.SDCountry || 'India'),
+        SDPincode: subdealerDetails.SDPincode !== undefined ? subdealerDetails.SDPincode : (userToEdit.subdealerDetails?.SDPincode || ''),
+        SDContactPerson: subdealerDetails.SDContactPerson !== undefined ? subdealerDetails.SDContactPerson : (userToEdit.subdealerDetails?.SDContactPerson || ''),
+        SDMobileNo: subdealerDetails.SDMobileNo !== undefined ? subdealerDetails.SDMobileNo : (userToEdit.subdealerDetails?.SDMobileNo || ''),
+        SDEmail: subdealerDetails.SDEmail !== undefined ? subdealerDetails.SDEmail : (userToEdit.subdealerDetails?.SDEmail || ''),
+        SDGSTNType: subdealerDetails.SDGSTNType !== undefined ? subdealerDetails.SDGSTNType : (userToEdit.subdealerDetails?.SDGSTNType || ''),
+        SDGSTNNumber: subdealerDetails.SDGSTNNumber !== undefined ? subdealerDetails.SDGSTNNumber : (userToEdit.subdealerDetails?.SDGSTNNumber || '')
+      };
+    } else if (role !== 'subdealer') {
+      // Clear subdealer details if role changed from subdealer to something else
+      updateData.subdealerDetails = undefined;
     }
 
     // Update user

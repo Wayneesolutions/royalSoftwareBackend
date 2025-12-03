@@ -75,7 +75,7 @@ export const universalLogin = async (req, res) => {
       .select('-password')
       .populate('defaultCompany', 'companyName companyCode companyEmail companyMobile contactDetails')
       .populate('companies.companyId', 'companyName companyCode companyEmail companyMobile contactDetails')
-      .populate('hierarchy.parentUser', 'name email role')
+      .populate('hierarchy.parentUserId', 'name email role mobile')
       .populate('createdBy', 'name email');
 
     // Update last login
@@ -276,7 +276,7 @@ async function getZonalData(user) {
     const rsmUsers = await User.find({
       'companies.companyId': { $in: companyIds },
       'companies.isActive': true,
-      'hierarchy.parentUser': user._id,
+      'hierarchy.parentUserId': user._id,
       role: 'rsm'
     }).select('name email mobile lastLogin');
 
@@ -285,10 +285,10 @@ async function getZonalData(user) {
       'companies.companyId': { $in: companyIds },
       'companies.isActive': true,
       $or: [
-        { 'hierarchy.parentUser': user._id },
-        { 'hierarchy.parentUser': { $in: rsmUsers.map(rsm => rsm._id) } }
+        { 'hierarchy.parentUserId': user._id },
+        { 'hierarchy.parentUserId': { $in: rsmUsers.map(rsm => rsm._id) } }
       ]
-    }).select('name email role hierarchy.parentUser');
+    }).select('name email role hierarchy.parentUserId');
 
     return {
       dashboard: {
@@ -323,7 +323,7 @@ async function getRSMData(user) {
     const asmUsers = await User.find({
       'companies.companyId': { $in: companyIds },
       'companies.isActive': true,
-      'hierarchy.parentUser': user._id,
+      'hierarchy.parentUserId': user._id,
       role: 'asm'
     }).select('name email mobile lastLogin');
 
@@ -332,10 +332,10 @@ async function getRSMData(user) {
       'companies.companyId': { $in: companyIds },
       'companies.isActive': true,
       $or: [
-        { 'hierarchy.parentUser': user._id },
-        { 'hierarchy.parentUser': { $in: asmUsers.map(asm => asm._id) } }
+        { 'hierarchy.parentUserId': user._id },
+        { 'hierarchy.parentUserId': { $in: asmUsers.map(asm => asm._id) } }
       ]
-    }).select('name email role hierarchy.parentUser');
+    }).select('name email role hierarchy.parentUserId');
 
     return {
       dashboard: {
@@ -370,7 +370,7 @@ async function getASMData(user) {
     const salesOfficers = await User.find({
       'companies.companyId': { $in: companyIds },
       'companies.isActive': true,
-      'hierarchy.parentUser': user._id,
+      'hierarchy.parentUserId': user._id,
       role: 'salesman'
     }).select('name email mobile lastLogin');
 
@@ -378,7 +378,7 @@ async function getASMData(user) {
     const dealers = await User.find({
       'companies.companyId': { $in: companyIds },
       'companies.isActive': true,
-      'hierarchy.parentUser': user._id,
+      'hierarchy.parentUserId': user._id,
       role: { $in: ['dealers', 'distibutors'] }
     }).select('name email mobile lastLogin');
 
@@ -417,7 +417,7 @@ async function getSalesmanData(user) {
     const dealers = await User.find({
       'companies.companyId': { $in: companyIds },
       'companies.isActive': true,
-      'hierarchy.parentUser': user._id,
+      'hierarchy.parentUserId': user._id,
       role: { $in: ['dealers', 'distibutors'] }
     }).select('name email mobile lastLogin');
 
