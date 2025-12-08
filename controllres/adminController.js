@@ -4,6 +4,88 @@ import mongoose from "mongoose";
 import User from "../models/user/userModel.js";
 import Company from "../models/company/companyModel.js";
 import Group from "../models/group/groupModel.js";
+import Ledger from "../models/ledger/ledgerModel.js";
+import SubDealer from "../models/subdealer/subdealerModel.js";
+
+/**
+ * Helper function to check if company has reached its max user limit
+ * Counts total members: Users (excluding admin/superadmin) + Dealers + SubDealers
+ * @param {ObjectId|String} companyId - Company ID
+ * @param {Number} additionalCount - Number of additional members to add (default: 1)
+ * @returns {Object} - { allowed: boolean, currentTotal: number, maxUser: number, message: string }
+ */
+export const checkCompanyMemberLimit = async (companyId, additionalCount = 1) => {
+  try {
+    const company = await Company.findById(companyId);
+    if (!company) {
+      return {
+        allowed: false,
+        currentTotal: 0,
+        maxUser: 0,
+        message: 'Company not found'
+      };
+    }
+
+    // If no maxUser limit is set, allow creation
+    if (!company.maxUser) {
+      return {
+        allowed: true,
+        currentTotal: 0,
+        maxUser: null,
+        message: 'No user limit set for this company'
+      };
+    }
+
+    // Count active users (excluding admin and superadmin)
+    const totalUsers = await User.countDocuments({
+      'companies.companyId': companyId,
+      'companies.isActive': true,
+      isActive: true,
+      role: { $nin: ['admin', 'superadmin'] }
+    });
+
+    // Count active dealers
+    const totalDealers = await Ledger.countDocuments({
+      companyId: companyId,
+      isActive: true
+    });
+
+    // Count active subdealers
+    const totalSubDealers = await SubDealer.countDocuments({
+      companyId: companyId,
+      isActive: true
+    });
+
+    // Calculate total members
+    const currentTotal = totalUsers + totalDealers + totalSubDealers;
+    const newTotal = currentTotal + additionalCount;
+
+    // Check if adding new members would exceed limit
+    if (newTotal > company.maxUser) {
+      return {
+        allowed: false,
+        currentTotal,
+        maxUser: company.maxUser,
+        message: `Company has reached its member limit. Maximum allowed members: ${company.maxUser}. Current members: ${currentTotal} (${totalUsers} users, ${totalDealers} dealers, ${totalSubDealers} subdealers). Cannot create more members.`
+      };
+    }
+
+    return {
+      allowed: true,
+      currentTotal,
+      maxUser: company.maxUser,
+      message: 'Member limit check passed'
+    };
+  } catch (error) {
+    console.error('Error checking company member limit:', error);
+    return {
+      allowed: false,
+      currentTotal: 0,
+      maxUser: 0,
+      message: 'Error checking member limit'
+    };
+  }
+};
 // Admin Signup
 export const adminCreation = async (req, res) => {
   try {
@@ -260,6 +342,7 @@ export const switchCompany = async (req, res) => {
  * /api/v1/admin/company-data:
  *   get:
  *     summary: Get current company data and statistics
+ *     description: Returns company information and user statistics. Accessible by Admin, Zonal Manager, RSM, and ASM roles.
  *     tags: [Admin]
  *     security:
  *       - bearerAuth: []
@@ -272,18 +355,23 @@ export const switchCompany = async (req, res) => {
  *     responses:
  *       200:
  *         description: Company data retrieved successfully
+ *       403:
+ *         description: Access denied - insufficient role or no company access
+ *       400:
+ *         description: No company selected
  */
 export const getCompanyData = async (req, res) => {
   try {
-    const adminId = req.user.userId;
+    const userId = req.user.userId;
+    const userRole = req.user.role;
     const { companyId } = req.query;
 
-    // Get admin with company details
-    const admin = await User.findById(adminId)
+    // Get user with company details (works for admin, zonal, rsm, asm)
+    const user = await User.findById(userId)
       .populate('defaultCompany')
       .populate('companies.companyId');
 
-    const targetCompanyId = companyId || admin.defaultCompany?._id;
+    const targetCompanyId = companyId || user.defaultCompany?._id;
 
     if (!targetCompanyId) {
       return res.status(400).json({
@@ -296,27 +384,28 @@ export const getCompanyData = async (req, res) => {
     const targetCompanyIdStr = targetCompanyId.toString();
 
     // Debug logging
-    console.log('Admin ID:', adminId);
+    console.log('User ID:', userId);
+    console.log('User Role:', userRole);
     console.log('Target Company ID:', targetCompanyIdStr);
-    console.log('Admin companies:', admin.companies.map(comp => ({
+    console.log('User companies:', user.companies.map(comp => ({
       companyId: comp.companyId._id.toString(),
       isActive: comp.isActive
     })));
-    console.log('Default company:', admin.defaultCompany?._id?.toString());
+    console.log('Default company:', user.defaultCompany?._id?.toString());
 
     // Verify access to company - check both direct company access and default company
-    const hasAccess = admin.companies.some(
+    const hasAccess = user.companies.some(
       comp => comp.companyId._id.toString() === targetCompanyIdStr && comp.isActive
-    ) || admin.defaultCompany?._id.toString() === targetCompanyIdStr;
+    ) || user.defaultCompany?._id.toString() === targetCompanyIdStr;
 
     console.log('Has access:', hasAccess);
 
     if (!hasAccess) {
-      // If admin has no companies assigned, return a helpful message
-      if (!admin.companies || admin.companies.length === 0) {
+      // If user has no companies assigned, return a helpful message
+      if (!user.companies || user.companies.length === 0) {
         return res.status(403).json({
           success: false,
-          message: 'No companies assigned to this admin. Please contact super admin to assign companies.'
+          message: `No companies assigned to this ${userRole}. Please contact admin to assign companies.`
         });
       }
       
@@ -357,6 +446,21 @@ export const getCompanyData = async (req, res) => {
       role: { $nin: ['admin', 'superadmin'] }
     });
 
+    // Get total dealers (Ledgers) for this company
+    const totalDealers = await Ledger.countDocuments({
+      companyId: targetCompanyId,
+      isActive: true
+    });
+
+    // Get total subdealers for this company
+    const totalSubDealers = await SubDealer.countDocuments({
+      companyId: targetCompanyId,
+      isActive: true
+    });
+
+    // Calculate total members (users + dealers + subdealers)
+    const totalMembers = totalUsers + totalDealers + totalSubDealers;
+
     return res.json({
       success: true,
       data: {
@@ -376,6 +480,9 @@ export const getCompanyData = async (req, res) => {
         },
         statistics: {
           totalUsers,
+          totalDealers,
+          totalSubDealers,
+          totalMembers,
           userByRole: userStats,
           maxUsersAllowed: company.maxUser,
           usagePercentage: Math.round((totalUsers / company.maxUser) * 100)
@@ -418,7 +525,6 @@ export const getCompanyData = async (req, res) => {
  *               - mobile
  *               - password
  *               - role
- *               - parentUserId
  *             properties:
  *               name:
  *                 type: string
@@ -448,7 +554,7 @@ export const getCompanyData = async (req, res) => {
  *                 example: "johndoe"
  *               parentUserId:
  *                 type: string
- *                 description: ID of the parent user (REQUIRED). A Group will be automatically created/assigned based on this parent user selection. The system will: 1) Check if a group exists for this parent (GroupParent = parentUserId), 2) If found, assign user to that group, 3) If not found, create a new group with GroupParent = parentUserId. GroupParent in the group model will be set to this UserId.
+ *                 description: ID of the parent user (OPTIONAL). If provided, a Group will be automatically created/assigned based on this parent user selection. The system will: 1) Check if a group exists for this parent (GroupParent = parentUserId), 2) If found, assign user to that group, 3) If not found, create a new group with GroupParent = parentUserId. GroupParent in the group model will be set to this UserId. Users can be created without a parent user.
  *                 example: "692d35820e76283c26ea3050"
  *               groupId:
  *                 type: string
@@ -773,13 +879,7 @@ export const createUser = async (req, res) => {
       });
     }
 
-    // Validate parent user is required
-    if (!parentUserId) {
-      return res.status(400).json({
-        success: false,
-        message: "Parent user is required. Please select a parent user."
-      });
-    }
+    // Parent user is optional - users can be created with or without a parent
 
     // Check if admin has access to the company
     const admin = await User.findById(adminId).populate('defaultCompany');
@@ -818,22 +918,13 @@ export const createUser = async (req, res) => {
       });
     }
 
-    // Check user limit for the company
-    if (company.maxUser) {
-      // Count current active users for this company (excluding admin and superadmin)
-      const currentUserCount = await User.countDocuments({
-        'companies.companyId': companyId,
-        'companies.isActive': true,
-        isActive: true,
-        role: { $nin: ['admin', 'superadmin'] }
+    // Check total member limit for the company (users + dealers + subdealers)
+    const limitCheck = await checkCompanyMemberLimit(companyId, 1);
+    if (!limitCheck.allowed) {
+      return res.status(400).json({
+        success: false,
+        message: limitCheck.message
       });
-
-      if (currentUserCount >= company.maxUser) {
-        return res.status(400).json({
-          success: false,
-          message: `Company has reached its user limit. Maximum allowed users: ${company.maxUser}. Current users: ${currentUserCount}. Cannot create more users.`
-        });
-      }
     }
 
     // Check if user already exists with same mobile or email
@@ -1065,47 +1156,44 @@ export const createUser = async (req, res) => {
       };
     }
 
-    // Validate parent user
-    let finalParentUserId = adminId;
+    // Validate parent user (optional)
+    let finalParentUserId = null;
+    let parentUserForGroup = null;
+    let parentUserIdString = null;
     
-    if (!parentUserId) {
-      return res.status(400).json({
-        success: false,
-        message: "Parent user is required. Please select a parent user."
+    if (parentUserId) {
+      // Fetch parent user if provided
+      const parentUser = await User.findOne({
+        _id: parentUserId,
+        'companies.companyId': companyId,
+        'companies.isActive': true,
+        isActive: true
       });
+      
+      if (!parentUser) {
+        return res.status(400).json({
+          success: false,
+          message: "Parent user not found or not active in this company"
+        });
+      }
+      
+      finalParentUserId = parentUserId;
+
+      // Get parent user details for group assignment
+      parentUserForGroup = await User.findById(finalParentUserId)
+        .select('name email mobile role')
+        .lean();
+
+      if (!parentUserForGroup) {
+        return res.status(400).json({
+          success: false,
+          message: "Parent user not found"
+        });
+      }
+
+      // Convert parentUserId to string for GroupParent
+      parentUserIdString = finalParentUserId.toString();
     }
-
-    // Fetch parent user
-    const parentUser = await User.findOne({
-      _id: parentUserId,
-      'companies.companyId': companyId,
-      'companies.isActive': true,
-      isActive: true
-    });
-    
-    if (!parentUser) {
-      return res.status(400).json({
-        success: false,
-        message: "Parent user not found or not active in this company"
-      });
-    }
-    
-    finalParentUserId = parentUserId;
-
-    // Get parent user details for group assignment
-    const parentUserForGroup = await User.findById(finalParentUserId)
-      .select('name email mobile role')
-      .lean();
-
-    if (!parentUserForGroup) {
-      return res.status(400).json({
-        success: false,
-        message: "Parent user not found"
-      });
-    }
-
-    // Convert parentUserId to string for GroupParent
-    const parentUserIdString = finalParentUserId.toString();
 
     // Initialize group variables
     let foundGroupId = null;
@@ -1160,7 +1248,8 @@ export const createUser = async (req, res) => {
       }
     }
     // Priority 3: Check if a group exists for this parent user (GroupParent = parentUserId)
-    else {
+    // Only if parentUserId is provided
+    else if (parentUserIdString) {
       const existingGroupForParent = await Group.findOne({
         GroupParent: parentUserIdString,
         cmpcode: company.companyCode,
@@ -1313,7 +1402,7 @@ export const createUser = async (req, res) => {
         assignedAt: new Date()
       }] : [],
       hierarchy: {
-        parentUserId: finalParentUserId,
+        ...(finalParentUserId ? { parentUserId: finalParentUserId } : {}),
         level: getRoleLevel(role)
       },
       createdBy: adminId
@@ -1801,6 +1890,1157 @@ export const getGroupsForSelection = async (req, res) => {
 
 /**
  * @swagger
+ * /api/v1/admin/groups:
+ *   get:
+ *     summary: Get all groups for admin's company with user counts
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: includeInactive
+ *         schema:
+ *           type: boolean
+ *           default: false
+ *         description: If true, include inactive groups in the results
+ *     responses:
+ *       200:
+ *         description: Groups retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     groups:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           _id:
+ *                             type: string
+ *                           GroupGUID:
+ *                             type: string
+ *                           GroupName:
+ *                             type: string
+ *                           GroupParent:
+ *                             type: string
+ *                             nullable: true
+ *                           cmpcode:
+ *                             type: string
+ *                           Remarks:
+ *                             type: string
+ *                           isActive:
+ *                             type: boolean
+ *                           userCount:
+ *                             type: number
+ *                           createdAt:
+ *                             type: string
+ *                             format: date-time
+ *                     totalGroups:
+ *                       type: number
+ *       403:
+ *         description: Access denied
+ *       500:
+ *         description: Server error
+ */
+export const getAllGroups = async (req, res) => {
+  try {
+    const adminId = req.user.userId;
+    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+    const { includeInactive } = req.query;
+
+    // Check if admin has access to the company
+    const admin = await User.findById(adminId).populate('defaultCompany');
+    if (!admin || !admin.defaultCompany) {
+      return res.status(403).json({
+        success: false,
+        message: "No company assigned to this admin"
+      });
+    }
+
+    // Convert companyId to string for comparison
+    const adminCompanyId = admin.defaultCompany._id.toString();
+    const targetCompanyId = companyId.toString();
+
+    if (adminCompanyId !== targetCompanyId) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied to this company"
+      });
+    }
+
+    // Get company code
+    const company = await Company.findById(companyId);
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: "Company not found"
+      });
+    }
+
+    // Build query - include inactive groups if requested
+    const query = {
+      cmpcode: company.companyCode
+    };
+
+    if (includeInactive !== 'true') {
+      query.isActive = true;
+    }
+
+    // Get all groups for this company
+    const groups = await Group.find(query)
+      .select('_id GroupGUID GroupName GroupParent cmpcode Remarks isActive createdAt')
+      .sort({ GroupName: 1 })
+      .lean();
+
+    // Get all users in this company to count users per group
+    const allUsers = await User.find({
+      'companies.companyId': companyId,
+      'companies.isActive': true,
+      isActive: true
+    })
+      .select('groups')
+      .lean();
+
+    // Format groups with counts from all three models (User, Ledger, SubDealer)
+    const formattedGroups = await Promise.all(groups.map(async (group) => {
+      const groupId = group._id.toString();
+      
+      // Count users in this group
+      const userCount = allUsers.filter(user => {
+        if (!user.groups || !Array.isArray(user.groups)) return false;
+        return user.groups.some(g => 
+          g.groupId && g.groupId.toString() === groupId
+        );
+      }).length;
+
+      // Count dealers (Ledgers) in this group
+      const dealerCount = await Ledger.countDocuments({
+        groupId: new mongoose.Types.ObjectId(groupId),
+        companyId: new mongoose.Types.ObjectId(companyId),
+        isActive: true
+      });
+
+      // Count subdealers in this group
+      const subDealerCount = await SubDealer.countDocuments({
+        groupId: new mongoose.Types.ObjectId(groupId),
+        companyId: new mongoose.Types.ObjectId(companyId),
+        isActive: true
+      });
+
+      // Calculate total members
+      const totalCount = userCount + dealerCount + subDealerCount;
+
+      return {
+        _id: groupId,
+        GroupGUID: group.GroupGUID,
+        GroupName: group.GroupName,
+        GroupParent: group.GroupParent || null,
+        cmpcode: group.cmpcode,
+        Remarks: group.Remarks || '',
+        isActive: group.isActive,
+        userCount: userCount,
+        dealerCount: dealerCount,
+        subDealerCount: subDealerCount,
+        totalCount: totalCount,
+        createdAt: group.createdAt
+      };
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        groups: formattedGroups,
+        totalGroups: formattedGroups.length
+      }
+    });
+
+  } catch (error) {
+    console.error("Get all groups error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * @swagger
+ * /api/v1/admin/groups/{groupId}/users:
+ *   get:
+ *     summary: Get all users in a specific group
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: groupId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Group ID
+ *     responses:
+ *       200:
+ *         description: Users retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     group:
+ *                       type: object
+ *                     users:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                     totalUsers:
+ *                       type: number
+ *       404:
+ *         description: Group not found
+ *       403:
+ *         description: Access denied
+ *       500:
+ *         description: Server error
+ */
+export const getUsersByGroup = async (req, res) => {
+  try {
+    const adminId = req.user.userId;
+    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+    const { groupId } = req.params;
+
+    if (!groupId) {
+      return res.status(400).json({
+        success: false,
+        message: "Group ID is required"
+      });
+    }
+
+    // Check if admin has access to the company
+    const admin = await User.findById(adminId).populate('defaultCompany');
+    if (!admin || !admin.defaultCompany) {
+      return res.status(403).json({
+        success: false,
+        message: "No company assigned to this admin"
+      });
+    }
+
+    // Convert companyId to string for comparison
+    const adminCompanyId = admin.defaultCompany._id.toString();
+    const targetCompanyId = companyId.toString();
+
+    if (adminCompanyId !== targetCompanyId) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied to this company"
+      });
+    }
+
+    // Get company code
+    const company = await Company.findById(companyId);
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: "Company not found"
+      });
+    }
+
+    // Find the group
+    const group = await Group.findOne({
+      _id: groupId,
+      cmpcode: company.companyCode,
+      isActive: true
+    }).lean();
+
+    if (!group) {
+      return res.status(404).json({
+        success: false,
+        message: "Group not found"
+      });
+    }
+
+    // Convert groupId to ObjectId if valid
+    let groupObjectId = groupId;
+    if (mongoose.Types.ObjectId.isValid(groupId)) {
+      groupObjectId = new mongoose.Types.ObjectId(groupId);
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid group ID format"
+      });
+    }
+
+    // Convert companyId to ObjectId if it's not already
+    let companyObjectId = companyId;
+    if (typeof companyId === 'string' && mongoose.Types.ObjectId.isValid(companyId)) {
+      companyObjectId = new mongoose.Types.ObjectId(companyId);
+    }
+
+    // Get all users in this company that belong to this group
+    // Use $elemMatch to ensure both groupId and isActive match the same group element
+    const users = await User.find({
+      'companies.companyId': companyObjectId,
+      'companies.isActive': true,
+      isActive: true,
+      groups: {
+        $elemMatch: {
+          groupId: groupObjectId,
+          isActive: true
+        }
+      }
+    })
+      .select('_id name email mobile role userName isActive address hierarchy createdAt groups')
+      .populate('hierarchy.parentUserId', 'name email role mobile')
+      .sort({ name: 1 })
+      .lean();
+
+    // Get all subdealers in this company that belong to this group
+    const subdealers = await SubDealer.find({
+      companyId: companyObjectId,
+      groupId: groupObjectId,
+      isActive: true
+    })
+      .select('_id SDName SDType SDAddress1 SDAddress2 SDAddress3 SDState SDCountry SDPincode SDContactPerson SDMobileNo SDEmail SDGSTNType SDGSTNNumber groupId cmpcode Cmpguid isActive createdAt')
+      .populate('groupId', 'GroupGUID GroupName GroupParent cmpcode')
+      .sort({ SDName: 1 })
+      .lean();
+
+    // Get all dealers (ledgers) in this company that belong to this group
+    const dealers = await Ledger.find({
+      companyId: companyObjectId,
+      groupId: groupObjectId,
+      isActive: true
+    })
+      .select('_id LedgerGUID LedgerName LedgerMobile LedgerContact LedgerAddress1 LedgerAddress2 LedgerState LedgerOpening LedgerOpeningDate LedgerJoinDate Cmpguid Email cmpCode cmpcode Remarks Other1 Other2 Other3 Other4 Other5 other6 other7 other8 LedgerGSTIN groupId isActive createdAt')
+      .populate('groupId', 'GroupGUID GroupName GroupParent cmpcode')
+      .sort({ LedgerName: 1 })
+      .lean();
+
+    // Format users
+    const formattedUsers = users.map(user => {
+      const userGroup = user.groups?.find(g => 
+        g.groupId && g.groupId.toString() === groupId
+      );
+
+      return {
+        _id: user._id.toString(),
+        type: 'user',
+        name: user.name,
+        email: user.email || '',
+        mobile: user.mobile,
+        role: user.role,
+        userName: user.userName || '',
+        isActive: user.isActive,
+        address: user.address || {},
+        hierarchy: {
+          parentUser: user.hierarchy?.parentUserId ? {
+            _id: user.hierarchy.parentUserId._id?.toString() || user.hierarchy.parentUserId.toString(),
+            name: user.hierarchy.parentUserId.name || '',
+            email: user.hierarchy.parentUserId.email || '',
+            role: user.hierarchy.parentUserId.role || ''
+          } : null,
+          level: user.hierarchy?.level || null
+        },
+        groupInfo: userGroup ? {
+          groupGUID: userGroup.groupGUID || '',
+          groupName: userGroup.groupName || '',
+          assignedAt: userGroup.assignedAt || null
+        } : null,
+        createdAt: user.createdAt
+      };
+    });
+
+    // Format subdealers
+    const formattedSubDealers = subdealers.map(subdealer => ({
+      _id: subdealer._id.toString(),
+      type: 'subdealer',
+      name: subdealer.SDName,
+      SDName: subdealer.SDName,
+      SDType: subdealer.SDType,
+      SDAddress1: subdealer.SDAddress1 || '',
+      SDAddress2: subdealer.SDAddress2 || '',
+      SDAddress3: subdealer.SDAddress3 || '',
+      SDState: subdealer.SDState || '',
+      SDCountry: subdealer.SDCountry || '',
+      SDPincode: subdealer.SDPincode || '',
+      SDContactPerson: subdealer.SDContactPerson || '',
+      SDMobileNo: subdealer.SDMobileNo || '',
+      SDEmail: subdealer.SDEmail || '',
+      SDGSTNType: subdealer.SDGSTNType || '',
+      SDGSTNNumber: subdealer.SDGSTNNumber || '',
+      email: subdealer.SDEmail || '',
+      mobile: subdealer.SDMobileNo || '',
+      isActive: subdealer.isActive,
+      groupInfo: subdealer.groupId ? {
+        groupGUID: typeof subdealer.groupId === 'object' ? subdealer.groupId.GroupGUID : '',
+        groupName: typeof subdealer.groupId === 'object' ? subdealer.groupId.GroupName : ''
+      } : null,
+      createdAt: subdealer.createdAt
+    }));
+
+    // Format dealers
+    const formattedDealers = dealers.map(dealer => ({
+      _id: dealer._id.toString(),
+      type: 'dealer',
+      name: dealer.LedgerName,
+      LedgerGUID: dealer.LedgerGUID,
+      LedgerName: dealer.LedgerName,
+      LedgerMobile: dealer.LedgerMobile || '',
+      LedgerContact: dealer.LedgerContact || '',
+      LedgerAddress1: dealer.LedgerAddress1 || '',
+      LedgerAddress2: dealer.LedgerAddress2 || '',
+      LedgerState: dealer.LedgerState || '',
+      LedgerOpening: dealer.LedgerOpening || 0,
+      LedgerOpeningDate: dealer.LedgerOpeningDate || null,
+      LedgerJoinDate: dealer.LedgerJoinDate || null,
+      Email: dealer.Email || '',
+      email: dealer.Email || '',
+      mobile: dealer.LedgerMobile || '',
+      LedgerGSTIN: dealer.LedgerGSTIN || '',
+      cmpcode: dealer.cmpcode || dealer.cmpCode || '',
+      Cmpguid: dealer.Cmpguid || '',
+      Remarks: dealer.Remarks || '',
+      isActive: dealer.isActive,
+      groupInfo: dealer.groupId ? {
+        groupGUID: typeof dealer.groupId === 'object' ? dealer.groupId.GroupGUID : '',
+        groupName: typeof dealer.groupId === 'object' ? dealer.groupId.GroupName : ''
+      } : null,
+      createdAt: dealer.createdAt
+    }));
+
+    // Combine all members (users, subdealers, dealers)
+    const allMembers = [
+      ...formattedUsers,
+      ...formattedSubDealers,
+      ...formattedDealers
+    ].sort((a, b) => {
+      // Sort by name alphabetically
+      const nameA = a.name?.toLowerCase() || '';
+      const nameB = b.name?.toLowerCase() || '';
+      return nameA.localeCompare(nameB);
+    });
+
+    res.json({
+      success: true,
+      data: {
+        group: {
+          _id: group._id.toString(),
+          GroupGUID: group.GroupGUID,
+          GroupName: group.GroupName,
+          GroupParent: group.GroupParent || null,
+          cmpcode: group.cmpcode,
+          Remarks: group.Remarks || ''
+        },
+        members: allMembers,
+        users: formattedUsers,
+        subdealers: formattedSubDealers,
+        dealers: formattedDealers,
+        totals: {
+          totalMembers: allMembers.length,
+          totalUsers: formattedUsers.length,
+          totalSubDealers: formattedSubDealers.length,
+          totalDealers: formattedDealers.length
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error("Get users by group error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * @swagger
+ * /api/v1/admin/groups:
+ *   post:
+ *     summary: Create a new group for admin's company
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - GroupName
+ *             properties:
+ *               GroupGUID:
+ *                 type: string
+ *                 description: Group GUID (optional, auto-generated if not provided)
+ *                 example: "GRP001"
+ *               GroupName:
+ *                 type: string
+ *                 description: Name of the group
+ *                 example: "Sales Team A"
+ *               GroupParent:
+ *                 type: string
+ *                 nullable: true
+ *                 description: Parent group GUID (optional)
+ *                 example: "GRP000"
+ *               Remarks:
+ *                 type: string
+ *                 description: Remarks or notes about the group
+ *               other1:
+ *                 type: string
+ *                 description: Additional field 1
+ *               other2:
+ *                 type: string
+ *                 description: Additional field 2
+ *               other3:
+ *                 type: string
+ *                 description: Additional field 3
+ *               other4:
+ *                 type: string
+ *                 description: Additional field 4
+ *               isActive:
+ *                 type: boolean
+ *                 description: Whether the group is active
+ *                 default: true
+ *     responses:
+ *       201:
+ *         description: Group created successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Group created successfully"
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     _id:
+ *                       type: string
+ *                     GroupGUID:
+ *                       type: string
+ *                     GroupName:
+ *                       type: string
+ *                     GroupParent:
+ *                       type: string
+ *                       nullable: true
+ *                     cmpcode:
+ *                       type: string
+ *                     Remarks:
+ *                       type: string
+ *                     isActive:
+ *                       type: boolean
+ *                     createdAt:
+ *                       type: string
+ *                       format: date-time
+ *       400:
+ *         description: Bad request - missing required fields
+ *       403:
+ *         description: Access denied
+ *       409:
+ *         description: Group with same GUID already exists
+ *       500:
+ *         description: Server error
+ */
+export const createGroup = async (req, res) => {
+  try {
+    const {
+      GroupGUID,
+      GroupName,
+      GroupParent,
+      Remarks,
+      other1,
+      other2,
+      other3,
+      other4,
+      isActive = true
+    } = req.body;
+
+    const adminId = req.user.userId;
+    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+
+    // Validate required fields
+    if (!GroupName || !GroupName.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "GroupName is required"
+      });
+    }
+
+    // Check if admin has access to the company
+    const admin = await User.findById(adminId).populate('defaultCompany');
+    if (!admin || !admin.defaultCompany) {
+      return res.status(403).json({
+        success: false,
+        message: "No company assigned to this admin"
+      });
+    }
+
+    // Convert companyId to string for comparison
+    const adminCompanyId = admin.defaultCompany._id.toString();
+    const targetCompanyId = companyId.toString();
+
+    if (adminCompanyId !== targetCompanyId) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied to this company"
+      });
+    }
+
+    // Get company code
+    const company = await Company.findById(companyId);
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: "Company not found"
+      });
+    }
+
+    // Generate GroupGUID if not provided
+    let finalGroupGUID = GroupGUID;
+    if (!finalGroupGUID || !finalGroupGUID.trim()) {
+      finalGroupGUID = await generateGroupGUID(company.companyCode);
+    } else {
+      finalGroupGUID = finalGroupGUID.trim();
+    }
+
+    // Check if GroupGUID already exists for this company
+    const existingGroup = await Group.findOne({
+      GroupGUID: finalGroupGUID,
+      cmpcode: company.companyCode
+    });
+
+    if (existingGroup) {
+      return res.status(409).json({
+        success: false,
+        message: `Group with GUID ${finalGroupGUID} already exists for this company`
+      });
+    }
+
+    // Validate GroupParent if provided
+    if (GroupParent && GroupParent.trim()) {
+      const parentGroup = await Group.findOne({
+        GroupGUID: GroupParent.trim(),
+        cmpcode: company.companyCode
+      });
+
+      if (!parentGroup) {
+        return res.status(400).json({
+          success: false,
+          message: `Parent group with GUID ${GroupParent} not found`
+        });
+      }
+    }
+
+    // Create the group
+    const newGroup = await Group.create({
+      GroupGUID: finalGroupGUID,
+      GroupName: GroupName.trim(),
+      GroupParent: GroupParent || null,
+      cmpcode: company.companyCode,
+      Remarks: Remarks || '',
+      other1: other1 || '',
+      other2: other2 || '',
+      other3: other3 || '',
+      other4: other4 || '',
+      isActive: isActive !== false,
+      companyId: companyId
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Group created successfully",
+      data: {
+        _id: newGroup._id,
+        GroupGUID: newGroup.GroupGUID,
+        GroupName: newGroup.GroupName,
+        GroupParent: newGroup.GroupParent,
+        cmpcode: newGroup.cmpcode,
+        Remarks: newGroup.Remarks,
+        other1: newGroup.other1,
+        other2: newGroup.other2,
+        other3: newGroup.other3,
+        other4: newGroup.other4,
+        isActive: newGroup.isActive,
+        createdAt: newGroup.createdAt
+      }
+    });
+
+  } catch (error) {
+    console.error("Create group error:", error);
+    
+    // Handle duplicate key error
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "Group with this GUID already exists for this company"
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * @swagger
+ * /api/v1/admin/groups/{groupId}:
+ *   put:
+ *     summary: Update an existing group
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: groupId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Group ID to update
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               GroupName:
+ *                 type: string
+ *                 description: Name of the group
+ *                 example: "Sales Team A - Updated"
+ *               GroupParent:
+ *                 type: string
+ *                 description: Parent group GUID (optional, set to null to remove parent)
+ *                 example: "GRP001"
+ *               Remarks:
+ *                 type: string
+ *                 description: Remarks or notes about the group
+ *               other1:
+ *                 type: string
+ *                 description: Additional field 1
+ *               other2:
+ *                 type: string
+ *                 description: Additional field 2
+ *               other3:
+ *                 type: string
+ *                 description: Additional field 3
+ *               other4:
+ *                 type: string
+ *                 description: Additional field 4
+ *               isActive:
+ *                 type: boolean
+ *                 description: Whether the group is active
+ *     responses:
+ *       200:
+ *         description: Group updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Group updated successfully"
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     _id:
+ *                       type: string
+ *                     GroupGUID:
+ *                       type: string
+ *                     GroupName:
+ *                       type: string
+ *                     GroupParent:
+ *                       type: string
+ *                       nullable: true
+ *                     cmpcode:
+ *                       type: string
+ *                     Remarks:
+ *                       type: string
+ *                     isActive:
+ *                       type: boolean
+ *                     updatedAt:
+ *                       type: string
+ *                       format: date-time
+ *       400:
+ *         description: Bad request
+ *       403:
+ *         description: Access denied
+ *       404:
+ *         description: Group not found
+ *       500:
+ *         description: Server error
+ */
+export const updateGroup = async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const {
+      GroupName,
+      GroupParent,
+      Remarks,
+      other1,
+      other2,
+      other3,
+      other4,
+      isActive
+    } = req.body;
+
+    const adminId = req.user.userId;
+    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+
+    if (!groupId) {
+      return res.status(400).json({
+        success: false,
+        message: "Group ID is required"
+      });
+    }
+
+    // Check if admin has access to the company
+    const admin = await User.findById(adminId).populate('defaultCompany');
+    if (!admin || !admin.defaultCompany) {
+      return res.status(403).json({
+        success: false,
+        message: "No company assigned to this admin"
+      });
+    }
+
+    // Convert companyId to string for comparison
+    const adminCompanyId = admin.defaultCompany._id.toString();
+    const targetCompanyId = companyId.toString();
+
+    if (adminCompanyId !== targetCompanyId) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied to this company"
+      });
+    }
+
+    // Get company code
+    const company = await Company.findById(companyId);
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: "Company not found"
+      });
+    }
+
+    // Find the group
+    const group = await Group.findOne({
+      _id: groupId,
+      cmpcode: company.companyCode
+    });
+
+    if (!group) {
+      return res.status(404).json({
+        success: false,
+        message: "Group not found"
+      });
+    }
+
+    // Validate GroupParent if provided and different from current
+    if (GroupParent !== undefined && GroupParent !== group.GroupParent) {
+      if (GroupParent === null || GroupParent === '') {
+        // Allow removing parent
+        group.GroupParent = null;
+      } else {
+        // Validate parent exists
+        const parentGroup = await Group.findOne({
+          GroupGUID: GroupParent,
+          cmpcode: company.companyCode
+        });
+
+        if (!parentGroup) {
+          return res.status(400).json({
+            success: false,
+            message: `Parent group with GUID ${GroupParent} not found`
+          });
+        }
+
+        // Prevent circular reference (group cannot be its own parent)
+        if (parentGroup._id.toString() === groupId) {
+          return res.status(400).json({
+            success: false,
+            message: "Group cannot be its own parent"
+          });
+        }
+
+        group.GroupParent = GroupParent;
+      }
+    }
+
+    // Update fields if provided
+    if (GroupName !== undefined) {
+      if (!GroupName || !GroupName.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: "GroupName cannot be empty"
+        });
+      }
+      group.GroupName = GroupName.trim();
+    }
+
+    if (Remarks !== undefined) {
+      group.Remarks = Remarks || '';
+    }
+
+    if (other1 !== undefined) group.other1 = other1 || '';
+    if (other2 !== undefined) group.other2 = other2 || '';
+    if (other3 !== undefined) group.other3 = other3 || '';
+    if (other4 !== undefined) group.other4 = other4 || '';
+
+    if (isActive !== undefined) {
+      group.isActive = isActive;
+    }
+
+    // Save the updated group
+    await group.save();
+
+    res.json({
+      success: true,
+      message: "Group updated successfully",
+      data: {
+        _id: group._id,
+        GroupGUID: group.GroupGUID,
+        GroupName: group.GroupName,
+        GroupParent: group.GroupParent,
+        cmpcode: group.cmpcode,
+        Remarks: group.Remarks,
+        other1: group.other1,
+        other2: group.other2,
+        other3: group.other3,
+        other4: group.other4,
+        isActive: group.isActive,
+        updatedAt: group.updatedAt
+      }
+    });
+
+  } catch (error) {
+    console.error("Update group error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * @swagger
+ * /api/v1/admin/groups/{groupId}:
+ *   delete:
+ *     summary: Delete a group (soft delete by setting isActive to false)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: groupId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Group ID to delete
+ *       - in: query
+ *         name: hardDelete
+ *         schema:
+ *           type: boolean
+ *           default: false
+ *         description: If true, permanently delete the group. If false, soft delete (set isActive to false)
+ *     responses:
+ *       200:
+ *         description: Group deleted successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Group deleted successfully"
+ *       400:
+ *         description: Bad request - group has assigned users
+ *       403:
+ *         description: Access denied
+ *       404:
+ *         description: Group not found
+ *       500:
+ *         description: Server error
+ */
+export const deleteGroup = async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const { hardDelete } = req.query;
+    const adminId = req.user.userId;
+    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+
+    if (!groupId) {
+      return res.status(400).json({
+        success: false,
+        message: "Group ID is required"
+      });
+    }
+
+    // Check if admin has access to the company
+    const admin = await User.findById(adminId).populate('defaultCompany');
+    if (!admin || !admin.defaultCompany) {
+      return res.status(403).json({
+        success: false,
+        message: "No company assigned to this admin"
+      });
+    }
+
+    // Convert companyId to string for comparison
+    const adminCompanyId = admin.defaultCompany._id.toString();
+    const targetCompanyId = companyId.toString();
+
+    if (adminCompanyId !== targetCompanyId) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied to this company"
+      });
+    }
+
+    // Get company code
+    const company = await Company.findById(companyId);
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: "Company not found"
+      });
+    }
+
+    // Find the group
+    const group = await Group.findOne({
+      _id: groupId,
+      cmpcode: company.companyCode
+    });
+
+    if (!group) {
+      return res.status(404).json({
+        success: false,
+        message: "Group not found"
+      });
+    }
+
+    // Check if group has assigned users, dealers, or subdealers
+    const usersWithGroup = await User.find({
+      'companies.companyId': companyId,
+      'groups.groupId': groupId
+    }).limit(1);
+
+    const dealersWithGroup = await Ledger.find({
+      companyId: companyId,
+      groupId: groupId
+    }).limit(1);
+
+    const subDealersWithGroup = await SubDealer.find({
+      companyId: companyId,
+      groupId: groupId
+    }).limit(1);
+
+    const hasAssignments = usersWithGroup.length > 0 || dealersWithGroup.length > 0 || subDealersWithGroup.length > 0;
+
+    if (hasAssignments && hardDelete !== 'true') {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot delete group with assigned users, dealers, or subdealers. Remove assignments first or use hardDelete=true to force delete",
+        usersCount: usersWithGroup.length,
+        dealersCount: dealersWithGroup.length,
+        subDealersCount: subDealersWithGroup.length
+      });
+    }
+
+    if (hardDelete === 'true') {
+      // Hard delete - remove group from all users, dealers, and subdealers first
+      
+      // Remove from users
+      if (usersWithGroup.length > 0) {
+        await User.updateMany(
+          { 'groups.groupId': groupId },
+          { $pull: { groups: { groupId: groupId } } }
+        );
+      }
+
+      // Remove from dealers (Ledger)
+      if (dealersWithGroup.length > 0) {
+        await Ledger.updateMany(
+          { groupId: groupId },
+          { $set: { groupId: null } }
+        );
+      }
+
+      // Remove from subdealers (SubDealer)
+      if (subDealersWithGroup.length > 0) {
+        await SubDealer.updateMany(
+          { groupId: groupId },
+          { $set: { groupId: null } }
+        );
+      }
+
+      // Delete the group
+      await Group.findByIdAndDelete(groupId);
+
+      return res.json({
+        success: true,
+        message: "Group permanently deleted and removed from all users, dealers, and subdealers"
+      });
+    } else {
+      // Soft delete - set isActive to false
+      // Also remove groupId from dealers and subdealers to prevent errors
+      await Ledger.updateMany(
+        { groupId: groupId },
+        { $set: { groupId: null } }
+      );
+
+      await SubDealer.updateMany(
+        { groupId: groupId },
+        { $set: { groupId: null } }
+      );
+
+      group.isActive = false;
+      await group.save();
+
+      return res.json({
+        success: true,
+        message: "Group deactivated successfully and removed from dealers and subdealers"
+      });
+    }
+
+  } catch (error) {
+    console.error("Delete group error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * @swagger
  * /api/v1/admin/users-by-company:
  *   get:
  *     summary: Get all users for the admin's company with groups and parent user information
@@ -2110,9 +3350,10 @@ export const getUsersByCompany = async (req, res) => {
     };
 
     // Apply hierarchy-based filtering
-    // Admin can see all users in their company (except superadmin)
+    // Admin can see all users in their company (except superadmin, dealers, and subdealers)
+    // Dealers and subdealers are managed separately through Ledger and SubDealer models
     if (admin.role === 'admin') {
-      query.role = { $nin: ['admin', 'superadmin'] };
+      query.role = { $nin: ['admin', 'superadmin', 'dealers', 'subdealer'] };
       query._id = { $ne: adminId }; // Exclude the admin user
     } else {
       // For other roles (zonal, rsm, asm, etc.), only show their child users
@@ -3440,6 +4681,1743 @@ export const autoAssignGroups = async (req, res) => {
 
   } catch (error) {
     console.error("Auto-assign groups error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// Generate LedgerGUID similar to GroupGUID
+const generateLedgerGUID = async (cmpcode) => {
+  try {
+    // Find all existing ledgers for this company
+    const existingLedgers = await Ledger.find({ cmpcode })
+      .select('LedgerGUID')
+      .sort({ LedgerGUID: -1 })
+      .limit(100);
+
+    let maxNumber = 0;
+
+    // Extract numeric part from existing LedgerGUIDs
+    for (const ledger of existingLedgers) {
+      const guid = ledger.LedgerGUID || '';
+      // Match patterns like "LED001", "LED009", "LED123", etc.
+      const match = guid.match(/^LED(\d+)$/i);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (num > maxNumber) {
+          maxNumber = num;
+        }
+      }
+    }
+
+    // Generate next sequential number
+    const nextNumber = maxNumber + 1;
+    const newGUID = `LED${String(nextNumber).padStart(3, '0')}`;
+
+    // Verify uniqueness (handle race conditions)
+    const exists = await Ledger.findOne({ LedgerGUID: newGUID, cmpcode });
+    if (exists) {
+      // If exists, try next number
+      return `LED${String(nextNumber + 1).padStart(3, '0')}`;
+    }
+
+    return newGUID;
+  } catch (error) {
+    console.error('Error generating LedgerGUID:', error);
+    // Fallback to timestamp-based GUID if sequential fails
+    const timestamp = Date.now().toString(36).toUpperCase();
+    return `LED-${timestamp}`;
+  }
+};
+
+/**
+ * @swagger
+ * /api/v1/admin/dealers:
+ *   post:
+ *     summary: Create a new dealer (ledger) for admin's company
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - LedgerName
+ *             properties:
+ *               LedgerGUID:
+ *                 type: string
+ *                 description: Ledger GUID (optional, auto-generated if not provided)
+ *                 example: "LED001"
+ *               LedgerName:
+ *                 type: string
+ *                 description: Name of the dealer/ledger
+ *                 example: "ABC Dealer"
+ *               LedgerParent:
+ *                 type: string
+ *                 nullable: true
+ *                 description: Parent ledger GUID (optional)
+ *                 example: "LED000"
+ *               SalesMan:
+ *                 type: string
+ *                 description: Salesman user ID (optional)
+ *               ASM:
+ *                 type: string
+ *                 description: ASM user ID (optional)
+ *               RSM:
+ *                 type: string
+ *                 description: RSM user ID (optional)
+ *               ZSM:
+ *                 type: string
+ *                 description: ZSM user ID (optional)
+ *               LedgerMobile:
+ *                 type: string
+ *                 description: Dealer mobile number
+ *               LedgerContact:
+ *                 type: string
+ *                 description: Dealer contact person
+ *               Email:
+ *                 type: string
+ *                 format: email
+ *                 description: Dealer email
+ *               LedgerAddress1:
+ *                 type: string
+ *                 description: Address line 1
+ *               LedgerAddress2:
+ *                 type: string
+ *                 description: Address line 2
+ *               LedgerState:
+ *                 type: string
+ *                 description: State
+ *               LedgerOpening:
+ *                 type: number
+ *                 description: Opening balance
+ *                 default: 0
+ *               LedgerOpeningDate:
+ *                 type: string
+ *                 format: date
+ *                 description: Opening balance date
+ *               LedgerJoinDate:
+ *                 type: string
+ *                 format: date
+ *                 description: Join date
+ *               Remarks:
+ *                 type: string
+ *                 description: Remarks
+ *               Other1:
+ *                 type: string
+ *               Other2:
+ *                 type: string
+ *               Other3:
+ *                 type: string
+ *               Other4:
+ *                 type: string
+ *               Other5:
+ *                 type: string
+ *               other6:
+ *                 type: string
+ *               other7:
+ *                 type: string
+ *               other8:
+ *                 type: string
+ *               isActive:
+ *                 type: boolean
+ *                 default: true
+ *     responses:
+ *       201:
+ *         description: Dealer created successfully
+ *       400:
+ *         description: Bad request
+ *       403:
+ *         description: Access denied
+ *       500:
+ *         description: Server error
+ */
+export const createDealer = async (req, res) => {
+  try {
+    const {
+      LedgerGUID,
+      LedgerName,
+      LedgerParent,
+      SalesMan,
+      ASM,
+      RSM,
+      ZSM,
+      LedgerMobile,
+      LedgerContact,
+      Email,
+      LedgerGSTIN,
+      LedgerAddress1,
+      LedgerAddress2,
+      LedgerState,
+      LedgerOpening,
+      LedgerOpeningDate,
+      LedgerJoinDate,
+      Cmpguid,
+      cmpCode,
+      Remarks,
+      Other1,
+      Other2,
+      Other3,
+      Other4,
+      Other5,
+      other6,
+      other7,
+      other8,
+      groupId,
+      isActive = true
+    } = req.body;
+
+    const adminId = req.user.userId;
+    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+
+    // Validate required fields
+    if (!LedgerName || !LedgerName.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "LedgerName is required"
+      });
+    }
+
+    // Check if admin has access to the company
+    const admin = await User.findById(adminId).populate('defaultCompany');
+    if (!admin || !admin.defaultCompany) {
+      return res.status(403).json({
+        success: false,
+        message: "No company assigned to this admin"
+      });
+    }
+
+    // Convert companyId to string for comparison
+    const adminCompanyId = admin.defaultCompany._id.toString();
+    const targetCompanyId = companyId.toString();
+
+    if (adminCompanyId !== targetCompanyId) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied to this company"
+      });
+    }
+
+    // Get company code
+    const company = await Company.findById(companyId);
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: "Company not found"
+      });
+    }
+
+    // Check total member limit for the company (users + dealers + subdealers)
+    const limitCheck = await checkCompanyMemberLimit(companyId, 1);
+    if (!limitCheck.allowed) {
+      return res.status(400).json({
+        success: false,
+        message: limitCheck.message
+      });
+    }
+
+    // Generate LedgerGUID if not provided
+    let finalLedgerGUID = LedgerGUID;
+    if (!finalLedgerGUID || !finalLedgerGUID.trim()) {
+      finalLedgerGUID = await generateLedgerGUID(company.companyCode);
+    } else {
+      finalLedgerGUID = finalLedgerGUID.trim();
+    }
+
+    // Check if LedgerGUID already exists for this company
+    const existingLedger = await Ledger.findOne({
+      LedgerGUID: finalLedgerGUID,
+      cmpcode: company.companyCode
+    });
+
+    if (existingLedger) {
+      return res.status(409).json({
+        success: false,
+        message: `Ledger with GUID ${finalLedgerGUID} already exists for this company`
+      });
+    }
+
+    // Validate LedgerParent if provided
+    if (LedgerParent && LedgerParent.trim()) {
+      const parentLedger = await Ledger.findOne({
+        LedgerGUID: LedgerParent.trim(),
+        cmpcode: company.companyCode
+      });
+
+      if (!parentLedger) {
+        return res.status(400).json({
+          success: false,
+          message: `Parent ledger with GUID ${LedgerParent} not found`
+        });
+      }
+    }
+
+    // Validate and assign group if provided
+    let finalGroupId = null;
+    if (groupId) {
+      const group = await Group.findOne({ 
+        _id: groupId, 
+        companyId: companyId,
+        isActive: true 
+      });
+      if (!group) {
+        return res.status(400).json({
+          success: false,
+          message: "Group not found or not active for this company"
+        });
+      }
+      finalGroupId = group._id;
+    }
+
+    // Validate hierarchy users if provided
+    const hierarchyUsers = {};
+    if (SalesMan) {
+      const salesman = await User.findOne({ _id: SalesMan, 'companies.companyId': companyId });
+      if (!salesman) {
+        return res.status(400).json({
+          success: false,
+          message: "SalesMan user not found"
+        });
+      }
+      hierarchyUsers.SalesMan = SalesMan;
+    }
+    if (ASM) {
+      const asm = await User.findOne({ _id: ASM, 'companies.companyId': companyId });
+      if (!asm) {
+        return res.status(400).json({
+          success: false,
+          message: "ASM user not found"
+        });
+      }
+      hierarchyUsers.ASM = ASM;
+    }
+    if (RSM) {
+      const rsm = await User.findOne({ _id: RSM, 'companies.companyId': companyId });
+      if (!rsm) {
+        return res.status(400).json({
+          success: false,
+          message: "RSM user not found"
+        });
+      }
+      hierarchyUsers.RSM = RSM;
+    }
+    if (ZSM) {
+      const zsm = await User.findOne({ _id: ZSM, 'companies.companyId': companyId });
+      if (!zsm) {
+        return res.status(400).json({
+          success: false,
+          message: "ZSM user not found"
+        });
+      }
+      hierarchyUsers.ZSM = ZSM;
+    }
+
+    // Create the ledger
+    const newLedger = await Ledger.create({
+      LedgerGUID: finalLedgerGUID,
+      LedgerName: LedgerName.trim(),
+      LedgerParent: LedgerParent && LedgerParent.trim() ? LedgerParent.trim() : null,
+      cmpcode: company.companyCode,
+      cmpCode: cmpCode || company.companyCode,
+      Cmpguid: Cmpguid || company.guid || company.companyCode,
+      LedgerMobile: LedgerMobile || '',
+      LedgerContact: LedgerContact || '',
+      Email: Email || '',
+      LedgerGSTIN: LedgerGSTIN ? LedgerGSTIN.trim().toUpperCase() : '',
+      LedgerAddress1: LedgerAddress1 || '',
+      LedgerAddress2: LedgerAddress2 || '',
+      LedgerState: LedgerState || '',
+      LedgerOpening: LedgerOpening || 0,
+      LedgerOpeningDate: LedgerOpeningDate ? new Date(LedgerOpeningDate) : null,
+      LedgerJoinDate: LedgerJoinDate ? new Date(LedgerJoinDate) : null,
+      Remarks: Remarks || '',
+      Other1: Other1 || '',
+      Other2: Other2 || '',
+      Other3: Other3 || '',
+      Other4: Other4 || '',
+      Other5: Other5 || '',
+      other6: other6 || '',
+      other7: other7 || '',
+      other8: other8 || '',
+      groupId: finalGroupId,
+      isActive: isActive !== false,
+      companyId: companyId,
+      ...hierarchyUsers,
+      createdBy: adminId
+    });
+
+    // Populate group if assigned
+    if (finalGroupId) {
+      await newLedger.populate('groupId', 'GroupGUID GroupName GroupParent cmpcode');
+    }
+
+    res.status(201).json({
+      success: true,
+      message: "Dealer created successfully",
+      data: {
+        _id: newLedger._id,
+        LedgerGUID: newLedger.LedgerGUID,
+        LedgerName: newLedger.LedgerName,
+        LedgerParent: newLedger.LedgerParent,
+        cmpcode: newLedger.cmpcode,
+        cmpCode: newLedger.cmpCode,
+        Cmpguid: newLedger.Cmpguid,
+        SalesMan: newLedger.SalesMan,
+        ASM: newLedger.ASM,
+        RSM: newLedger.RSM,
+        ZSM: newLedger.ZSM,
+        LedgerMobile: newLedger.LedgerMobile,
+        LedgerContact: newLedger.LedgerContact,
+        Email: newLedger.Email,
+        LedgerGSTIN: newLedger.LedgerGSTIN,
+        LedgerAddress1: newLedger.LedgerAddress1,
+        LedgerAddress2: newLedger.LedgerAddress2,
+        LedgerState: newLedger.LedgerState,
+        LedgerOpening: newLedger.LedgerOpening,
+        LedgerOpeningDate: newLedger.LedgerOpeningDate,
+        LedgerJoinDate: newLedger.LedgerJoinDate,
+        Remarks: newLedger.Remarks,
+        Other1: newLedger.Other1,
+        Other2: newLedger.Other2,
+        Other3: newLedger.Other3,
+        Other4: newLedger.Other4,
+        Other5: newLedger.Other5,
+        other6: newLedger.other6,
+        other7: newLedger.other7,
+        other8: newLedger.other8,
+        groupId: newLedger.groupId,
+        group: newLedger.groupId ? {
+          _id: newLedger.groupId._id,
+          GroupGUID: newLedger.groupId.GroupGUID,
+          GroupName: newLedger.groupId.GroupName
+        } : null,
+        isActive: newLedger.isActive,
+        createdAt: newLedger.createdAt
+      }
+    });
+
+  } catch (error) {
+    console.error("Create dealer error:", error);
+    
+    // Handle duplicate key error
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "Ledger with this GUID already exists for this company"
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * @swagger
+ * /api/v1/admin/dealers:
+ *   get:
+ *     summary: Get all dealers (ledgers) for admin's company
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: includeInactive
+ *         schema:
+ *           type: boolean
+ *           default: false
+ *         description: If true, include inactive dealers
+ *     responses:
+ *       200:
+ *         description: Dealers retrieved successfully
+ *       403:
+ *         description: Access denied
+ *       500:
+ *         description: Server error
+ */
+/**
+ * @swagger
+ * /api/v1/admin/dealers:
+ *   get:
+ *     summary: Get all dealers (ledgers) for admin's company
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: includeInactive
+ *         schema:
+ *           type: boolean
+ *           default: false
+ *         description: If true, include inactive dealers
+ *     responses:
+ *       200:
+ *         description: Dealers retrieved successfully
+ *       403:
+ *         description: Access denied
+ *       500:
+ *         description: Server error
+ */
+export const getAllDealers = async (req, res) => {
+  try {
+    const adminId = req.user.userId;
+    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+    const { includeInactive } = req.query;
+
+    // Check if admin has access to the company
+    const admin = await User.findById(adminId).populate('defaultCompany');
+    if (!admin || !admin.defaultCompany) {
+      return res.status(403).json({
+        success: false,
+        message: "No company assigned to this admin"
+      });
+    }
+
+    // Convert companyId to string for comparison
+    const adminCompanyId = admin.defaultCompany._id.toString();
+    const targetCompanyId = companyId.toString();
+
+    if (adminCompanyId !== targetCompanyId) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied to this company"
+      });
+    }
+
+    // Get company code
+    const company = await Company.findById(companyId);
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: "Company not found"
+      });
+    }
+
+    // Build query
+    const query = {
+      cmpcode: company.companyCode
+    };
+
+    if (includeInactive !== 'true') {
+      query.isActive = true;
+    }
+
+    // Get all dealers for this company
+    const dealers = await Ledger.find(query)
+      .select('_id LedgerGUID LedgerName LedgerParent cmpcode Cmpguid SalesMan ASM RSM ZSM LedgerMobile LedgerContact Email LedgerGSTIN LedgerAddress1 LedgerAddress2 LedgerState LedgerOpening LedgerOpeningDate LedgerJoinDate Remarks Other1 Other2 Other3 Other4 Other5 other6 other7 other8 groupId isActive createdAt')
+      .populate('SalesMan', 'name email role')
+      .populate('ASM', 'name email role')
+      .populate('RSM', 'name email role')
+      .populate('ZSM', 'name email role')
+      .populate('groupId', 'GroupGUID GroupName GroupParent cmpcode')
+      .sort({ LedgerName: 1 })
+      .lean();
+
+    res.json({
+      success: true,
+      data: {
+        dealers: dealers,
+        totalDealers: dealers.length
+      }
+    });
+
+  } catch (error) {
+    console.error("Get all dealers error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * @swagger
+ * /api/v1/admin/dealers/{dealerId}:
+ *   put:
+ *     summary: Update an existing dealer
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: dealerId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Dealer ID to update
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               LedgerName:
+ *                 type: string
+ *               LedgerParent:
+ *                 type: string
+ *                 nullable: true
+ *               SalesMan:
+ *                 type: string
+ *               ASM:
+ *                 type: string
+ *               RSM:
+ *                 type: string
+ *               ZSM:
+ *                 type: string
+ *               LedgerMobile:
+ *                 type: string
+ *               LedgerContact:
+ *                 type: string
+ *               Email:
+ *                 type: string
+ *               LedgerAddress1:
+ *                 type: string
+ *               LedgerAddress2:
+ *                 type: string
+ *               LedgerState:
+ *                 type: string
+ *               LedgerOpening:
+ *                 type: number
+ *               LedgerOpeningDate:
+ *                 type: string
+ *                 format: date
+ *               LedgerJoinDate:
+ *                 type: string
+ *                 format: date
+ *               Remarks:
+ *                 type: string
+ *               Other1:
+ *                 type: string
+ *               Other2:
+ *                 type: string
+ *               Other3:
+ *                 type: string
+ *               Other4:
+ *                 type: string
+ *               Other5:
+ *                 type: string
+ *               other6:
+ *                 type: string
+ *               other7:
+ *                 type: string
+ *               other8:
+ *                 type: string
+ *               isActive:
+ *                 type: boolean
+ *     responses:
+ *       200:
+ *         description: Dealer updated successfully
+ *       400:
+ *         description: Bad request
+ *       403:
+ *         description: Access denied
+ *       404:
+ *         description: Dealer not found
+ *       500:
+ *         description: Server error
+ */
+export const updateDealer = async (req, res) => {
+  try {
+    const { dealerId } = req.params;
+    const {
+      LedgerName,
+      LedgerParent,
+      SalesMan,
+      ASM,
+      RSM,
+      ZSM,
+      LedgerMobile,
+      LedgerContact,
+      Email,
+      LedgerGSTIN,
+      LedgerAddress1,
+      LedgerAddress2,
+      LedgerState,
+      LedgerOpening,
+      LedgerOpeningDate,
+      LedgerJoinDate,
+      Remarks,
+      Other1,
+      Other2,
+      Other3,
+      Other4,
+      Other5,
+      other6,
+      other7,
+      other8,
+      groupId,
+      isActive
+    } = req.body;
+
+    const adminId = req.user.userId;
+    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+
+    if (!dealerId) {
+      return res.status(400).json({
+        success: false,
+        message: "Dealer ID is required"
+      });
+    }
+
+    // Check if admin has access to the company
+    const admin = await User.findById(adminId).populate('defaultCompany');
+    if (!admin || !admin.defaultCompany) {
+      return res.status(403).json({
+        success: false,
+        message: "No company assigned to this admin"
+      });
+    }
+
+    // Convert companyId to string for comparison
+    const adminCompanyId = admin.defaultCompany._id.toString();
+    const targetCompanyId = companyId.toString();
+
+    if (adminCompanyId !== targetCompanyId) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied to this company"
+      });
+    }
+
+    // Get company code
+    const company = await Company.findById(companyId);
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: "Company not found"
+      });
+    }
+
+    // Find the dealer
+    const dealer = await Ledger.findOne({
+      _id: dealerId,
+      cmpcode: company.companyCode
+    });
+
+    if (!dealer) {
+      return res.status(404).json({
+        success: false,
+        message: "Dealer not found"
+      });
+    }
+
+    // Validate LedgerParent if provided and different from current
+    if (LedgerParent !== undefined && LedgerParent !== dealer.LedgerParent) {
+      if (LedgerParent === null || LedgerParent === '') {
+        dealer.LedgerParent = null;
+      } else {
+        const parentLedger = await Ledger.findOne({
+          LedgerGUID: LedgerParent,
+          cmpcode: company.companyCode
+        });
+
+        if (!parentLedger) {
+          return res.status(400).json({
+            success: false,
+            message: `Parent ledger with GUID ${LedgerParent} not found`
+          });
+        }
+
+        // Prevent circular reference
+        if (parentLedger._id.toString() === dealerId) {
+          return res.status(400).json({
+            success: false,
+            message: "Dealer cannot be its own parent"
+          });
+        }
+
+        dealer.LedgerParent = LedgerParent;
+      }
+    }
+
+    // Validate and update group if provided
+    if (groupId !== undefined) {
+      if (groupId === null || groupId === '') {
+        dealer.groupId = null;
+      } else {
+        const group = await Group.findOne({ 
+          _id: groupId, 
+          companyId: companyId,
+          isActive: true 
+        });
+        if (!group) {
+          return res.status(400).json({
+            success: false,
+            message: "Group not found or not active for this company"
+          });
+        }
+        dealer.groupId = group._id;
+      }
+    }
+
+    // Update fields if provided
+    if (LedgerName !== undefined) {
+      if (!LedgerName || !LedgerName.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: "LedgerName cannot be empty"
+        });
+      }
+      dealer.LedgerName = LedgerName.trim();
+    }
+
+    // Validate and update hierarchy users
+    if (SalesMan !== undefined) {
+      if (SalesMan === null || SalesMan === '') {
+        dealer.SalesMan = null;
+      } else {
+        const salesman = await User.findOne({ _id: SalesMan, 'companies.companyId': companyId });
+        if (!salesman) {
+          return res.status(400).json({
+            success: false,
+            message: "SalesMan user not found"
+          });
+        }
+        dealer.SalesMan = SalesMan;
+      }
+    }
+
+    if (ASM !== undefined) {
+      if (ASM === null || ASM === '') {
+        dealer.ASM = null;
+      } else {
+        const asm = await User.findOne({ _id: ASM, 'companies.companyId': companyId });
+        if (!asm) {
+          return res.status(400).json({
+            success: false,
+            message: "ASM user not found"
+          });
+        }
+        dealer.ASM = ASM;
+      }
+    }
+
+    if (RSM !== undefined) {
+      if (RSM === null || RSM === '') {
+        dealer.RSM = null;
+      } else {
+        const rsm = await User.findOne({ _id: RSM, 'companies.companyId': companyId });
+        if (!rsm) {
+          return res.status(400).json({
+            success: false,
+            message: "RSM user not found"
+          });
+        }
+        dealer.RSM = RSM;
+      }
+    }
+
+    if (ZSM !== undefined) {
+      if (ZSM === null || ZSM === '') {
+        dealer.ZSM = null;
+      } else {
+        const zsm = await User.findOne({ _id: ZSM, 'companies.companyId': companyId });
+        if (!zsm) {
+          return res.status(400).json({
+            success: false,
+            message: "ZSM user not found"
+          });
+        }
+        dealer.ZSM = ZSM;
+      }
+    }
+
+    // Update other fields
+    if (LedgerMobile !== undefined) dealer.LedgerMobile = LedgerMobile || '';
+    if (LedgerContact !== undefined) dealer.LedgerContact = LedgerContact || '';
+    if (Email !== undefined) dealer.Email = Email || '';
+    if (LedgerGSTIN !== undefined) dealer.LedgerGSTIN = LedgerGSTIN ? LedgerGSTIN.trim().toUpperCase() : '';
+    if (LedgerAddress1 !== undefined) dealer.LedgerAddress1 = LedgerAddress1 || '';
+    if (LedgerAddress2 !== undefined) dealer.LedgerAddress2 = LedgerAddress2 || '';
+    if (LedgerState !== undefined) dealer.LedgerState = LedgerState || '';
+    if (LedgerOpening !== undefined) {
+      dealer.LedgerOpening = LedgerOpening || 0;
+    }
+    if (LedgerOpeningDate !== undefined) {
+      dealer.LedgerOpeningDate = LedgerOpeningDate ? new Date(LedgerOpeningDate) : null;
+    }
+    if (LedgerJoinDate !== undefined) {
+      dealer.LedgerJoinDate = LedgerJoinDate ? new Date(LedgerJoinDate) : null;
+    }
+    if (Remarks !== undefined) dealer.Remarks = Remarks || '';
+    if (Other1 !== undefined) dealer.Other1 = Other1 || '';
+    if (Other2 !== undefined) dealer.Other2 = Other2 || '';
+    if (Other3 !== undefined) dealer.Other3 = Other3 || '';
+    if (Other4 !== undefined) dealer.Other4 = Other4 || '';
+    if (Other5 !== undefined) dealer.Other5 = Other5 || '';
+    if (other6 !== undefined) dealer.other6 = other6 || '';
+    if (other7 !== undefined) dealer.other7 = other7 || '';
+    if (other8 !== undefined) dealer.other8 = other8 || '';
+
+    if (isActive !== undefined) {
+      dealer.isActive = isActive;
+    }
+
+    dealer.updatedBy = adminId;
+
+    // Save the updated dealer
+    await dealer.save();
+
+    // Populate hierarchy users and group for response
+    await dealer.populate([
+      { path: 'SalesMan', select: 'name email role' },
+      { path: 'ASM', select: 'name email role' },
+      { path: 'RSM', select: 'name email role' },
+      { path: 'ZSM', select: 'name email role' },
+      { path: 'groupId', select: 'GroupGUID GroupName GroupParent cmpcode' }
+    ]);
+
+    res.json({
+      success: true,
+      message: "Dealer updated successfully",
+      data: {
+        _id: dealer._id,
+        LedgerGUID: dealer.LedgerGUID,
+        LedgerName: dealer.LedgerName,
+        LedgerParent: dealer.LedgerParent,
+        cmpcode: dealer.cmpcode,
+        Cmpguid: dealer.Cmpguid,
+        SalesMan: dealer.SalesMan,
+        ASM: dealer.ASM,
+        RSM: dealer.RSM,
+        ZSM: dealer.ZSM,
+        LedgerMobile: dealer.LedgerMobile,
+        LedgerContact: dealer.LedgerContact,
+        Email: dealer.Email,
+        LedgerGSTIN: dealer.LedgerGSTIN,
+        LedgerAddress1: dealer.LedgerAddress1,
+        LedgerAddress2: dealer.LedgerAddress2,
+        LedgerState: dealer.LedgerState,
+        LedgerOpening: dealer.LedgerOpening,
+        LedgerOpeningDate: dealer.LedgerOpeningDate,
+        LedgerJoinDate: dealer.LedgerJoinDate,
+        Remarks: dealer.Remarks,
+        Other1: dealer.Other1,
+        Other2: dealer.Other2,
+        Other3: dealer.Other3,
+        Other4: dealer.Other4,
+        Other5: dealer.Other5,
+        other6: dealer.other6,
+        other7: dealer.other7,
+        other8: dealer.other8,
+        groupId: dealer.groupId,
+        group: dealer.groupId ? {
+          _id: dealer.groupId._id,
+          GroupGUID: dealer.groupId.GroupGUID,
+          GroupName: dealer.groupId.GroupName
+        } : null,
+        isActive: dealer.isActive,
+        updatedAt: dealer.updatedAt
+      }
+    });
+
+  } catch (error) {
+    console.error("Update dealer error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * @swagger
+ * /api/v1/admin/dealers/{dealerId}:
+ *   delete:
+ *     summary: Delete a dealer (soft delete by setting isActive to false)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: dealerId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Dealer ID to delete
+ *       - in: query
+ *         name: hardDelete
+ *         schema:
+ *           type: boolean
+ *           default: false
+ *         description: If true, permanently delete the dealer
+ *     responses:
+ *       200:
+ *         description: Dealer deleted successfully
+ *       403:
+ *         description: Access denied
+ *       404:
+ *         description: Dealer not found
+ *       500:
+ *         description: Server error
+ */
+export const deleteDealer = async (req, res) => {
+  try {
+    const { dealerId } = req.params;
+    const { hardDelete } = req.query;
+    const adminId = req.user.userId;
+    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+
+    if (!dealerId) {
+      return res.status(400).json({
+        success: false,
+        message: "Dealer ID is required"
+      });
+    }
+
+    // Check if admin has access to the company
+    const admin = await User.findById(adminId).populate('defaultCompany');
+    if (!admin || !admin.defaultCompany) {
+      return res.status(403).json({
+        success: false,
+        message: "No company assigned to this admin"
+      });
+    }
+
+    // Convert companyId to string for comparison
+    const adminCompanyId = admin.defaultCompany._id.toString();
+    const targetCompanyId = companyId.toString();
+
+    if (adminCompanyId !== targetCompanyId) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied to this company"
+      });
+    }
+
+    // Get company code
+    const company = await Company.findById(companyId);
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: "Company not found"
+      });
+    }
+
+    // Find the dealer
+    const dealer = await Ledger.findOne({
+      _id: dealerId,
+      cmpcode: company.companyCode
+    });
+
+    if (!dealer) {
+      return res.status(404).json({
+        success: false,
+        message: "Dealer not found"
+      });
+    }
+
+    if (hardDelete === 'true') {
+      // Hard delete
+      await Ledger.findByIdAndDelete(dealerId);
+      return res.json({
+        success: true,
+        message: "Dealer permanently deleted"
+      });
+    } else {
+      // Soft delete
+      dealer.isActive = false;
+      dealer.updatedBy = adminId;
+      await dealer.save();
+      return res.json({
+        success: true,
+        message: "Dealer deactivated successfully"
+      });
+    }
+
+  } catch (error) {
+    console.error("Delete dealer error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// ==================== SUBDEALER MANAGEMENT ====================
+
+/**
+ * @swagger
+ * /api/v1/admin/subdealers:
+ *   post:
+ *     summary: Create a new subdealer
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - SDName
+ *               - SDType
+ *             properties:
+ *               SDName:
+ *                 type: string
+ *               SDType:
+ *                 type: string
+ *                 enum: [Sub Dealer, TSO]
+ *               SDAddress1:
+ *                 type: string
+ *               SDAddress2:
+ *                 type: string
+ *               SDAddress3:
+ *                 type: string
+ *               SDState:
+ *                 type: string
+ *               SDCountry:
+ *                 type: string
+ *               SDPincode:
+ *                 type: string
+ *               SDContactPerson:
+ *                 type: string
+ *               SDMobileNo:
+ *                 type: string
+ *               SDEmail:
+ *                 type: string
+ *               SDGSTNType:
+ *                 type: string
+ *               SDGSTNNumber:
+ *                 type: string
+ *               groupId:
+ *                 type: string
+ *     responses:
+ *       201:
+ *         description: Subdealer created successfully
+ *       400:
+ *         description: Bad request
+ *       403:
+ *         description: Access denied
+ *       500:
+ *         description: Server error
+ */
+export const createSubDealer = async (req, res) => {
+  try {
+    const {
+      SDName,
+      SDType,
+      SDAddress1,
+      SDAddress2,
+      SDAddress3,
+      SDState,
+      SDCountry,
+      SDPincode,
+      SDContactPerson,
+      SDMobileNo,
+      SDEmail,
+      SDGSTNType,
+      SDGSTNNumber,
+      groupId,
+      isActive = true
+    } = req.body;
+
+    const adminId = req.user.userId;
+    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+
+    // Validate required fields
+    if (!SDName || !SDName.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "SDName is required"
+      });
+    }
+
+    if (!SDType || !['Sub Dealer', 'TSO'].includes(SDType)) {
+      return res.status(400).json({
+        success: false,
+        message: "SDType is required and must be 'Sub Dealer' or 'TSO'"
+      });
+    }
+
+    // Check if admin has access to the company
+    const admin = await User.findById(adminId).populate('defaultCompany');
+    if (!admin || !admin.defaultCompany) {
+      return res.status(403).json({
+        success: false,
+        message: "No company assigned to this admin"
+      });
+    }
+
+    // Convert companyId to string for comparison
+    const adminCompanyId = admin.defaultCompany._id.toString();
+    const targetCompanyId = companyId.toString();
+
+    if (adminCompanyId !== targetCompanyId) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied to this company"
+      });
+    }
+
+    // Get company code
+    const company = await Company.findById(companyId);
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: "Company not found"
+      });
+    }
+
+    // Check total member limit for the company (users + dealers + subdealers)
+    const limitCheck = await checkCompanyMemberLimit(companyId, 1);
+    if (!limitCheck.allowed) {
+      return res.status(400).json({
+        success: false,
+        message: limitCheck.message
+      });
+    }
+
+    // Validate and assign group if provided
+    let finalGroupId = null;
+    if (groupId) {
+      const group = await Group.findOne({ 
+        _id: groupId, 
+        companyId: companyId,
+        isActive: true 
+      });
+      if (!group) {
+        return res.status(400).json({
+          success: false,
+          message: "Group not found or not active for this company"
+        });
+      }
+      finalGroupId = group._id;
+    }
+
+    // Create the subdealer
+    const newSubDealer = await SubDealer.create({
+      SDName: SDName.trim(),
+      SDType: SDType.trim(),
+      SDAddress1: SDAddress1 || '',
+      SDAddress2: SDAddress2 || '',
+      SDAddress3: SDAddress3 || '',
+      SDState: SDState || '',
+      SDCountry: SDCountry || 'India',
+      SDPincode: SDPincode || '',
+      SDContactPerson: SDContactPerson || '',
+      SDMobileNo: SDMobileNo || '',
+      SDEmail: SDEmail || '',
+      SDGSTNType: SDGSTNType || '',
+      SDGSTNNumber: SDGSTNNumber ? SDGSTNNumber.trim().toUpperCase() : '',
+      groupId: finalGroupId,
+      companyId: companyId,
+      cmpcode: company.companyCode,
+      Cmpguid: company.guid || company.companyCode,
+      isActive: isActive !== false,
+      createdBy: adminId
+    });
+
+    // Populate group if assigned
+    if (finalGroupId) {
+      await newSubDealer.populate('groupId', 'GroupGUID GroupName GroupParent cmpcode');
+    }
+
+    res.status(201).json({
+      success: true,
+      message: "Subdealer created successfully",
+      data: {
+        _id: newSubDealer._id,
+        SDName: newSubDealer.SDName,
+        SDType: newSubDealer.SDType,
+        SDAddress1: newSubDealer.SDAddress1,
+        SDAddress2: newSubDealer.SDAddress2,
+        SDAddress3: newSubDealer.SDAddress3,
+        SDState: newSubDealer.SDState,
+        SDCountry: newSubDealer.SDCountry,
+        SDPincode: newSubDealer.SDPincode,
+        SDContactPerson: newSubDealer.SDContactPerson,
+        SDMobileNo: newSubDealer.SDMobileNo,
+        SDEmail: newSubDealer.SDEmail,
+        SDGSTNType: newSubDealer.SDGSTNType,
+        SDGSTNNumber: newSubDealer.SDGSTNNumber,
+        groupId: newSubDealer.groupId,
+        group: newSubDealer.groupId ? {
+          _id: newSubDealer.groupId._id,
+          GroupGUID: newSubDealer.groupId.GroupGUID,
+          GroupName: newSubDealer.groupId.GroupName
+        } : null,
+        cmpcode: newSubDealer.cmpcode,
+        Cmpguid: newSubDealer.Cmpguid,
+        isActive: newSubDealer.isActive,
+        createdAt: newSubDealer.createdAt
+      }
+    });
+
+  } catch (error) {
+    console.error("Create subdealer error:", error);
+    
+    // Handle duplicate key error
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "Subdealer with this information already exists"
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * @swagger
+ * /api/v1/admin/subdealers:
+ *   get:
+ *     summary: Get all subdealers for admin's company
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: includeInactive
+ *         schema:
+ *           type: boolean
+ *           default: false
+ *         description: If true, include inactive subdealers
+ *     responses:
+ *       200:
+ *         description: Subdealers retrieved successfully
+ *       403:
+ *         description: Access denied
+ *       500:
+ *         description: Server error
+ */
+export const getAllSubDealers = async (req, res) => {
+  try {
+    const adminId = req.user.userId;
+    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+    const { includeInactive } = req.query;
+
+    // Check if admin has access to the company
+    const admin = await User.findById(adminId).populate('defaultCompany');
+    if (!admin || !admin.defaultCompany) {
+      return res.status(403).json({
+        success: false,
+        message: "No company assigned to this admin"
+      });
+    }
+
+    // Convert companyId to string for comparison
+    const adminCompanyId = admin.defaultCompany._id.toString();
+    const targetCompanyId = companyId.toString();
+
+    if (adminCompanyId !== targetCompanyId) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied to this company"
+      });
+    }
+
+    // Get company code
+    const company = await Company.findById(companyId);
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: "Company not found"
+      });
+    }
+
+    // Build query
+    const query = {
+      companyId: companyId
+    };
+
+    if (includeInactive !== 'true') {
+      query.isActive = true;
+    }
+
+    // Get all subdealers for this company
+    const subdealers = await SubDealer.find(query)
+      .select('_id SDName SDType SDAddress1 SDAddress2 SDAddress3 SDState SDCountry SDPincode SDContactPerson SDMobileNo SDEmail SDGSTNType SDGSTNNumber groupId cmpcode Cmpguid isActive createdAt')
+      .populate('groupId', 'GroupGUID GroupName GroupParent cmpcode')
+      .sort({ SDName: 1 })
+      .lean();
+
+    res.json({
+      success: true,
+      data: {
+        subdealers: subdealers,
+        totalSubDealers: subdealers.length
+      }
+    });
+
+  } catch (error) {
+    console.error("Get all subdealers error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * @swagger
+ * /api/v1/admin/subdealers/{subdealerId}:
+ *   put:
+ *     summary: Update an existing subdealer
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: subdealerId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Subdealer ID to update
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               SDName:
+ *                 type: string
+ *               SDType:
+ *                 type: string
+ *                 enum: [Sub Dealer, TSO]
+ *               SDAddress1:
+ *                 type: string
+ *               SDAddress2:
+ *                 type: string
+ *               SDAddress3:
+ *                 type: string
+ *               SDState:
+ *                 type: string
+ *               SDCountry:
+ *                 type: string
+ *               SDPincode:
+ *                 type: string
+ *               SDContactPerson:
+ *                 type: string
+ *               SDMobileNo:
+ *                 type: string
+ *               SDEmail:
+ *                 type: string
+ *               SDGSTNType:
+ *                 type: string
+ *               SDGSTNNumber:
+ *                 type: string
+ *               groupId:
+ *                 type: string
+ *               isActive:
+ *                 type: boolean
+ *     responses:
+ *       200:
+ *         description: Subdealer updated successfully
+ *       400:
+ *         description: Bad request
+ *       403:
+ *         description: Access denied
+ *       404:
+ *         description: Subdealer not found
+ *       500:
+ *         description: Server error
+ */
+export const updateSubDealer = async (req, res) => {
+  try {
+    const { subdealerId } = req.params;
+    const {
+      SDName,
+      SDType,
+      SDAddress1,
+      SDAddress2,
+      SDAddress3,
+      SDState,
+      SDCountry,
+      SDPincode,
+      SDContactPerson,
+      SDMobileNo,
+      SDEmail,
+      SDGSTNType,
+      SDGSTNNumber,
+      groupId,
+      isActive
+    } = req.body;
+
+    const adminId = req.user.userId;
+    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+
+    if (!subdealerId) {
+      return res.status(400).json({
+        success: false,
+        message: "Subdealer ID is required"
+      });
+    }
+
+    // Check if admin has access to the company
+    const admin = await User.findById(adminId).populate('defaultCompany');
+    if (!admin || !admin.defaultCompany) {
+      return res.status(403).json({
+        success: false,
+        message: "No company assigned to this admin"
+      });
+    }
+
+    // Convert companyId to string for comparison
+    const adminCompanyId = admin.defaultCompany._id.toString();
+    const targetCompanyId = companyId.toString();
+
+    if (adminCompanyId !== targetCompanyId) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied to this company"
+      });
+    }
+
+    // Get company code
+    const company = await Company.findById(companyId);
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: "Company not found"
+      });
+    }
+
+    // Find the subdealer
+    const subdealer = await SubDealer.findOne({
+      _id: subdealerId,
+      companyId: companyId
+    });
+
+    if (!subdealer) {
+      return res.status(404).json({
+        success: false,
+        message: "Subdealer not found"
+      });
+    }
+
+    // Validate and update group if provided
+    if (groupId !== undefined) {
+      if (groupId === null || groupId === '') {
+        subdealer.groupId = null;
+      } else {
+        const group = await Group.findOne({ 
+          _id: groupId, 
+          companyId: companyId,
+          isActive: true 
+        });
+        if (!group) {
+          return res.status(400).json({
+            success: false,
+            message: "Group not found or not active for this company"
+          });
+        }
+        subdealer.groupId = group._id;
+      }
+    }
+
+    // Update fields if provided
+    if (SDName !== undefined) {
+      if (!SDName || !SDName.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: "SDName cannot be empty"
+        });
+      }
+      subdealer.SDName = SDName.trim();
+    }
+
+    if (SDType !== undefined) {
+      if (!['Sub Dealer', 'TSO'].includes(SDType)) {
+        return res.status(400).json({
+          success: false,
+          message: "SDType must be 'Sub Dealer' or 'TSO'"
+        });
+      }
+      subdealer.SDType = SDType.trim();
+    }
+
+    // Update other fields
+    if (SDAddress1 !== undefined) subdealer.SDAddress1 = SDAddress1 || '';
+    if (SDAddress2 !== undefined) subdealer.SDAddress2 = SDAddress2 || '';
+    if (SDAddress3 !== undefined) subdealer.SDAddress3 = SDAddress3 || '';
+    if (SDState !== undefined) subdealer.SDState = SDState || '';
+    if (SDCountry !== undefined) subdealer.SDCountry = SDCountry || 'India';
+    if (SDPincode !== undefined) subdealer.SDPincode = SDPincode || '';
+    if (SDContactPerson !== undefined) subdealer.SDContactPerson = SDContactPerson || '';
+    if (SDMobileNo !== undefined) subdealer.SDMobileNo = SDMobileNo || '';
+    if (SDEmail !== undefined) subdealer.SDEmail = SDEmail || '';
+    if (SDGSTNType !== undefined) subdealer.SDGSTNType = SDGSTNType || '';
+    if (SDGSTNNumber !== undefined) subdealer.SDGSTNNumber = SDGSTNNumber ? SDGSTNNumber.trim().toUpperCase() : '';
+    if (isActive !== undefined) subdealer.isActive = isActive;
+
+    subdealer.updatedBy = adminId;
+
+    // Save the updated subdealer
+    await subdealer.save();
+
+    // Populate group for response
+    await subdealer.populate('groupId', 'GroupGUID GroupName GroupParent cmpcode');
+
+    res.json({
+      success: true,
+      message: "Subdealer updated successfully",
+      data: {
+        _id: subdealer._id,
+        SDName: subdealer.SDName,
+        SDType: subdealer.SDType,
+        SDAddress1: subdealer.SDAddress1,
+        SDAddress2: subdealer.SDAddress2,
+        SDAddress3: subdealer.SDAddress3,
+        SDState: subdealer.SDState,
+        SDCountry: subdealer.SDCountry,
+        SDPincode: subdealer.SDPincode,
+        SDContactPerson: subdealer.SDContactPerson,
+        SDMobileNo: subdealer.SDMobileNo,
+        SDEmail: subdealer.SDEmail,
+        SDGSTNType: subdealer.SDGSTNType,
+        SDGSTNNumber: subdealer.SDGSTNNumber,
+        groupId: subdealer.groupId,
+        group: subdealer.groupId ? {
+          _id: subdealer.groupId._id,
+          GroupGUID: subdealer.groupId.GroupGUID,
+          GroupName: subdealer.groupId.GroupName
+        } : null,
+        cmpcode: subdealer.cmpcode,
+        Cmpguid: subdealer.Cmpguid,
+        isActive: subdealer.isActive,
+        updatedAt: subdealer.updatedAt
+      }
+    });
+
+  } catch (error) {
+    console.error("Update subdealer error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * @swagger
+ * /api/v1/admin/subdealers/{subdealerId}:
+ *   delete:
+ *     summary: Delete a subdealer (soft delete by setting isActive to false)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: subdealerId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Subdealer ID to delete
+ *       - in: query
+ *         name: hardDelete
+ *         schema:
+ *           type: boolean
+ *           default: false
+ *         description: If true, permanently delete the subdealer
+ *     responses:
+ *       200:
+ *         description: Subdealer deleted successfully
+ *       403:
+ *         description: Access denied
+ *       404:
+ *         description: Subdealer not found
+ *       500:
+ *         description: Server error
+ */
+export const deleteSubDealer = async (req, res) => {
+  try {
+    const { subdealerId } = req.params;
+    const { hardDelete } = req.query;
+    const adminId = req.user.userId;
+    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+
+    if (!subdealerId) {
+      return res.status(400).json({
+        success: false,
+        message: "Subdealer ID is required"
+      });
+    }
+
+    // Check if admin has access to the company
+    const admin = await User.findById(adminId).populate('defaultCompany');
+    if (!admin || !admin.defaultCompany) {
+      return res.status(403).json({
+        success: false,
+        message: "No company assigned to this admin"
+      });
+    }
+
+    // Convert companyId to string for comparison
+    const adminCompanyId = admin.defaultCompany._id.toString();
+    const targetCompanyId = companyId.toString();
+
+    if (adminCompanyId !== targetCompanyId) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied to this company"
+      });
+    }
+
+    // Get company code
+    const company = await Company.findById(companyId);
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: "Company not found"
+      });
+    }
+
+    // Find the subdealer
+    const subdealer = await SubDealer.findOne({
+      _id: subdealerId,
+      companyId: companyId
+    });
+
+    if (!subdealer) {
+      return res.status(404).json({
+        success: false,
+        message: "Subdealer not found"
+      });
+    }
+
+    if (hardDelete === 'true') {
+      // Hard delete
+      await SubDealer.findByIdAndDelete(subdealerId);
+      return res.json({
+        success: true,
+        message: "Subdealer permanently deleted"
+      });
+    } else {
+      // Soft delete
+      subdealer.isActive = false;
+      subdealer.updatedBy = adminId;
+      await subdealer.save();
+      return res.json({
+        success: true,
+        message: "Subdealer deactivated successfully"
+      });
+    }
+
+  } catch (error) {
+    console.error("Delete subdealer error:", error);
     res.status(500).json({
       success: false,
       message: "Server error",

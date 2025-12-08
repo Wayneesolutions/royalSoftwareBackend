@@ -221,6 +221,33 @@ export const upsertUserFromTally = async (req, res) => {
       const mobile = normalizeString(item.mobile || item.phone);
       const email = normalizeString(item.email);
 
+      // Check if this is a new user (not existing) - only check limit for new users
+      const uniquenessCriteria = [];
+      const userName = normalizeString(item.userName);
+      
+      if (userName) uniquenessCriteria.push({ userName });
+      if (email) uniquenessCriteria.push({ email });
+      if (mobile) uniquenessCriteria.push({ mobile });
+
+      const existingUser = uniquenessCriteria.length > 0
+        ? await User.findOne({ $or: uniquenessCriteria })
+        : null;
+
+      // Only check limit if creating a new user (not updating existing)
+      if (!existingUser) {
+        const { checkCompanyMemberLimit } = await import('./adminController.js');
+        const limitCheck = await checkCompanyMemberLimit(company._id, 1);
+        if (!limitCheck.allowed) {
+          results.push({
+            userName: userName || item.userName,
+            success: false,
+            message: limitCheck.message,
+            error: 'MEMBER_LIMIT_EXCEEDED',
+          });
+          continue;
+        }
+      }
+
       const password = normalizeString(item.password);
 
       if (!name || !mobile) {
@@ -261,21 +288,7 @@ export const upsertUserFromTally = async (req, res) => {
         ],
       };
 
-      const uniquenessCriteria = [];
-      if (userPayload.userName) {
-        uniquenessCriteria.push({ userName: userPayload.userName });
-      }
-      if (userPayload.email) {
-        uniquenessCriteria.push({ email: userPayload.email });
-      }
-      if (userPayload.mobile) {
-        uniquenessCriteria.push({ mobile: userPayload.mobile });
-      }
-
-      const existingUser =
-        uniquenessCriteria.length > 0
-          ? await User.findOne({ $or: uniquenessCriteria })
-          : null;
+      // Note: Uniqueness check and limit check already done above
 
       if (existingUser) {
         results.push({

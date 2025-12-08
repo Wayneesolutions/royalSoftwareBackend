@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import Company from '../models/company/companyModel.js';
 import Group from '../models/group/groupModel.js';
+import User from '../models/user/userModel.js';
 import { XMLParser } from 'fast-xml-parser';
 
 const isBlank = (value) =>
@@ -788,6 +789,134 @@ export const listGroupsByCompanyGuid = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Failed to list groups',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
+};
+
+/**
+ * List users by group GUID
+ * Returns all users assigned to a group identified by GroupGUID
+ */
+export const listUsersByGroupGuid = async (req, res) => {
+  try {
+    const { groupGuid } = req.params;
+
+    if (!groupGuid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Group GUID is required',
+      });
+    }
+
+    // Find the group by GroupGUID
+    const group = await Group.findOne({
+      GroupGUID: groupGuid,
+      isActive: true,
+    }).lean();
+
+    if (!group) {
+      return res.status(404).json({
+        success: false,
+        message: 'Group not found for provided GroupGUID',
+        error: 'GROUP_NOT_FOUND',
+      });
+    }
+
+    // Get the group ID (as ObjectId)
+    const groupId = group._id;
+
+    // Find all users that belong to this group
+    // groups.groupId is ObjectId reference, groups.groupGUID is string
+    const users = await User.find({
+      isActive: { $in: [true, false] },
+      $or: [
+        { 'groups.groupId': groupId },
+        { 'groups.groupGUID': groupGuid },
+      ],
+    })
+      .select(
+        'name email mobile userName role address isActive defaultCompany companies groups createdAt updatedAt'
+      )
+      .lean();
+
+    // Format users for Tally response
+    const mappedUsers = users.map((user) => {
+      // Find the group assignment for this user
+      const groupAssignment = (user.groups || []).find(
+        (g) => {
+          if (!g.groupId && !g.groupGUID) return false;
+          // Check by ObjectId
+          if (g.groupId) {
+            const gId = g.groupId.toString ? g.groupId.toString() : String(g.groupId);
+            if (gId === groupId.toString()) return true;
+          }
+          // Check by GUID
+          if (g.groupGUID && g.groupGUID === groupGuid) return true;
+          return false;
+        }
+      );
+
+      // Get company info if available
+      const companyAssignment = (user.companies || []).find(
+        (c) => c.isActive === true
+      );
+
+      return {
+        id: user._id.toString(),
+        name: user.name,
+        email: user.email || '',
+        mobile: user.mobile,
+        userName: user.userName || '',
+        role: user.role,
+        isActive: user.isActive,
+        address: {
+          street: user.address?.street || '',
+          city: user.address?.city || '',
+          state: user.address?.state || '',
+          pincode: user.address?.pincode || '',
+          country: user.address?.country || '',
+        },
+        group: {
+          id: group._id.toString(),
+          guid: group.GroupGUID,
+          name: group.GroupName,
+          parent: group.GroupParent || null,
+          cmpcode: group.cmpcode,
+          remarks: group.Remarks || '',
+        },
+        groupAssignment: groupAssignment ? {
+          assignedAt: groupAssignment.assignedAt || user.createdAt,
+          assignedBy: groupAssignment.assignedBy || null,
+          isActive: groupAssignment.isActive !== false,
+        } : null,
+        company: companyAssignment ? {
+          id: companyAssignment.companyId?.toString() || '',
+          role: companyAssignment.role || user.role,
+          assignedAt: companyAssignment.assignedAt || user.createdAt,
+        } : null,
+        lastUpdated: user.updatedAt,
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      group: {
+        id: group._id.toString(),
+        guid: group.GroupGUID,
+        name: group.GroupName,
+        parent: group.GroupParent || null,
+        cmpcode: group.cmpcode,
+        remarks: group.Remarks || '',
+      },
+      totalUsers: mappedUsers.length,
+      users: mappedUsers,
+    });
+  } catch (error) {
+    console.error('Error fetching users by group GUID:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch users for group',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
   }

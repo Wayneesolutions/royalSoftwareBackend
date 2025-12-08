@@ -2,6 +2,8 @@ import Order from '../models/order/orderModel.js';
 import Product from '../models/product/productModel.js';
 import User from '../models/user/userModel.js';
 import Company from '../models/company/companyModel.js';
+import Ledger from '../models/ledger/ledgerModel.js';
+import SubDealer from '../models/subdealer/subdealerModel.js';
 import mongoose from 'mongoose';
 
 const DEFAULT_GST_RATE = 18;
@@ -190,11 +192,21 @@ export const createOrder = async (req, res) => {
     let subDealerDoc = null;
 
     if (dealerId) {
-      dealerDoc = await User.findById(dealerId).lean();
+      // Try to find dealer in Ledger table first
+      dealerDoc = await Ledger.findById(dealerId).lean();
+      // If not found in Ledger, fallback to User (for backward compatibility)
+      if (!dealerDoc) {
+        dealerDoc = await User.findById(dealerId).lean();
+      }
     }
 
     if (subDealerId) {
-      subDealerDoc = await User.findById(subDealerId).lean();
+      // Try to find subdealer in SubDealer table first
+      subDealerDoc = await SubDealer.findById(subDealerId).lean();
+      // If not found in SubDealer, fallback to User (for backward compatibility)
+      if (!subDealerDoc) {
+        subDealerDoc = await User.findById(subDealerId).lean();
+      }
     }
 
     const sellerState =

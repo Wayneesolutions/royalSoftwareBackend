@@ -244,6 +244,86 @@ const options = {
               description: 'Response data'
             }
           }
+        },
+        Group: {
+          type: 'object',
+          properties: {
+            _id: {
+              type: 'string',
+              description: 'Group ID'
+            },
+            GroupGUID: {
+              type: 'string',
+              description: 'Unique group GUID (e.g., GRP001)',
+              example: 'GRP001'
+            },
+            GroupName: {
+              type: 'string',
+              description: 'Name of the group',
+              example: 'Sales Team A'
+            },
+            GroupParent: {
+              type: 'string',
+              nullable: true,
+              description: 'Parent group GUID (optional)',
+              example: 'GRP000'
+            },
+            cmpcode: {
+              type: 'string',
+              description: 'Company code',
+              example: 'COM--001'
+            },
+            Remarks: {
+              type: 'string',
+              description: 'Remarks or notes about the group'
+            },
+            other1: {
+              type: 'string',
+              description: 'Additional field 1'
+            },
+            other2: {
+              type: 'string',
+              description: 'Additional field 2'
+            },
+            other3: {
+              type: 'string',
+              description: 'Additional field 3'
+            },
+            other4: {
+              type: 'string',
+              description: 'Additional field 4'
+            },
+            companyId: {
+              type: 'string',
+              description: 'Reference to Company model'
+            },
+            isActive: {
+              type: 'boolean',
+              description: 'Whether the group is active',
+              default: true
+            },
+            tallySyncStatus: {
+              type: 'string',
+              enum: ['pending', 'synced', 'failed'],
+              description: 'Tally synchronization status',
+              default: 'pending'
+            },
+            tallySyncAt: {
+              type: 'string',
+              format: 'date-time',
+              description: 'Last Tally synchronization timestamp'
+            },
+            createdAt: {
+              type: 'string',
+              format: 'date-time',
+              description: 'Group creation timestamp'
+            },
+            updatedAt: {
+              type: 'string',
+              format: 'date-time',
+              description: 'Group last update timestamp'
+            }
+          }
         }
       }
     },

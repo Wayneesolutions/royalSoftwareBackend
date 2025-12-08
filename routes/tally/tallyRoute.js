@@ -28,7 +28,18 @@ import {
   deleteGroupFromTally,
   searchGroupsForTally,
   listGroupsByCompanyGuid,
+  listUsersByGroupGuid,
 } from '../../controllres/tallyGroupController.js';
+import {
+  upsertDealerFromTally,
+  upsertSubDealerFromTally,
+  listDealersByCompanyGuid,
+  listSubDealersByCompanyGuid,
+  updateDealerFromTally,
+  deleteDealerFromTally,
+  updateSubDealerFromTally,
+  deleteSubDealerFromTally,
+} from '../../controllres/tallyDealerController.js';
 
 const tallyRoute = express.Router();
 
@@ -47,6 +58,10 @@ const tallyRoute = express.Router();
  *     description: Order retrieval endpoints for Tally ERP
  *   - name: Tally Groups
  *     description: Group synchronization endpoints for Tally ERP
+ *   - name: Tally Dealers
+ *     description: Dealer (Ledger) synchronization endpoints for Tally ERP
+ *   - name: Tally SubDealers
+ *     description: SubDealer synchronization endpoints for Tally ERP
  */
 
 /**
@@ -1663,6 +1678,751 @@ tallyRoute.get('/groups/search', searchGroupsForTally);
  *         description: Server error while fetching groups
  */
 tallyRoute.get('/companies/:guid/groups', listGroupsByCompanyGuid);
+
+/**
+ * @swagger
+ * /api/v1/tally/groups/{groupGuid}/users:
+ *   get:
+ *     summary: Fetch users for a group by GroupGUID
+ *     description: Returns all users assigned to the group identified by the given GroupGUID.
+ *     tags: [Tally Groups]
+ *     parameters:
+ *       - in: path
+ *         name: groupGuid
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Group GUID (GroupGUID) as provided by Tally
+ *         example: "GRP001"
+ *     responses:
+ *       200:
+ *         description: Users returned successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 group:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       description: Group MongoDB ID
+ *                     guid:
+ *                       type: string
+ *                       description: Group GUID (GroupGUID)
+ *                       example: "GRP001"
+ *                     name:
+ *                       type: string
+ *                       description: Group name
+ *                       example: "John Doe - Dealers"
+ *                     parent:
+ *                       type: string
+ *                       nullable: true
+ *                       description: Parent group/user ID
+ *                     cmpcode:
+ *                       type: string
+ *                       description: Company code
+ *                       example: "001"
+ *                     remarks:
+ *                       type: string
+ *                       description: Group remarks
+ *                 totalUsers:
+ *                   type: integer
+ *                   description: Total number of users in the group
+ *                   example: 5
+ *                 users:
+ *                   type: array
+ *                   description: List of users assigned to this group
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                         description: User MongoDB ID
+ *                       name:
+ *                         type: string
+ *                         example: "John Doe"
+ *                       email:
+ *                         type: string
+ *                         format: email
+ *                         example: "john.doe@example.com"
+ *                       mobile:
+ *                         type: string
+ *                         example: "9876543210"
+ *                       userName:
+ *                         type: string
+ *                         example: "johndoe"
+ *                       role:
+ *                         type: string
+ *                         example: "dealers"
+ *                       isActive:
+ *                         type: boolean
+ *                         example: true
+ *                       address:
+ *                         type: object
+ *                         properties:
+ *                           street:
+ *                             type: string
+ *                           city:
+ *                             type: string
+ *                           state:
+ *                             type: string
+ *                           pincode:
+ *                             type: string
+ *                           country:
+ *                             type: string
+ *                       group:
+ *                         type: object
+ *                         description: Group information
+ *                         properties:
+ *                           id:
+ *                             type: string
+ *                           guid:
+ *                             type: string
+ *                           name:
+ *                             type: string
+ *                           parent:
+ *                             type: string
+ *                             nullable: true
+ *                           cmpcode:
+ *                             type: string
+ *                           remarks:
+ *                             type: string
+ *                       groupAssignment:
+ *                         type: object
+ *                         nullable: true
+ *                         description: Group assignment details
+ *                         properties:
+ *                           assignedAt:
+ *                             type: string
+ *                             format: date-time
+ *                           assignedBy:
+ *                             type: string
+ *                             nullable: true
+ *                           isActive:
+ *                             type: boolean
+ *                       company:
+ *                         type: object
+ *                         nullable: true
+ *                         description: Company assignment details
+ *                         properties:
+ *                           id:
+ *                             type: string
+ *                           role:
+ *                             type: string
+ *                           assignedAt:
+ *                             type: string
+ *                             format: date-time
+ *                       lastUpdated:
+ *                         type: string
+ *                         format: date-time
+ *       400:
+ *         description: Missing or invalid GroupGUID
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: false
+ *                 message:
+ *                   type: string
+ *                   example: "Group GUID is required"
+ *       404:
+ *         description: Group not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: false
+ *                 message:
+ *                   type: string
+ *                   example: "Group not found for provided GroupGUID"
+ *                 error:
+ *                   type: string
+ *                   example: "GROUP_NOT_FOUND"
+ *       500:
+ *         description: Server error while fetching users
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: false
+ *                 message:
+ *                   type: string
+ *                   example: "Failed to fetch users for group"
+ */
+tallyRoute.get('/groups/:groupGuid/users', listUsersByGroupGuid);
+
+// ===================== DEALER (LEDGER) APIS =====================
+
+/**
+ * @swagger
+ * /api/v1/tally/dealers:
+ *   post:
+ *     summary: Sync dealers (Ledgers) from Tally ERP
+ *     description: >
+ *       Accepts dealer information pushed from Tally ERP (JSON or XML payload) and creates or updates
+ *       the corresponding dealers inside Royal Software. 
+ *       
+ *       **Supports both single dealer object and array of multiple dealers for batch processing.**
+ *       - Single dealer: Send a single JSON object
+ *       - Multiple dealers: Send an array of dealer objects
+ *       
+ *       Each dealer is processed independently - success/failure of one doesn't affect others.
+ *       Returns a results array with status for each dealer processed.
+ *     tags: [Tally Dealers]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             oneOf:
+ *               - type: object
+ *                 required:
+ *                   - companyGuid
+ *                   - LedgerGUID
+ *                   - LedgerName
+ *                 properties:
+ *                   companyGuid:
+ *                     type: string
+ *                     description: Company GUID to associate the dealer with
+ *                     example: "COM-001"
+ *                   LedgerGUID:
+ *                     type: string
+ *                     description: Unique GUID for the dealer/ledger
+ *                     example: "LED-001"
+ *                   LedgerName:
+ *                     type: string
+ *                     description: Name of the dealer
+ *                     example: "ABC Traders"
+ *                   LedgerMobile:
+ *                     type: string
+ *                     example: "+919876543210"
+ *                   Email:
+ *                     type: string
+ *                     format: email
+ *                     example: "dealer@example.com"
+ *                   LedgerGSTIN:
+ *                     type: string
+ *                     example: "29ABCDE1234F1Z5"
+ *                   LedgerAddress1:
+ *                     type: string
+ *                   LedgerAddress2:
+ *                     type: string
+ *                   LedgerState:
+ *                     type: string
+ *                   LedgerOpening:
+ *                     type: number
+ *                   LedgerOpeningDate:
+ *                     type: string
+ *                     format: date
+ *                   LedgerJoinDate:
+ *                     type: string
+ *                     format: date
+ *                   groupGUID:
+ *                     type: string
+ *                     description: Group GUID to assign the dealer to
+ *                   SalesMan:
+ *                     type: object
+ *                     properties:
+ *                       mobile:
+ *                         type: string
+ *                       email:
+ *                         type: string
+ *                   ASM:
+ *                     type: object
+ *                     properties:
+ *                       mobile:
+ *                         type: string
+ *                       email:
+ *                         type: string
+ *                   RSM:
+ *                     type: object
+ *                     properties:
+ *                       mobile:
+ *                         type: string
+ *                       email:
+ *                         type: string
+ *                   ZSM:
+ *                     type: object
+ *                     properties:
+ *                       mobile:
+ *                         type: string
+ *                       email:
+ *                         type: string
+ *                   Remarks:
+ *                     type: string
+ *                   isActive:
+ *                     type: boolean
+ *                     default: true
+ *               - type: array
+ *                 description: Array of dealers for batch processing
+ *                 items:
+ *                   type: object
+ *                   required:
+ *                     - companyGuid
+ *                     - LedgerGUID
+ *                     - LedgerName
+ *                   properties:
+ *                     companyGuid:
+ *                       type: string
+ *                       example: "COM-001"
+ *                     LedgerGUID:
+ *                       type: string
+ *                       example: "LED-002"
+ *                     LedgerName:
+ *                       type: string
+ *                       example: "XYZ Traders"
+ *                     LedgerMobile:
+ *                       type: string
+ *                     Email:
+ *                       type: string
+ *                     LedgerGSTIN:
+ *                       type: string
+ *                     groupGUID:
+ *                       type: string
+ *                     isActive:
+ *                       type: boolean
+ *     responses:
+ *       200:
+ *         description: All dealers processed successfully
+ *       207:
+ *         description: Partial success - some dealers processed, some failed
+ *       400:
+ *         description: All dealers failed to process
+ */
+tallyRoute.post('/dealers', upsertDealerFromTally);
+
+/**
+ * @swagger
+ * /api/v1/tally/dealers/{guid}:
+ *   get:
+ *     summary: List all dealers for a company by company GUID
+ *     description: Retrieves all active dealers (Ledgers) associated with the specified company GUID
+ *     tags: [Tally Dealers]
+ *     parameters:
+ *       - in: path
+ *         name: guid
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Company GUID
+ *         example: "COM-001"
+ *     responses:
+ *       200:
+ *         description: Dealers retrieved successfully
+ *       404:
+ *         description: Company not found
+ */
+tallyRoute.get('/dealers/:guid', listDealersByCompanyGuid);
+
+/**
+ * @swagger
+ * /api/v1/tally/dealers/update:
+ *   put:
+ *     summary: Update dealers from Tally ERP
+ *     description: >
+ *       Updates existing dealers based on LedgerGUID and company GUID.
+ *       
+ *       **Supports both single dealer object and array of multiple dealers for batch processing.**
+ *       - Single dealer: Send a single JSON object with companyGuid and LedgerGUID
+ *       - Multiple dealers: Send an array of dealer objects
+ *       
+ *       Each dealer is processed independently. Only provided fields are updated.
+ *     tags: [Tally Dealers]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             oneOf:
+ *               - type: object
+ *                 required:
+ *                   - companyGuid
+ *                   - LedgerGUID
+ *                 properties:
+ *                   companyGuid:
+ *                     type: string
+ *                   LedgerGUID:
+ *                     type: string
+ *                   LedgerName:
+ *                     type: string
+ *                   LedgerMobile:
+ *                     type: string
+ *                   Email:
+ *                     type: string
+ *                   LedgerGSTIN:
+ *                     type: string
+ *                   groupGUID:
+ *                     type: string
+ *                   isActive:
+ *                     type: boolean
+ *               - type: array
+ *                 description: Array of dealers for batch update
+ *                 items:
+ *                   type: object
+ *                   required:
+ *                     - companyGuid
+ *                     - LedgerGUID
+ *                   properties:
+ *                     companyGuid:
+ *                       type: string
+ *                     LedgerGUID:
+ *                       type: string
+ *                     LedgerName:
+ *                       type: string
+ *                     LedgerMobile:
+ *                       type: string
+ *                     Email:
+ *                       type: string
+ *                     LedgerGSTIN:
+ *                       type: string
+ *                     groupGUID:
+ *                       type: string
+ *                     isActive:
+ *                       type: boolean
+ *     responses:
+ *       200:
+ *         description: All dealers updated successfully
+ *       207:
+ *         description: Partial success
+ *       404:
+ *         description: Dealer not found
+ */
+tallyRoute.put('/dealers/update', updateDealerFromTally);
+
+/**
+ * @swagger
+ * /api/v1/tally/dealers/delete:
+ *   delete:
+ *     summary: Delete dealers from Tally ERP
+ *     description: >
+ *       Permanently deletes dealers based on LedgerGUID and company GUID.
+ *       
+ *       **Supports both single dealer object and array of multiple dealers for batch deletion.**
+ *       - Single dealer: Send a single JSON object with companyGuid and LedgerGUID
+ *       - Multiple dealers: Send an array of dealer objects
+ *       
+ *       Each dealer deletion is processed independently.
+ *     tags: [Tally Dealers]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             oneOf:
+ *               - type: object
+ *                 required:
+ *                   - companyGuid
+ *                   - LedgerGUID
+ *                 properties:
+ *                   companyGuid:
+ *                     type: string
+ *                   LedgerGUID:
+ *                     type: string
+ *               - type: array
+ *                 description: Array of dealers for batch deletion
+ *                 items:
+ *                   type: object
+ *                   required:
+ *                     - companyGuid
+ *                     - LedgerGUID
+ *                   properties:
+ *                     companyGuid:
+ *                       type: string
+ *                       example: "COM-001"
+ *                     LedgerGUID:
+ *                       type: string
+ *                       example: "LED-001"
+ *     responses:
+ *       200:
+ *         description: All dealers deleted successfully
+ *       207:
+ *         description: Partial success
+ *       404:
+ *         description: Dealer not found
+ */
+tallyRoute.delete('/dealers/delete', deleteDealerFromTally);
+
+// ===================== SUBDEALER APIS =====================
+
+/**
+ * @swagger
+ * /api/v1/tally/subdealers:
+ *   post:
+ *     summary: Sync subdealers from Tally ERP
+ *     description: >
+ *       Accepts subdealer information pushed from Tally ERP (JSON or XML payload) and creates or updates
+ *       the corresponding subdealers inside Royal Software.
+ *       
+ *       **Supports both single subdealer object and array of multiple subdealers for batch processing.**
+ *       - Single subdealer: Send a single JSON object
+ *       - Multiple subdealers: Send an array of subdealer objects
+ *       
+ *       Each subdealer is processed independently - success/failure of one doesn't affect others.
+ *       Returns a results array with status for each subdealer processed.
+ *     tags: [Tally SubDealers]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             oneOf:
+ *               - type: object
+ *                 required:
+ *                   - companyGuid
+ *                   - SDName
+ *                   - SDType
+ *                 properties:
+ *                   companyGuid:
+ *                     type: string
+ *                     description: Company GUID to associate the subdealer with
+ *                     example: "COM-001"
+ *                   SDName:
+ *                     type: string
+ *                     description: Name of the subdealer
+ *                     example: "XYZ Distributors"
+ *                   SDType:
+ *                     type: string
+ *                     enum: [Sub Dealer, TSO]
+ *                     description: Type of subdealer
+ *                     example: "Sub Dealer"
+ *                   SDAddress1:
+ *                     type: string
+ *                   SDAddress2:
+ *                     type: string
+ *                   SDAddress3:
+ *                     type: string
+ *                   SDState:
+ *                     type: string
+ *                   SDCountry:
+ *                     type: string
+ *                     default: "India"
+ *                   SDPincode:
+ *                     type: string
+ *                   SDContactPerson:
+ *                     type: string
+ *                   SDMobileNo:
+ *                     type: string
+ *                   SDEmail:
+ *                     type: string
+ *                     format: email
+ *                   SDGSTNType:
+ *                     type: string
+ *                   SDGSTNNumber:
+ *                     type: string
+ *                   groupGUID:
+ *                     type: string
+ *                     description: Group GUID to assign the subdealer to
+ *                   isActive:
+ *                     type: boolean
+ *                     default: true
+ *               - type: array
+ *                 description: Array of subdealers for batch processing
+ *                 items:
+ *                   type: object
+ *                   required:
+ *                     - companyGuid
+ *                     - SDName
+ *                     - SDType
+ *                   properties:
+ *                     companyGuid:
+ *                       type: string
+ *                       example: "COM-001"
+ *                     SDName:
+ *                       type: string
+ *                       example: "ABC Distributors"
+ *                     SDType:
+ *                       type: string
+ *                       enum: [Sub Dealer, TSO]
+ *                     SDAddress1:
+ *                       type: string
+ *                     SDMobileNo:
+ *                       type: string
+ *                     SDEmail:
+ *                       type: string
+ *                     groupGUID:
+ *                       type: string
+ *                     isActive:
+ *                       type: boolean
+ *     responses:
+ *       200:
+ *         description: All subdealers processed successfully
+ *       207:
+ *         description: Partial success - some subdealers processed, some failed
+ *       400:
+ *         description: All subdealers failed to process
+ */
+tallyRoute.post('/subdealers', upsertSubDealerFromTally);
+
+/**
+ * @swagger
+ * /api/v1/tally/subdealers/{guid}:
+ *   get:
+ *     summary: List all subdealers for a company by company GUID
+ *     description: Retrieves all active subdealers associated with the specified company GUID
+ *     tags: [Tally SubDealers]
+ *     parameters:
+ *       - in: path
+ *         name: guid
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Company GUID
+ *         example: "COM-001"
+ *     responses:
+ *       200:
+ *         description: Subdealers retrieved successfully
+ *       404:
+ *         description: Company not found
+ */
+tallyRoute.get('/subdealers/:guid', listSubDealersByCompanyGuid);
+
+/**
+ * @swagger
+ * /api/v1/tally/subdealers/update:
+ *   put:
+ *     summary: Update subdealers from Tally ERP
+ *     description: >
+ *       Updates existing subdealers based on SDName and company GUID.
+ *       
+ *       **Supports both single subdealer object and array of multiple subdealers for batch processing.**
+ *       - Single subdealer: Send a single JSON object with companyGuid and SDName
+ *       - Multiple subdealers: Send an array of subdealer objects
+ *       
+ *       Each subdealer is processed independently. Only provided fields are updated.
+ *     tags: [Tally SubDealers]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             oneOf:
+ *               - type: object
+ *                 required:
+ *                   - companyGuid
+ *                   - SDName
+ *                 properties:
+ *                   companyGuid:
+ *                     type: string
+ *                   SDName:
+ *                     type: string
+ *                   SDType:
+ *                     type: string
+ *                     enum: [Sub Dealer, TSO]
+ *                   SDMobileNo:
+ *                     type: string
+ *                   SDEmail:
+ *                     type: string
+ *                   SDState:
+ *                     type: string
+ *                   SDGSTNNumber:
+ *                     type: string
+ *                   groupGUID:
+ *                     type: string
+ *                   isActive:
+ *                     type: boolean
+ *               - type: array
+ *                 description: Array of subdealers for batch update
+ *                 items:
+ *                   type: object
+ *                   required:
+ *                     - companyGuid
+ *                     - SDName
+ *                   properties:
+ *                     companyGuid:
+ *                       type: string
+ *                     SDName:
+ *                       type: string
+ *                     SDType:
+ *                       type: string
+ *                       enum: [Sub Dealer, TSO]
+ *                     SDMobileNo:
+ *                       type: string
+ *                     SDEmail:
+ *                       type: string
+ *                     SDState:
+ *                       type: string
+ *                     SDGSTNNumber:
+ *                       type: string
+ *                     groupGUID:
+ *                       type: string
+ *                     isActive:
+ *                       type: boolean
+ *     responses:
+ *       200:
+ *         description: All subdealers updated successfully
+ *       207:
+ *         description: Partial success
+ *       404:
+ *         description: Subdealer not found
+ */
+tallyRoute.put('/subdealers/update', updateSubDealerFromTally);
+
+/**
+ * @swagger
+ * /api/v1/tally/subdealers/delete:
+ *   delete:
+ *     summary: Delete subdealers from Tally ERP
+ *     description: >
+ *       Permanently deletes subdealers based on SDName and company GUID.
+ *       
+ *       **Supports both single subdealer object and array of multiple subdealers for batch deletion.**
+ *       - Single subdealer: Send a single JSON object with companyGuid and SDName
+ *       - Multiple subdealers: Send an array of subdealer objects
+ *       
+ *       Each subdealer deletion is processed independently.
+ *     tags: [Tally SubDealers]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             oneOf:
+ *               - type: object
+ *                 required:
+ *                   - companyGuid
+ *                   - SDName
+ *                 properties:
+ *                   companyGuid:
+ *                     type: string
+ *                   SDName:
+ *                     type: string
+ *               - type: array
+ *                 description: Array of subdealers for batch deletion
+ *                 items:
+ *                   type: object
+ *                   required:
+ *                     - companyGuid
+ *                     - SDName
+ *                   properties:
+ *                     companyGuid:
+ *                       type: string
+ *                       example: "COM-001"
+ *                     SDName:
+ *                       type: string
+ *                       example: "XYZ Distributors"
+ *     responses:
+ *       200:
+ *         description: All subdealers deleted successfully
+ *       207:
+ *         description: Partial success
+ *       404:
+ *         description: Subdealer not found
+ */
+tallyRoute.delete('/subdealers/delete', deleteSubDealerFromTally);
 
 export default tallyRoute;
 

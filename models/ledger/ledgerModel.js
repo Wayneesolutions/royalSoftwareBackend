@@ -1,106 +1,157 @@
 import mongoose from "mongoose";
 
 const ledgerSchema = new mongoose.Schema({
-  // Basic Information
-  ledgerId: {
+  // Required Fields
+  LedgerGUID: {
     type: String,
+    trim: true,
     required: true,
-    unique: true
+    index: true,
+  },
+  LedgerName: {
+    type: String,
+    trim: true,
+    required: true,
+  },
+  LedgerParent: {
+    type: String,
+    trim: true,
+    default: null,
+  },
+  
+  // Hierarchy Assignment (User IDs)
+  SalesMan: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+  },
+  ASM: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+  },
+  RSM: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+  },
+  ZSM: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+  },
+  
+  // Contact Information
+  LedgerMobile: {
+    type: String,
+    trim: true,
+  },
+  LedgerContact: {
+    type: String,
+    trim: true,
+  },
+  Email: {
+    type: String,
+    trim: true,
+  },
+  LedgerGSTIN: {
+    type: String,
+    trim: true,
+    uppercase: true,
+  },
+  
+  // Address Information
+  LedgerAddress1: {
+    type: String,
+    trim: true,
+  },
+  LedgerAddress2: {
+    type: String,
+    trim: true,
+  },
+  LedgerState: {
+    type: String,
+    trim: true,
+  },
+  
+  // Balance and Date Information
+  LedgerOpening: {
+    type: Number,
+    default: 0
+  },
+  LedgerOpeningDate: {
+    type: Date,
+  },
+  LedgerJoinDate: {
+    type: Date,
+  },
+  
+  // Company Information
+  Cmpguid: {
+    type: String,
+    trim: true,
+  },
+  cmpcode: {
+    type: String,
+    trim: true,
+    index: true,
+  },
+  cmpCode: {
+    type: String,
+    trim: true,
+  },
+  
+  // Group Assignment
+  groupId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Group',
+    index: true,
+  },
+  
+  // Additional Fields
+  Remarks: {
+    type: String,
+    trim: true,
+  },
+  Other1: {
+    type: String,
+    trim: true,
+  },
+  Other2: {
+    type: String,
+    trim: true,
+  },
+  Other3: {
+    type: String,
+    trim: true,
+  },
+  Other4: {
+    type: String,
+    trim: true,
+  },
+  Other5: {
+    type: String,
+    trim: true,
+  },
+  other6: {
+    type: String,
+    trim: true,
+  },
+  other7: {
+    type: String,
+    trim: true,
+  },
+  other8: {
+    type: String,
+    trim: true,
+  },
+  
+  // System Fields (minimal for functionality)
+  isActive: {
+    type: Boolean,
+    default: true
   },
   companyId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Company',
     required: true
   },
-  
-  // Party Information
-  partyId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
-  },
-  partyName: {
-    type: String,
-    required: true
-  },
-  partyType: {
-    type: String,
-    enum: ['customer', 'supplier', 'dealer', 'distributor', 'employee', 'other'],
-    required: true
-  },
-  partyRole: {
-    type: String,
-    enum: ['superadmin', 'admin', 'dealers', 'subdealer', 'asm', 'rsm', 'distibutors', 'suppliers', 'salesman', 'zonal'],
-    required: true
-  },
-  
-  // Account Information
-  accountType: {
-    type: String,
-    enum: ['receivable', 'payable', 'advance', 'deposit', 'loan', 'other'],
-    required: true
-  },
-  
-  // Balance Information
-  openingBalance: {
-    type: Number,
-    default: 0
-  },
-  currentBalance: {
-    type: Number,
-    default: 0
-  },
-  creditLimit: {
-    type: Number,
-    default: 0
-  },
-  
-  // Transaction Summary
-  totalDebit: {
-    type: Number,
-    default: 0
-  },
-  totalCredit: {
-    type: Number,
-    default: 0
-  },
-  lastTransactionDate: {
-    type: Date
-  },
-  lastTransactionAmount: {
-    type: Number,
-    default: 0
-  },
-  
-  // Status and Metadata
-  status: {
-    type: String,
-    enum: ['active', 'inactive', 'suspended', 'closed'],
-    default: 'active'
-  },
-  isActive: {
-    type: Boolean,
-    default: true
-  },
-  
-  // Contact Information
-  contactInfo: {
-    email: String,
-    phone: String,
-    address: {
-      street: String,
-      city: String,
-      state: String,
-      pincode: String,
-      country: String
-    }
-  },
-  
-  // Additional Information
-  notes: String,
-  tags: [String],
-  
-  // Audit Information
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -115,35 +166,16 @@ const ledgerSchema = new mongoose.Schema({
 });
 
 // Indexes for better performance
-ledgerSchema.index({ companyId: 1, partyId: 1 });
-ledgerSchema.index({ companyId: 1, partyType: 1 });
-ledgerSchema.index({ companyId: 1, accountType: 1 });
-ledgerSchema.index({ companyId: 1, status: 1 });
-ledgerSchema.index({ ledgerId: 1 });
-
-// Virtual for balance status
-ledgerSchema.virtual('balanceStatus').get(function() {
-  if (this.currentBalance > 0) {
-    return this.accountType === 'receivable' ? 'debit' : 'credit';
-  } else if (this.currentBalance < 0) {
-    return this.accountType === 'receivable' ? 'credit' : 'debit';
-  }
-  return 'zero';
-});
-
-// Method to update balance
-ledgerSchema.methods.updateBalance = function(amount, transactionType) {
-  if (transactionType === 'debit') {
-    this.currentBalance += amount;
-    this.totalDebit += amount;
-  } else if (transactionType === 'credit') {
-    this.currentBalance -= amount;
-    this.totalCredit += amount;
-  }
-  this.lastTransactionDate = new Date();
-  this.lastTransactionAmount = amount;
-  return this.save();
-};
+ledgerSchema.index({ LedgerGUID: 1, cmpcode: 1 }, { unique: true, sparse: true });
+ledgerSchema.index({ cmpcode: 1, isActive: 1 });
+ledgerSchema.index({ LedgerParent: 1 });
+ledgerSchema.index({ SalesMan: 1 });
+ledgerSchema.index({ ASM: 1 });
+ledgerSchema.index({ RSM: 1 });
+ledgerSchema.index({ ZSM: 1 });
+ledgerSchema.index({ companyId: 1 });
+ledgerSchema.index({ LedgerName: 1 });
+ledgerSchema.index({ groupId: 1 });
 
 const Ledger = mongoose.model('Ledger', ledgerSchema);
 export default Ledger;
