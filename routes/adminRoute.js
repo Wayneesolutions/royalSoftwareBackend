@@ -69,13 +69,13 @@ adminRoute.delete('/user/:userId', requireAuth, authorizeRoles(['admin']), delet
 adminRoute.post('/auto-assign-groups', requireAuth, authorizeRoles(['admin']), autoAssignGroups)
 
 // Dealer (Ledger) management routes
-adminRoute.get('/dealers', requireAuth, authorizeRoles(['admin']), getAllDealers)
+adminRoute.get('/dealers', requireAuth, authorizeRoles(['admin', 'groupuser']), getAllDealers)
 adminRoute.post('/dealers', requireAuth, authorizeRoles(['admin']), createDealer)
 adminRoute.put('/dealers/:dealerId', requireAuth, authorizeRoles(['admin']), updateDealer)
 adminRoute.delete('/dealers/:dealerId', requireAuth, authorizeRoles(['admin']), deleteDealer)
 
 // SubDealer management routes
-adminRoute.get('/subdealers', requireAuth, authorizeRoles(['admin']), getAllSubDealers)
+adminRoute.get('/subdealers', requireAuth, authorizeRoles(['admin', 'groupuser']), getAllSubDealers)
 adminRoute.post('/subdealers', requireAuth, authorizeRoles(['admin']), createSubDealer)
 adminRoute.put('/subdealers/:subdealerId', requireAuth, authorizeRoles(['admin']), updateSubDealer)
 adminRoute.delete('/subdealers/:subdealerId', requireAuth, authorizeRoles(['admin']), deleteSubDealer)

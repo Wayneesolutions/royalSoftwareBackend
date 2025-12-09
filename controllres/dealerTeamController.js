@@ -1,5 +1,7 @@
 import User from "../models/user/userModel.js"
 import Company from "../models/company/companyModel.js"
+import SubDealer from "../models/subdealer/subdealerModel.js"
+import Ledger from "../models/ledger/ledgerModel.js"
 import bcrypt from 'bcryptjs'
 
 /**
@@ -55,7 +57,21 @@ import bcrypt from 'bcryptjs'
  */
 export const createSubDealer = async (req, res) => {
   try {
-    const { email, password, name, mobile, address } = req.body;
+    const { 
+      SDName, 
+      SDEmail, 
+      SDMobileNo, 
+      SDContactPerson, 
+      SDAddress1, 
+      SDAddress2, 
+      SDAddress3,
+      SDState, 
+      SDCountry,
+      SDPincode, 
+      SDType,
+      SDGSTNType,
+      SDGSTNNumber
+    } = req.body;
     const dealerId = req.user.userId;
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
 
@@ -64,21 +80,41 @@ export const createSubDealer = async (req, res) => {
     console.log('createSubDealer - Dealer ID:', dealerId);
 
     // Validate required fields
-    if (!email || !password || !name || !mobile) {
+    if (!SDName || !SDMobileNo) {
       return res.status(400).json({
         success: false,
-        message: 'All fields are required: email, password, name, mobile'
+        message: 'Sub-dealer name and mobile are required'
       });
     }
 
-    // Check if user already exists
-    const existingUser = await User.findOne({
-      $or: [{ email }, { mobile }]
-    });
-    if (existingUser) {
+    // Get dealer's groupId from Ledger model
+    let dealerGroupId = null;
+    try {
+      const dealer = await Ledger.findById(dealerId).lean();
+      if (dealer && dealer.groupId) {
+        dealerGroupId = dealer.groupId;
+        console.log('createSubDealer - Dealer groupId:', dealerGroupId);
+      } else {
+        // If dealer not found in Ledger, try User model (for backward compatibility)
+        const dealerUser = await User.findById(dealerId).lean();
+        if (dealerUser && dealerUser.groups && dealerUser.groups.length > 0) {
+          const activeGroup = dealerUser.groups.find((g) => g.isActive);
+          if (activeGroup && activeGroup.groupId) {
+            dealerGroupId = typeof activeGroup.groupId === 'object' 
+              ? activeGroup.groupId._id 
+              : activeGroup.groupId;
+            console.log('createSubDealer - Dealer groupId from User model:', dealerGroupId);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching dealer groupId:', error);
+    }
+
+    if (!dealerGroupId) {
       return res.status(400).json({
         success: false,
-        message: 'User with this email or mobile already exists'
+        message: 'Dealer group not found. Please ensure dealer is assigned to a group.'
       });
     }
 
@@ -91,53 +127,52 @@ export const createSubDealer = async (req, res) => {
       });
     }
 
-    // Check user limit for the company
-    if (company.maxUser) {
-      // Count current active users for this company (excluding admin and superadmin)
-      const currentUserCount = await User.countDocuments({
-        'companies.companyId': companyId,
-        'companies.isActive': true,
-        isActive: true,
-        role: { $nin: ['admin', 'superadmin'] }
+    // Check if subdealer already exists with same mobile or email
+    const existingSubDealer = await SubDealer.findOne({
+      $or: [
+        { SDMobileNo: SDMobileNo },
+        ...(SDEmail ? [{ SDEmail: SDEmail }] : [])
+      ],
+      companyId: companyId,
+      isActive: true
+    });
+    
+    if (existingSubDealer) {
+      return res.status(400).json({
+        success: false,
+        message: 'Sub-dealer with this mobile or email already exists'
       });
-
-      if (currentUserCount >= company.maxUser) {
-        return res.status(400).json({
-          success: false,
-          message: `Company has reached its user limit. Maximum allowed users: ${company.maxUser}. Current users: ${currentUserCount}. Cannot create more users.`
-        });
-      }
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    // Create sub-dealer
-    const newSubDealer = await User.create({
-      email,
-      password: hashedPassword,
-      name,
-      mobile,
-      role: 'subdealer',
-      companies: [{
-        companyId: companyId,
-        role: 'subdealer',
-        isActive: true,
-        assignedBy: dealerId
-      }],
-      hierarchy: {
-        parentUser: dealerId,
-        level: 7 // Sub-dealer level
-      },
+    // Create sub-dealer in SubDealer model
+    const newSubDealer = await SubDealer.create({
+      SDName: SDName,
+      SDType: SDType || 'Sub Dealer',
+      SDEmail: SDEmail || '',
+      SDMobileNo: SDMobileNo,
+      SDContactPerson: SDContactPerson || SDName,
+      SDAddress1: SDAddress1 || '',
+      SDAddress2: SDAddress2 || '',
+      SDAddress3: SDAddress3 || '',
+      SDState: SDState || '',
+      SDCountry: SDCountry || 'India',
+      SDPincode: SDPincode || '',
+      SDGSTNType: SDGSTNType || '',
+      SDGSTNNumber: SDGSTNNumber || '',
+      companyId: companyId,
+      cmpcode: company.companyCode || '',
+      Cmpguid: company.companyGUID || '',
+      groupId: dealerGroupId, // Assign to dealer's group
       createdBy: dealerId,
-      address: address || {}
+      isActive: true
     });
 
-    // Return sub-dealer without password
-    const subDealerResponse = await User.findById(newSubDealer._id)
-      .select('-password')
-      .populate('companies.companyId', 'companyName companyCode')
-      .populate('hierarchy.parentUser', 'name email role')
-      .populate('createdBy', 'name email');
+    // Return sub-dealer
+    const subDealerResponse = await SubDealer.findById(newSubDealer._id)
+      .populate('createdBy', 'name email')
+      .populate('groupId', 'GroupName GroupGUID')
+      .populate('companyId', 'companyName companyCode')
+      .lean();
 
     console.log('createSubDealer - Sub-dealer created successfully:', subDealerResponse._id);
 
@@ -199,33 +234,76 @@ export const getSubDealers = async (req, res) => {
     console.log('getSubDealers - Company ID:', companyId);
     console.log('getSubDealers - Dealer ID:', dealerId);
 
-    // Build query
+    // Get dealer's groupId from Ledger model (dealers are stored in Ledger)
+    let dealerGroupId = null;
+    try {
+      const dealer = await Ledger.findById(dealerId).lean();
+      if (dealer && dealer.groupId) {
+        dealerGroupId = dealer.groupId;
+        console.log('getSubDealers - Dealer groupId:', dealerGroupId);
+      } else {
+        // If dealer not found in Ledger, try User model (for backward compatibility)
+        const dealerUser = await User.findById(dealerId).lean();
+        if (dealerUser && dealerUser.groups && dealerUser.groups.length > 0) {
+          // Get first active group
+          const activeGroup = dealerUser.groups.find((g) => g.isActive);
+          if (activeGroup && activeGroup.groupId) {
+            dealerGroupId = typeof activeGroup.groupId === 'object' 
+              ? activeGroup.groupId._id 
+              : activeGroup.groupId;
+            console.log('getSubDealers - Dealer groupId from User model:', dealerGroupId);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching dealer groupId:', error);
+    }
+
+    if (!dealerGroupId) {
+      console.log('getSubDealers - No groupId found for dealer, returning empty list');
+      return res.json({
+        success: true,
+        data: {
+          subDealers: [],
+          pagination: {
+            currentPage: parseInt(page),
+            totalPages: 0,
+            totalSubDealers: 0,
+            hasNext: false,
+            hasPrev: false
+          }
+        }
+      });
+    }
+
+    // Build query for SubDealer model - filter by groupId and companyId
+    // Include subdealers created by admin (same groupId) and subdealers created by dealer
     const query = {
-      role: 'subdealer',
-      'companies.companyId': companyId,
-      'companies.isActive': true,
-      'hierarchy.parentUser': dealerId
+      groupId: dealerGroupId,
+      companyId: companyId,
+      isActive: true
     };
 
     // Add search functionality
     if (search) {
       query.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-        { mobile: { $regex: search, $options: 'i' } }
+        { SDName: { $regex: search, $options: 'i' } },
+        { SDEmail: { $regex: search, $options: 'i' } },
+        { SDMobileNo: { $regex: search, $options: 'i' } },
+        { SDContactPerson: { $regex: search, $options: 'i' } }
       ];
     }
 
-    const subDealers = await User.find(query)
-      .select('-password')
-      .populate('companies.companyId', 'companyName companyCode')
-      .populate('hierarchy.parentUser', 'name email role')
+    const subDealers = await SubDealer.find(query)
       .populate('createdBy', 'name email')
+      .populate('groupId', 'GroupName GroupGUID')
+      .populate('companyId', 'companyName companyCode')
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(parseInt(limit));
+      .limit(parseInt(limit))
+      .lean();
 
-    const totalSubDealers = await User.countDocuments(query);
+    const totalSubDealers = await SubDealer.countDocuments(query);
     const totalPages = Math.ceil(totalSubDealers / limit);
 
     console.log('getSubDealers - Found sub-dealers:', subDealers.length);
@@ -282,17 +360,44 @@ export const getSubDealerById = async (req, res) => {
     const dealerId = req.user.userId;
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
 
-    const subDealer = await User.findOne({
+    // Get dealer's groupId
+    let dealerGroupId = null;
+    try {
+      const dealer = await Ledger.findById(dealerId).lean();
+      if (dealer && dealer.groupId) {
+        dealerGroupId = dealer.groupId;
+      } else {
+        const dealerUser = await User.findById(dealerId).lean();
+        if (dealerUser && dealerUser.groups && dealerUser.groups.length > 0) {
+          const activeGroup = dealerUser.groups.find((g) => g.isActive);
+          if (activeGroup && activeGroup.groupId) {
+            dealerGroupId = typeof activeGroup.groupId === 'object' 
+              ? activeGroup.groupId._id 
+              : activeGroup.groupId;
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching dealer groupId:', error);
+    }
+
+    if (!dealerGroupId) {
+      return res.status(404).json({
+        success: false,
+        message: 'Dealer group not found'
+      });
+    }
+
+    const subDealer = await SubDealer.findOne({
       _id: subDealerId,
-      role: 'subdealer',
-      'companies.companyId': companyId,
-      'companies.isActive': true,
-      'hierarchy.parentUser': dealerId
+      groupId: dealerGroupId,
+      companyId: companyId,
+      isActive: true
     })
-      .select('-password')
-      .populate('companies.companyId', 'companyName companyCode')
-      .populate('hierarchy.parentUser', 'name email role')
-      .populate('createdBy', 'name email');
+      .populate('createdBy', 'name email')
+      .populate('groupId', 'GroupName GroupGUID')
+      .populate('companyId', 'companyName companyCode')
+      .lean();
 
     if (!subDealer) {
       return res.status(404).json({
@@ -360,30 +465,79 @@ export const updateSubDealer = async (req, res) => {
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
     const updateData = req.body;
 
-    // Remove fields that shouldn't be updated directly
-    delete updateData.email;
-    delete updateData.password;
-    delete updateData.role;
-    delete updateData.companies;
-    delete updateData.hierarchy;
-    delete updateData.createdBy;
-    delete updateData.createdAt;
+    // Get dealer's groupId
+    let dealerGroupId = null;
+    try {
+      const dealer = await Ledger.findById(dealerId).lean();
+      if (dealer && dealer.groupId) {
+        dealerGroupId = dealer.groupId;
+      } else {
+        const dealerUser = await User.findById(dealerId).lean();
+        if (dealerUser && dealerUser.groups && dealerUser.groups.length > 0) {
+          const activeGroup = dealerUser.groups.find((g) => g.isActive);
+          if (activeGroup && activeGroup.groupId) {
+            dealerGroupId = typeof activeGroup.groupId === 'object' 
+              ? activeGroup.groupId._id 
+              : activeGroup.groupId;
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching dealer groupId:', error);
+    }
 
-    const subDealer = await User.findOneAndUpdate(
+    if (!dealerGroupId) {
+      return res.status(404).json({
+        success: false,
+        message: 'Dealer group not found'
+      });
+    }
+
+    // Map frontend fields to SubDealer model fields
+    const subDealerUpdateData = {};
+    if (updateData.SDName !== undefined) subDealerUpdateData.SDName = updateData.SDName;
+    if (updateData.name !== undefined) subDealerUpdateData.SDName = updateData.name; // Support both
+    if (updateData.SDMobileNo !== undefined) subDealerUpdateData.SDMobileNo = updateData.SDMobileNo;
+    if (updateData.mobile !== undefined) subDealerUpdateData.SDMobileNo = updateData.mobile; // Support both
+    if (updateData.SDEmail !== undefined) subDealerUpdateData.SDEmail = updateData.SDEmail;
+    if (updateData.email !== undefined) subDealerUpdateData.SDEmail = updateData.email; // Support both
+    if (updateData.SDContactPerson !== undefined) subDealerUpdateData.SDContactPerson = updateData.SDContactPerson;
+    if (updateData.SDAddress1 !== undefined) subDealerUpdateData.SDAddress1 = updateData.SDAddress1;
+    if (updateData.SDAddress2 !== undefined) subDealerUpdateData.SDAddress2 = updateData.SDAddress2;
+    if (updateData.SDAddress3 !== undefined) subDealerUpdateData.SDAddress3 = updateData.SDAddress3;
+    if (updateData.SDState !== undefined) subDealerUpdateData.SDState = updateData.SDState;
+    if (updateData.SDCountry !== undefined) subDealerUpdateData.SDCountry = updateData.SDCountry;
+    if (updateData.SDPincode !== undefined) subDealerUpdateData.SDPincode = updateData.SDPincode;
+    if (updateData.SDType !== undefined) subDealerUpdateData.SDType = updateData.SDType;
+    if (updateData.SDGSTNType !== undefined) subDealerUpdateData.SDGSTNType = updateData.SDGSTNType;
+    if (updateData.SDGSTNNumber !== undefined) subDealerUpdateData.SDGSTNNumber = updateData.SDGSTNNumber;
+    if (updateData.isActive !== undefined) subDealerUpdateData.isActive = updateData.isActive;
+    
+    // Handle address object if provided (for backward compatibility)
+    if (updateData.address) {
+      if (updateData.address.street) subDealerUpdateData.SDAddress1 = updateData.address.street;
+      if (updateData.address.city) subDealerUpdateData.SDAddress2 = updateData.address.city;
+      if (updateData.address.state) subDealerUpdateData.SDState = updateData.address.state;
+      if (updateData.address.pincode) subDealerUpdateData.SDPincode = updateData.address.pincode;
+      if (updateData.address.country) subDealerUpdateData.SDCountry = updateData.address.country;
+    }
+
+    subDealerUpdateData.updatedBy = dealerId;
+
+    const subDealer = await SubDealer.findOneAndUpdate(
       {
         _id: subDealerId,
-        role: 'subdealer',
-        'companies.companyId': companyId,
-        'companies.isActive': true,
-        'hierarchy.parentUser': dealerId
+        groupId: dealerGroupId,
+        companyId: companyId,
+        isActive: true
       },
-      updateData,
+      subDealerUpdateData,
       { new: true, runValidators: true }
     )
-      .select('-password')
-      .populate('companies.companyId', 'companyName companyCode')
-      .populate('hierarchy.parentUser', 'name email role')
-      .populate('createdBy', 'name email');
+      .populate('createdBy', 'name email')
+      .populate('groupId', 'GroupName GroupGUID')
+      .populate('companyId', 'companyName companyCode')
+      .lean();
 
     if (!subDealer) {
       return res.status(404).json({
@@ -436,24 +590,51 @@ export const deactivateSubDealer = async (req, res) => {
     const dealerId = req.user.userId;
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
 
-    const subDealer = await User.findOneAndUpdate(
+    // Get dealer's groupId
+    let dealerGroupId = null;
+    try {
+      const dealer = await Ledger.findById(dealerId).lean();
+      if (dealer && dealer.groupId) {
+        dealerGroupId = dealer.groupId;
+      } else {
+        const dealerUser = await User.findById(dealerId).lean();
+        if (dealerUser && dealerUser.groups && dealerUser.groups.length > 0) {
+          const activeGroup = dealerUser.groups.find((g) => g.isActive);
+          if (activeGroup && activeGroup.groupId) {
+            dealerGroupId = typeof activeGroup.groupId === 'object' 
+              ? activeGroup.groupId._id 
+              : activeGroup.groupId;
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching dealer groupId:', error);
+    }
+
+    if (!dealerGroupId) {
+      return res.status(404).json({
+        success: false,
+        message: 'Dealer group not found'
+      });
+    }
+
+    const subDealer = await SubDealer.findOneAndUpdate(
       {
         _id: subDealerId,
-        role: 'subdealer',
-        'companies.companyId': companyId,
-        'companies.isActive': true,
-        'hierarchy.parentUser': dealerId
+        groupId: dealerGroupId,
+        companyId: companyId,
+        isActive: true
       },
       { 
-        'companies.$.isActive': false,
-        isActive: false 
+        isActive: false,
+        updatedBy: dealerId
       },
       { new: true }
     )
-      .select('-password')
-      .populate('companies.companyId', 'companyName companyCode')
-      .populate('hierarchy.parentUser', 'name email role')
-      .populate('createdBy', 'name email');
+      .populate('createdBy', 'name email')
+      .populate('groupId', 'GroupName GroupGUID')
+      .populate('companyId', 'companyName companyCode')
+      .lean();
 
     if (!subDealer) {
       return res.status(404).json({

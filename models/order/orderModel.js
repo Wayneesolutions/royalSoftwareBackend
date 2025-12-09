@@ -46,9 +46,10 @@ const orderSchema = new mongoose.Schema({
     required: false
   },
   // Sub-dealer information
+  // Note: subDealerId can reference either SubDealer model (primary) or User model (fallback for backward compatibility)
   subDealerId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
+    ref: 'User', // Schema ref is 'User' for backward compatibility, but actual lookup checks SubDealer model first
     required: false
   },
   subDealerName: {

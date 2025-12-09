@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import User from '../models/user/userModel.js';
+import Ledger from '../models/ledger/ledgerModel.js';
 import Company from '../models/company/companyModel.js';
 
 /**
@@ -48,21 +49,64 @@ export const universalLogin = async (req, res) => {
     // Find user by email or mobile (with password for verification)
     // Check if the identifier is an email or mobile number
     const isEmail = userIdentifier.includes('@');
+    
+    let userWithPassword = null;
+    let ledgerWithPassword = null;
+    let isLedgerUser = false;
+    
+    // First, try to find in User model
     const userQuery = isEmail 
       ? { email: userIdentifier }
       : { mobile: userIdentifier };
     
-    const userWithPassword = await User.findOne(userQuery);
+    userWithPassword = await User.findOne(userQuery);
 
-    if (!userWithPassword || !userWithPassword.isActive) {
+    // If not found in User model, try Ledger model (for dealers)
+    if (!userWithPassword) {
+      const ledgerQuery = isEmail
+        ? { Email: userIdentifier }
+        : { LedgerMobile: userIdentifier };
+      
+      ledgerWithPassword = await Ledger.findOne(ledgerQuery);
+      
+      if (ledgerWithPassword) {
+        isLedgerUser = true;
+        // Check if ledger has password
+        if (!ledgerWithPassword.password) {
+          return res.status(401).json({
+            success: false,
+            message: 'Password not set for this dealer. Please contact administrator.'
+          });
+        }
+      }
+    }
+
+    // If neither found, return error
+    if (!userWithPassword && !ledgerWithPassword) {
       return res.status(401).json({
         success: false,
         message: 'Invalid credentials'
       });
     }
 
+    // Check if user/ledger is active
+    const isActive = userWithPassword 
+      ? userWithPassword.isActive 
+      : ledgerWithPassword.isActive;
+    
+    if (!isActive) {
+      return res.status(401).json({
+        success: false,
+        message: 'Account is inactive. Please contact administrator.'
+      });
+    }
+
     // Verify password
-    const isPasswordCorrect = await bcrypt.compare(password, userWithPassword.password);
+    const passwordToCheck = userWithPassword 
+      ? userWithPassword.password 
+      : ledgerWithPassword.password;
+    
+    const isPasswordCorrect = await bcrypt.compare(password, passwordToCheck);
     if (!isPasswordCorrect) {
       return res.status(401).json({
         success: false,
@@ -70,47 +114,107 @@ export const universalLogin = async (req, res) => {
       });
     }
 
-    // Get user data with populated fields (without password)
-    const user = await User.findOne(userQuery)
-      .select('-password')
-      .populate('defaultCompany', 'companyName companyCode companyEmail companyMobile contactDetails')
-      .populate('companies.companyId', 'companyName companyCode companyEmail companyMobile contactDetails')
-      .populate('hierarchy.parentUserId', 'name email role mobile')
-      .populate('createdBy', 'name email');
+    // Handle User model login
+    if (userWithPassword && !isLedgerUser) {
+      // Get user data with populated fields (without password)
+      const user = await User.findOne(userQuery)
+        .select('-password')
+        .populate('defaultCompany', 'companyName companyCode companyEmail companyMobile contactDetails')
+        .populate('companies.companyId', 'companyName companyCode companyEmail companyMobile contactDetails')
+        .populate('hierarchy.parentUserId', 'name email role mobile')
+        .populate('createdBy', 'name email');
 
-    // Update last login
-    await User.findByIdAndUpdate(user._id, { lastLogin: new Date() });
+      // Update last login
+      await User.findByIdAndUpdate(user._id, { lastLogin: new Date() });
 
-    // Generate token
-    const token = jwt.sign(
-      { userId: user._id, role: user.role },
-      process.env.JWT_SECRET || "your_jwt_secret",
-      { expiresIn: "7d" }
-    );
+      // Generate token
+      const token = jwt.sign(
+        { userId: user._id, role: user.role },
+        process.env.JWT_SECRET || "your_jwt_secret",
+        { expiresIn: "7d" }
+      );
 
-    // Get role-specific data
-    const roleSpecificData = await getRoleSpecificData(user);
+      // Get role-specific data
+      const roleSpecificData = await getRoleSpecificData(user);
 
-    return res.json({
-      success: true,
-      message: 'Login successful',
-      data: {
-        user: {
-          _id: user._id,
-          email: user.email,
-          name: user.name,
-          mobile: user.mobile,
-          role: user.role,
-          defaultCompany: user.defaultCompany,
-          companies: user.companies,
-          hierarchy: user.hierarchy,
-          createdBy: user.createdBy,
-          lastLogin: user.lastLogin
-        },
-        roleSpecificData,
-        token
-      }
-    });
+      return res.json({
+        success: true,
+        message: 'Login successful',
+        data: {
+          user: {
+            _id: user._id,
+            email: user.email,
+            name: user.name,
+            mobile: user.mobile,
+            role: user.role,
+            defaultCompany: user.defaultCompany,
+            companies: user.companies,
+            hierarchy: user.hierarchy,
+            createdBy: user.createdBy,
+            lastLogin: user.lastLogin
+          },
+          roleSpecificData,
+          token
+        }
+      });
+    }
+
+    // Handle Ledger model login (for dealers)
+    if (ledgerWithPassword && isLedgerUser) {
+      // Get company from ledger
+      const company = await Company.findById(ledgerWithPassword.companyId)
+        .select('companyName companyCode companyEmail companyMobile contactDetails');
+
+      // Generate token with ledger ID and role 'dealers'
+      const token = jwt.sign(
+        { userId: ledgerWithPassword._id, role: 'dealers', isLedger: true },
+        process.env.JWT_SECRET || "your_jwt_secret",
+        { expiresIn: "7d" }
+      );
+
+      // Format user-like response for ledger
+      const userData = {
+        _id: ledgerWithPassword._id,
+        email: ledgerWithPassword.Email || '',
+        name: ledgerWithPassword.LedgerName,
+        mobile: ledgerWithPassword.LedgerMobile || '',
+        role: 'dealers',
+        defaultCompany: company,
+        companies: company ? [{
+          companyId: company,
+          role: 'dealers',
+          isActive: true
+        }] : [],
+        hierarchy: {},
+        createdBy: ledgerWithPassword.createdBy,
+        lastLogin: new Date(),
+        // Ledger-specific fields
+        ledgerData: {
+          LedgerGUID: ledgerWithPassword.LedgerGUID,
+          LedgerName: ledgerWithPassword.LedgerName,
+          LedgerMobile: ledgerWithPassword.LedgerMobile,
+          Email: ledgerWithPassword.Email,
+          LedgerAddress1: ledgerWithPassword.LedgerAddress1,
+          LedgerAddress2: ledgerWithPassword.LedgerAddress2,
+          LedgerState: ledgerWithPassword.LedgerState,
+          LedgerGSTIN: ledgerWithPassword.LedgerGSTIN,
+          companyId: ledgerWithPassword.companyId
+        }
+      };
+
+      // Get role-specific data for dealers
+      const roleSpecificData = await getDealerData(userData);
+
+      return res.json({
+        success: true,
+        message: 'Login successful',
+        data: {
+          user: userData,
+          roleSpecificData,
+          token
+        }
+      });
+    }
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({

@@ -1105,10 +1105,30 @@ tallyRoute.get('/companies/:guid/orders/approved', listApprovedOrdersByCompanyGu
  * @swagger
  * /api/v1/tally/users:
  *   post:
- *     summary: Sync users from Tally
+ *     summary: Create or update users from Tally (supports single or multiple users)
  *     description: >
- *       Accepts user records (single object or array) pushed from Tally ERP and upserts them into
- *       Royal Software. Roles and company assignments are derived from the payload.
+ *       Accepts user records (single object or array) pushed from Tally ERP and creates/updates them in
+ *       Royal Software. Each user must include companyGuid to associate with a company.
+ *       
+ *       **Simplified API - Only required fields:**
+ *       - companyGuid (required): Company GUID to associate the user with
+ *       - name (required): User's full name
+ *       - email (required): User's email address
+ *       - userName (required): Unique username
+ *       - password (required): User's password (will be hashed)
+ *       - mobile (required): User's mobile number
+ *       - address (optional): User's address information
+ *       - isActive (optional): Whether the user is active (default: true)
+ *       
+ *       **Role is automatically set to "groupuser" - no need to pass role field.**
+ *       **Company is automatically added to user based on companyGuid.**
+ *       
+ *       **Supports both single user object and array of multiple users for batch processing.**
+ *       - Single user: Send a single JSON object with companyGuid
+ *       - Multiple users: Send an array of user objects, each with companyGuid
+ *       
+ *       Each user is processed independently - success/failure of one doesn't affect others.
+ *       Returns a results array with status for each user processed.
  *     tags: [Tally Users]
  *     requestBody:
  *       required: true
@@ -1116,20 +1136,138 @@ tallyRoute.get('/companies/:guid/orders/approved', listApprovedOrdersByCompanyGu
  *         application/json:
  *           schema:
  *             oneOf:
- *               - $ref: '#/components/schemas/TallyUserPayload'
+ *               - type: object
+ *                 required:
+ *                   - companyGuid
+ *                   - name
+ *                   - email
+ *                   - userName
+ *                   - password
+ *                   - mobile
+ *                 properties:
+ *                   companyGuid:
+ *                     type: string
+ *                     description: Company GUID to associate the user with (company will be automatically added)
+ *                     example: "COM-001"
+ *                   name:
+ *                     type: string
+ *                     description: User's full name
+ *                     example: "John Doe"
+ *                   email:
+ *                     type: string
+ *                     format: email
+ *                     description: User's email address (unique, required)
+ *                     example: "john.doe@example.com"
+ *                   userName:
+ *                     type: string
+ *                     description: Unique username (required)
+ *                     example: "johndoe"
+ *                   password:
+ *                     type: string
+ *                     description: User's password (will be hashed)
+ *                     example: "SecurePassword123"
+ *                   mobile:
+ *                     type: string
+ *                     description: User's mobile number (unique, required)
+ *                     example: "+919876543210"
+ *                   isActive:
+ *                     type: boolean
+ *                     default: true
+ *                     description: Whether the user is active
+ *                   address:
+ *                     type: object
+ *                     description: User's address information (optional)
+ *                     properties:
+ *                       street:
+ *                         type: string
+ *                         example: "123 Main Street"
+ *                       city:
+ *                         type: string
+ *                         example: "Mumbai"
+ *                       state:
+ *                         type: string
+ *                         example: "Maharashtra"
+ *                       pincode:
+ *                         type: string
+ *                         example: "400001"
+ *                       country:
+ *                         type: string
+ *                         default: "India"
+ *                         example: "India"
  *               - type: array
+ *                 description: Array of users for batch processing
  *                 items:
- *                   $ref: '#/components/schemas/TallyUserPayload'
+ *                   type: object
+ *                   required:
+ *                     - companyGuid
+ *                     - name
+ *                     - email
+ *                     - userName
+ *                     - password
+ *                     - mobile
+ *                   properties:
+ *                     companyGuid:
+ *                       type: string
+ *                       example: "COM-001"
+ *                     name:
+ *                       type: string
+ *                     email:
+ *                       type: string
+ *                       format: email
+ *                     userName:
+ *                       type: string
+ *                     password:
+ *                       type: string
+ *                     mobile:
+ *                       type: string
+ *                     isActive:
+ *                       type: boolean
+ *                     address:
+ *                       type: object
+ *                       properties:
+ *                         street:
+ *                           type: string
+ *                         city:
+ *                           type: string
+ *                         state:
+ *                           type: string
+ *                         pincode:
+ *                           type: string
+ *                         country:
+ *                           type: string
  *     responses:
  *       200:
- *         description: Users synced successfully
+ *         description: All users synced successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 results:
+ *                   type: array
+ *                   description: Array of results, one for each user processed
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       success:
+ *                         type: boolean
+ *                       user:
+ *                         type: object
+ *                         description: Created/updated user object (without password)
  *       207:
- *         description: Partial success (some users processed, others failed)
+ *         description: Partial success - some users processed successfully, others failed
  *       400:
- *         description: Validation error or missing fields
+ *         description: Validation error or missing required fields
  *       500:
  *         description: Server error while syncing users
- *
+ */
+tallyRoute.post('/users', upsertUserFromTally);
+
+/**
+ * @swagger
  * /api/v1/tally/companies/{guid}/users:
  *   get:
  *     summary: Fetch users for a company by GUID
@@ -1151,21 +1289,34 @@ tallyRoute.get('/companies/:guid/orders/approved', listApprovedOrdersByCompanyGu
  *         description: Company not found
  *       500:
  *         description: Server error while fetching users
- *
+ */
+tallyRoute.get('/companies/:guid/users', listUsersByCompanyGuid);
+
+/**
+ * @swagger
+ * /api/v1/tally/users/update:
  *   patch:
- *     summary: Update one or multiple users for a company
+ *     summary: Update one or multiple users (supports companyGuid in body or path)
  *     description: >
- *       Accepts single or multiple user payloads. Each payload must include the user email. The company GUID
- *       is taken from the path parameter and applies to all payload items. Only provided fields (name, mobile, role,
- *       password, isActive, address) are updated.
+ *       Accepts single or multiple user payloads. Company GUID can be provided in:
+ *       - Path parameter: /api/v1/tally/companies/{guid}/users (applies to all users)
+ *       - Request body: Each user object can have its own companyGuid
+ *       
+ *       **Simplified API - Only required fields:**
+ *       - companyGuid (required): Company GUID (required if not in path) - company will be added/updated automatically
+ *       - User identifier: One of email, mobile, or userName (required to identify user)
+ *       - Fields to update: name, email, userName, password, mobile, address, isActive
+ *       
+ *       **Role is automatically set to "groupuser" - cannot be changed via Tally API.**
+ *       **Company is automatically added/updated based on companyGuid.**
+ *       
+ *       **Supports both single user object and array of multiple users for batch processing.**
+ *       - Single user: Send a single JSON object
+ *       - Multiple users: Send an array of user objects
+ *       
+ *       User identification: Provide email, mobile, or userName to identify the user.
+ *       Only provided fields are updated; other fields remain unchanged.
  *     tags: [Tally Users]
- *     parameters:
- *       - in: path
- *         name: guid
- *         required: true
- *         schema:
- *           type: string
- *         description: Company GUID whose users are being updated
  *     requestBody:
  *       required: true
  *       content:
@@ -1174,18 +1325,29 @@ tallyRoute.get('/companies/:guid/orders/approved', listApprovedOrdersByCompanyGu
  *             oneOf:
  *               - type: object
  *                 required:
- *                   - email
+ *                   - companyGuid
  *                 properties:
+ *                   companyGuid:
+ *                     type: string
+ *                     description: Company GUID (required if not in path)
+ *                     example: "COM-001"
  *                   email:
  *                     type: string
  *                     format: email
- *                     description: User email used as identifier
+ *                     description: User email used as identifier (one of email, mobile, or userName required)
+ *                   mobile:
+ *                     type: string
+ *                     description: User mobile used as identifier (one of email, mobile, or userName required)
+ *                   userName:
+ *                     type: string
+ *                     description: User username used as identifier (one of email, mobile, or userName required)
  *                   name:
  *                     type: string
  *                   mobile:
  *                     type: string
  *                   role:
  *                     type: string
+ *                     enum: [superadmin, admin, groupuser, dealers, subdealer, asm, rsm, distibutors, suppliers, salesman, zonal]
  *                     description: Must match one of the supported roles
  *                   password:
  *                     type: string
@@ -1204,21 +1366,90 @@ tallyRoute.get('/companies/:guid/orders/approved', listApprovedOrdersByCompanyGu
  *                         type: string
  *                       country:
  *                         type: string
+ *                   userName:
+ *                     type: string
+ *                   groupGUID:
+ *                     type: string
+ *                     description: Single Group GUID to assign/add
+ *                   groups:
+ *                     type: array
+ *                     description: Array of groups to assign (replaces existing groups if provided)
+ *                     items:
+ *                       type: object
+ *                       properties:
+ *                         groupGUID:
+ *                           type: string
+ *                         groupName:
+ *                           type: string
+ *                         isActive:
+ *                           type: boolean
+ *                   hierarchy:
+ *                     type: object
+ *                     description: User hierarchy information
+ *                     properties:
+ *                       parentUserId:
+ *                         type: string
+ *                       parentUserEmail:
+ *                         type: string
+ *                         format: email
+ *                       parentUserMobile:
+ *                         type: string
+ *                       parentGroupGUID:
+ *                         type: string
+ *                       level:
+ *                         type: number
+ *                   subdealerDetails:
+ *                     type: object
+ *                     description: Subdealer-specific details (only used when role is 'subdealer')
+ *                     properties:
+ *                       SDName:
+ *                         type: string
+ *                       SDType:
+ *                         type: string
+ *                         enum: [Sub Dealer, TSO]
+ *                       SDAddress1:
+ *                         type: string
+ *                       SDAddress2:
+ *                         type: string
+ *                       SDAddress3:
+ *                         type: string
+ *                       SDState:
+ *                         type: string
+ *                       SDCountry:
+ *                         type: string
+ *                       SDPincode:
+ *                         type: string
+ *                       SDContactPerson:
+ *                         type: string
+ *                       SDMobileNo:
+ *                         type: string
+ *                       SDEmail:
+ *                         type: string
+ *                         format: email
+ *                       SDGSTNType:
+ *                         type: string
+ *                       SDGSTNNumber:
+ *                         type: string
  *               - type: array
  *                 items:
  *                   type: object
  *                   required:
- *                     - email
+ *                     - companyGuid
  *                   properties:
+ *                     companyGuid:
+ *                       type: string
  *                     email:
  *                       type: string
  *                       format: email
- *                     name:
- *                       type: string
  *                     mobile:
+ *                       type: string
+ *                     userName:
+ *                       type: string
+ *                     name:
  *                       type: string
  *                     role:
  *                       type: string
+ *                       enum: [superadmin, admin, groupuser, dealers, subdealer, asm, rsm, distibutors, suppliers, salesman, zonal]
  *                     password:
  *                       type: string
  *                     isActive:
@@ -1236,6 +1467,66 @@ tallyRoute.get('/companies/:guid/orders/approved', listApprovedOrdersByCompanyGu
  *                           type: string
  *                         country:
  *                           type: string
+ *                     userName:
+ *                       type: string
+ *                     groupGUID:
+ *                       type: string
+ *                     groups:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           groupGUID:
+ *                             type: string
+ *                           groupName:
+ *                             type: string
+ *                           isActive:
+ *                             type: boolean
+ *                     hierarchy:
+ *                       type: object
+ *                       properties:
+ *                         parentUserId:
+ *                           type: string
+ *                         parentUserEmail:
+ *                           type: string
+ *                           format: email
+ *                         parentUserMobile:
+ *                           type: string
+ *                         parentGroupGUID:
+ *                           type: string
+ *                         level:
+ *                           type: number
+ *                     subdealerDetails:
+ *                       type: object
+ *                       properties:
+ *                         SDName:
+ *                           type: string
+ *                         SDType:
+ *                           type: string
+ *                           enum: [Sub Dealer, TSO]
+ *                         SDAddress1:
+ *                           type: string
+ *                         SDAddress2:
+ *                           type: string
+ *                         SDAddress3:
+ *                           type: string
+ *                         SDState:
+ *                           type: string
+ *                         SDCountry:
+ *                           type: string
+ *                         SDPincode:
+ *                           type: string
+ *                         SDContactPerson:
+ *                           type: string
+ *                         SDMobileNo:
+ *                           type: string
+ *                         SDEmail:
+ *                           type: string
+ *                           format: email
+ *                         SDGSTNType:
+ *                           type: string
+ *                         SDGSTNNumber:
+ *                           type: string
  *     responses:
  *       200:
  *         description: All users updated successfully
@@ -1245,17 +1536,26 @@ tallyRoute.get('/companies/:guid/orders/approved', listApprovedOrdersByCompanyGu
  *         description: Validation error or missing fields
  *       500:
  *         description: Server error while updating users
- *
+ */
+tallyRoute.patch('/users/update', updateUsersFromTally);
+tallyRoute.patch('/companies/:guid/users', updateUsersFromTally);
+
+/**
+ * @swagger
+ * /api/v1/tally/users/delete:
  *   delete:
- *     summary: Delete one or multiple users for a company by email
+ *     summary: Delete one or multiple users (supports companyGuid in body or path)
+ *     description: >
+ *       Accepts single or multiple user payloads. Company GUID can be provided in:
+ *       - Path parameter: /api/v1/tally/companies/{guid}/users (applies to all users)
+ *       - Request body: Each user object can have its own companyGuid
+ *       
+ *       **Supports both single user object and array of multiple users for batch deletion.**
+ *       - Single user: Send a single JSON object
+ *       - Multiple users: Send an array of user objects
+ *       
+ *       User identification: Provide email, mobile, or userName to identify the user.
  *     tags: [Tally Users]
- *     parameters:
- *       - in: path
- *         name: guid
- *         required: true
- *         schema:
- *           type: string
- *         description: Company GUID whose users are being deleted
  *     requestBody:
  *       required: true
  *       content:
@@ -1264,21 +1564,38 @@ tallyRoute.get('/companies/:guid/orders/approved', listApprovedOrdersByCompanyGu
  *             oneOf:
  *               - type: object
  *                 required:
- *                   - email
+ *                   - companyGuid
  *                 properties:
+ *                   companyGuid:
+ *                     type: string
+ *                     description: Company GUID (required if not in path)
+ *                     example: "COM-001"
  *                   email:
  *                     type: string
  *                     format: email
- *                     description: User email to delete
+ *                     description: User email to delete (one of email, mobile, or userName required)
+ *                   mobile:
+ *                     type: string
+ *                     description: User mobile to delete (one of email, mobile, or userName required)
+ *                   userName:
+ *                     type: string
+ *                     description: User username to delete (one of email, mobile, or userName required)
  *               - type: array
  *                 items:
  *                   type: object
  *                   required:
- *                     - email
+ *                     - companyGuid
  *                   properties:
+ *                     companyGuid:
+ *                       type: string
+ *                       example: "COM-001"
  *                     email:
  *                       type: string
  *                       format: email
+ *                     mobile:
+ *                       type: string
+ *                     userName:
+ *                       type: string
  *     responses:
  *       200:
  *         description: All users deleted successfully
@@ -1289,8 +1606,7 @@ tallyRoute.get('/companies/:guid/orders/approved', listApprovedOrdersByCompanyGu
  *       500:
  *         description: Server error while deleting users
  */
-tallyRoute.post('/users', upsertUserFromTally);
-tallyRoute.patch('/companies/:guid/users', updateUsersFromTally);
+tallyRoute.delete('/users/delete', deleteUsersFromTally);
 tallyRoute.delete('/companies/:guid/users', deleteUsersFromTally);
 
 // ===================== GROUP APIS =====================

@@ -1,5 +1,7 @@
 import jwt from 'jsonwebtoken'
 import User from '../models/user/userModel.js'
+import Ledger from '../models/ledger/ledgerModel.js'
+import Company from '../models/company/companyModel.js'
 
 // Auth middleware with optional role-based authorization
 export const authMiddleware = (requiredRoles = []) => {
@@ -22,18 +24,71 @@ export const authMiddleware = (requiredRoles = []) => {
       // Normalize common id/role fields from various issuers
       const userId = decoded.userId || decoded.id || decoded._id
       const role = decoded.role
+      const isLedger = decoded.isLedger || false
 
-      // Fetch user details from database for additional context
-      const user = await User.findById(userId)
-        .select('-password')
-        .populate('defaultCompany', 'companyName companyCode')
-        .populate('companies.companyId', 'companyName companyCode')
+      let user = null;
+      let effectiveRole = role;
 
-      if (!user || !user.isActive) {
-        return res.status(401).json({ success: false, message: 'User not found or inactive' })
+      // Check if this is a ledger-based login (dealer from Ledger model)
+      if (isLedger) {
+        // Fetch ledger details from database
+        const ledger = await Ledger.findById(userId)
+          .populate('companyId', 'companyName companyCode companyEmail companyMobile contactDetails')
+          .populate('createdBy', 'name email');
+
+        if (!ledger || !ledger.isActive) {
+          return res.status(401).json({ success: false, message: 'Dealer not found or inactive' })
+        }
+
+        // Get company
+        const company = await Company.findById(ledger.companyId)
+          .select('companyName companyCode companyEmail companyMobile contactDetails');
+
+        // Format ledger as user-like object for consistency
+        user = {
+          _id: ledger._id,
+          email: ledger.Email || '',
+          name: ledger.LedgerName,
+          mobile: ledger.LedgerMobile || '',
+          role: 'dealers',
+          defaultCompany: company,
+          companies: company ? [{
+            companyId: company,
+            role: 'dealers',
+            isActive: true
+          }] : [],
+          hierarchy: {},
+          createdBy: ledger.createdBy,
+          // Ledger-specific fields
+          ledgerData: {
+            LedgerGUID: ledger.LedgerGUID,
+            LedgerName: ledger.LedgerName,
+            LedgerMobile: ledger.LedgerMobile,
+            Email: ledger.Email,
+            LedgerAddress1: ledger.LedgerAddress1,
+            LedgerAddress2: ledger.LedgerAddress2,
+            LedgerState: ledger.LedgerState,
+            LedgerGSTIN: ledger.LedgerGSTIN,
+            companyId: ledger.companyId
+          },
+          isActive: ledger.isActive,
+          isLedger: true
+        };
+
+        effectiveRole = 'dealers';
+      } else {
+        // Fetch user details from database for additional context
+        user = await User.findById(userId)
+          .select('-password')
+          .populate('defaultCompany', 'companyName companyCode')
+          .populate('companies.companyId', 'companyName companyCode')
+
+        if (!user || !user.isActive) {
+          return res.status(401).json({ success: false, message: 'User not found or inactive' })
+        }
+
+        effectiveRole = user.role;
       }
-
-      const effectiveRole = user.role
 
       req.user = { 
         ...decoded, 

@@ -865,12 +865,14 @@ export const createUser = async (req, res) => {
       groupGUID: !!reqGroupGUID
     });
 
-    if (!name || !mobile || !password || !role) {
+    // Role is optional - if not provided, set to 'groupuser' (regular group user)
+    const finalRole = role || 'groupuser';
+    
+    if (!name || !mobile || !password) {
       const missingFields = [];
       if (!name) missingFields.push('name');
       if (!mobile) missingFields.push('mobile');
       if (!password) missingFields.push('password');
-      if (!role) missingFields.push('role');
       
       console.log('Missing required fields:', missingFields);
       return res.status(400).json({
@@ -1003,10 +1005,10 @@ export const createUser = async (req, res) => {
                 });
               }
               existingUser.hierarchy = {
-                level: getRoleLevel(role)
-              };
-            }
+              level: getRoleLevel(finalRole)
+            };
           }
+        }
           
           await existingUser.save();
 
@@ -1091,7 +1093,7 @@ export const createUser = async (req, res) => {
               });
             }
             existingUser.hierarchy = {
-              level: getRoleLevel(role)
+              level: getRoleLevel(finalRole)
             };
             await existingUser.save();
           }
@@ -1138,7 +1140,7 @@ export const createUser = async (req, res) => {
 
     // Prepare subdealer details if role is subdealer
     let subdealerData = undefined;
-    if (role === 'subdealer' && subdealerDetails) {
+    if (finalRole === 'subdealer' && subdealerDetails) {
       subdealerData = {
         SDName: subdealerDetails.SDName || subdealerDetails.sdName || '',
         SDType: subdealerDetails.SDType || subdealerDetails.sdType || '',
@@ -1392,10 +1394,10 @@ export const createUser = async (req, res) => {
         groupName: foundGroupName,
         groupParentUser: foundGroupParent || parentUserIdString, // GroupParent = parent user ID
         cmpcode: foundCmpcode,
-        remarks: foundGroupRemarks || `Group for ${name} (${role})`,
+        remarks: foundGroupRemarks || `Group for ${name} (${finalRole})`,
         other1: foundOther1 || email || '',
         other2: foundOther2 || mobile || '',
-        other3: foundOther3 || role || '',
+        other3: foundOther3 || finalRole || '',
         other4: foundOther4 || parentUserForGroup?.name || '',
         assignedBy: adminId,
         isActive: true,
@@ -1403,7 +1405,7 @@ export const createUser = async (req, res) => {
       }] : [],
       hierarchy: {
         ...(finalParentUserId ? { parentUserId: finalParentUserId } : {}),
-        level: getRoleLevel(role)
+        level: getRoleLevel(finalRole)
       },
       createdBy: adminId
     };
@@ -1411,7 +1413,7 @@ export const createUser = async (req, res) => {
     // Note: tallyGroup is no longer stored separately - all group data is in groups[] array
 
     // Add subdealer details if role is subdealer
-    if (role === 'subdealer' && subdealerData) {
+    if (finalRole === 'subdealer' && subdealerData) {
       userData.subdealerDetails = subdealerData;
     }
 
@@ -3352,9 +3354,61 @@ export const getUsersByCompany = async (req, res) => {
     // Apply hierarchy-based filtering
     // Admin can see all users in their company (except superadmin, dealers, and subdealers)
     // Dealers and subdealers are managed separately through Ledger and SubDealer models
-    if (admin.role === 'admin') {
+    if (admin.role === 'admin' || admin.role === 'superadmin') {
       query.role = { $nin: ['admin', 'superadmin', 'dealers', 'subdealer'] };
       query._id = { $ne: adminId }; // Exclude the admin user
+    } else if (admin.role === 'groupuser') {
+      // For group users, only show users in their assigned group(s)
+      if (admin.groups && admin.groups.length > 0) {
+        // Get active group IDs
+        const activeGroupIds = admin.groups
+          .filter(g => g.isActive && g.groupId)
+          .map(g => {
+            return typeof g.groupId === 'object' && g.groupId._id 
+              ? g.groupId._id 
+              : (g.groupId || null);
+          })
+          .filter(id => id !== null);
+
+        if (activeGroupIds.length > 0) {
+          // Filter users by group - only show users in the same group(s)
+          query['groups.groupId'] = { $in: activeGroupIds };
+          query['groups.isActive'] = true;
+          console.log('🔍 Group user filtering users by groupIds:', activeGroupIds);
+        } else {
+          // No active groups, return empty result
+          return res.json({
+            success: true,
+            data: {
+              users: [],
+              company: await Company.findById(companyId).select('companyName companyCode maxUser currentUsers'),
+              pagination: {
+                currentPage: parseInt(page),
+                totalPages: 0,
+                totalUsers: 0,
+                hasNext: false,
+                hasPrev: false
+              }
+            }
+          });
+        }
+      } else {
+        // No groups assigned, return empty result
+        return res.json({
+          success: true,
+          data: {
+            users: [],
+            company: await Company.findById(companyId).select('companyName companyCode maxUser currentUsers'),
+            pagination: {
+              currentPage: parseInt(page),
+              totalPages: 0,
+              totalUsers: 0,
+              hasNext: false,
+              hasPrev: false
+            }
+          }
+        });
+      }
     } else {
       // For other roles (zonal, rsm, asm, etc.), only show their child users
       // Get all child user IDs recursively
@@ -3848,11 +3902,11 @@ export const editUser = async (req, res) => {
       groupGUID
     });
 
-    // Validate required fields
-    if (!name || !mobile || !role) {
+    // Validate required fields (role is optional - defaults to 'groupuser')
+    if (!name || !mobile) {
       return res.status(400).json({
         success: false,
-        message: "Name, mobile, and role are required"
+        message: "Name and mobile are required"
       });
     }
 
@@ -3914,14 +3968,19 @@ export const editUser = async (req, res) => {
       });
     }
 
+    // For regular users (group users), role should be 'groupuser' or empty
+    // Only superadmin, admin, dealers, and subdealers should have specific roles
+    // If role is not provided or empty, default to 'groupuser'
+    const finalRole = role || 'groupuser';
+    
     // Store old role to check if it changed
     const oldRole = userToEdit.role;
-    const roleChanged = oldRole !== role;
+    const roleChanged = oldRole !== finalRole;
 
     // Update user details
     userToEdit.name = name;
     userToEdit.mobile = mobile;
-    userToEdit.role = role;
+    userToEdit.role = finalRole;
     userToEdit.isActive = isActive !== undefined ? isActive : userToEdit.isActive;
     
     if (email) {
@@ -3944,7 +4003,7 @@ export const editUser = async (req, res) => {
     }
 
     // Update subdealer details if role is subdealer
-    if (role === 'subdealer' && subdealerDetails) {
+    if (finalRole === 'subdealer' && subdealerDetails) {
       if (!userToEdit.subdealerDetails) {
         userToEdit.subdealerDetails = {};
       }
@@ -3963,7 +4022,7 @@ export const editUser = async (req, res) => {
         SDGSTNType: subdealerDetails.SDGSTNType !== undefined ? subdealerDetails.SDGSTNType : (userToEdit.subdealerDetails?.SDGSTNType || ''),
         SDGSTNNumber: subdealerDetails.SDGSTNNumber !== undefined ? subdealerDetails.SDGSTNNumber : (userToEdit.subdealerDetails?.SDGSTNNumber || '')
       };
-    } else if (role !== 'subdealer') {
+    } else if (finalRole !== 'subdealer') {
       // Clear subdealer details if role changed from subdealer to something else
       userToEdit.subdealerDetails = undefined;
     }
@@ -3974,7 +4033,7 @@ export const editUser = async (req, res) => {
     );
     
     if (companyIndex !== -1) {
-      userToEdit.companies[companyIndex].role = role;
+      userToEdit.companies[companyIndex].role = finalRole;
     }
 
     // Initialize hierarchy if it doesn't exist
@@ -3984,7 +4043,7 @@ export const editUser = async (req, res) => {
 
     // Update hierarchy level if role changed
     if (roleChanged) {
-      userToEdit.hierarchy.level = getRoleLevel(role);
+      userToEdit.hierarchy.level = getRoleLevel(finalRole);
     }
 
     // Get company for group operations
@@ -4078,7 +4137,7 @@ export const editUser = async (req, res) => {
       userToEdit.hierarchy.parentUserId = parentUserId;
       userToEdit.hierarchy.parentUserName = parentUser.name;
       userToEdit.hierarchy.parentUserRole = parentUser.role;
-      userToEdit.hierarchy.level = getRoleLevel(role);
+      userToEdit.hierarchy.level = getRoleLevel(finalRole);
 
       // Only auto-find/create group if groupId/groupGUID was NOT provided (direct assignment takes precedence)
       if (!foundGroup && !groupId && !groupGUID) {
@@ -4426,6 +4485,7 @@ const getRoleLevel = (role) => {
   const roleLevels = {
     'superadmin': 0,
     'admin': 1,
+    'groupuser': 10, // Group users have a high level (no hierarchy)
     'zonal': 2,
     'rsm': 3,
     'asm': 4,
@@ -4851,6 +4911,7 @@ export const createDealer = async (req, res) => {
       LedgerMobile,
       LedgerContact,
       Email,
+      password,
       LedgerGSTIN,
       LedgerAddress1,
       LedgerAddress2,
@@ -5018,6 +5079,12 @@ export const createDealer = async (req, res) => {
       hierarchyUsers.ZSM = ZSM;
     }
 
+    // Hash password if provided
+    let hashedPassword = null;
+    if (password && password.trim()) {
+      hashedPassword = await bcrypt.hash(password.trim(), 10);
+    }
+
     // Create the ledger
     const newLedger = await Ledger.create({
       LedgerGUID: finalLedgerGUID,
@@ -5029,6 +5096,7 @@ export const createDealer = async (req, res) => {
       LedgerMobile: LedgerMobile || '',
       LedgerContact: LedgerContact || '',
       Email: Email || '',
+      password: hashedPassword,
       LedgerGSTIN: LedgerGSTIN ? LedgerGSTIN.trim().toUpperCase() : '',
       LedgerAddress1: LedgerAddress1 || '',
       LedgerAddress2: LedgerAddress2 || '',
@@ -5169,24 +5237,24 @@ export const createDealer = async (req, res) => {
  */
 export const getAllDealers = async (req, res) => {
   try {
-    const adminId = req.user.userId;
+    const userId = req.user.userId;
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
     const { includeInactive } = req.query;
 
-    // Check if admin has access to the company
-    const admin = await User.findById(adminId).populate('defaultCompany');
-    if (!admin || !admin.defaultCompany) {
+    // Check if user has access to the company
+    const user = await User.findById(userId).populate('defaultCompany');
+    if (!user || !user.defaultCompany) {
       return res.status(403).json({
         success: false,
-        message: "No company assigned to this admin"
+        message: "No company assigned to this user"
       });
     }
 
     // Convert companyId to string for comparison
-    const adminCompanyId = admin.defaultCompany._id.toString();
+    const userCompanyId = user.defaultCompany._id.toString();
     const targetCompanyId = companyId.toString();
 
-    if (adminCompanyId !== targetCompanyId) {
+    if (userCompanyId !== targetCompanyId) {
       return res.status(403).json({
         success: false,
         message: "Access denied to this company"
@@ -5211,9 +5279,39 @@ export const getAllDealers = async (req, res) => {
       query.isActive = true;
     }
 
-    // Get all dealers for this company
+    // For group users, filter by their assigned group(s)
+    // Superadmin and admin can see all dealers, but group users should only see dealers in their group
+    if (user.role === 'groupuser' && user.groups && user.groups.length > 0) {
+      // Get active group IDs from user's groups array
+      const activeGroupIds = user.groups
+        .filter(g => g.isActive && g.groupId)
+        .map(g => {
+          // Handle both populated and non-populated groupId
+          return typeof g.groupId === 'object' && g.groupId._id 
+            ? g.groupId._id 
+            : (g.groupId || null);
+        })
+        .filter(id => id !== null);
+
+      if (activeGroupIds.length > 0) {
+        // Filter dealers by groupId - only show dealers in the user's group(s)
+        query.groupId = { $in: activeGroupIds };
+        console.log('🔍 Group user filtering dealers by groupIds:', activeGroupIds);
+      } else {
+        // If user has no active groups, return empty list
+        return res.json({
+          success: true,
+          data: {
+            dealers: [],
+            totalDealers: 0
+          }
+        });
+      }
+    }
+
+    // Get all dealers for this company (exclude password field)
     const dealers = await Ledger.find(query)
-      .select('_id LedgerGUID LedgerName LedgerParent cmpcode Cmpguid SalesMan ASM RSM ZSM LedgerMobile LedgerContact Email LedgerGSTIN LedgerAddress1 LedgerAddress2 LedgerState LedgerOpening LedgerOpeningDate LedgerJoinDate Remarks Other1 Other2 Other3 Other4 Other5 other6 other7 other8 groupId isActive createdAt')
+      .select('-password')
       .populate('SalesMan', 'name email role')
       .populate('ASM', 'name email role')
       .populate('RSM', 'name email role')
@@ -5331,6 +5429,7 @@ export const updateDealer = async (req, res) => {
   try {
     const { dealerId } = req.params;
     const {
+      LedgerGUID,
       LedgerName,
       LedgerParent,
       SalesMan,
@@ -5340,6 +5439,7 @@ export const updateDealer = async (req, res) => {
       LedgerMobile,
       LedgerContact,
       Email,
+      password,
       LedgerGSTIN,
       LedgerAddress1,
       LedgerAddress2,
@@ -5410,6 +5510,28 @@ export const updateDealer = async (req, res) => {
         success: false,
         message: "Dealer not found"
       });
+    }
+
+    // Validate and update LedgerGUID if provided and different from current
+    if (LedgerGUID !== undefined && LedgerGUID !== null && LedgerGUID.trim() !== '') {
+      const trimmedGUID = LedgerGUID.trim();
+      if (trimmedGUID !== dealer.LedgerGUID) {
+        // Check if the new GUID already exists for this company
+        const existingLedger = await Ledger.findOne({
+          LedgerGUID: trimmedGUID,
+          cmpcode: company.companyCode,
+          _id: { $ne: dealerId } // Exclude current dealer
+        });
+
+        if (existingLedger) {
+          return res.status(409).json({
+            success: false,
+            message: `Ledger with GUID ${trimmedGUID} already exists for this company`
+          });
+        }
+
+        dealer.LedgerGUID = trimmedGUID;
+      }
     }
 
     // Validate LedgerParent if provided and different from current
@@ -5559,6 +5681,11 @@ export const updateDealer = async (req, res) => {
     if (other6 !== undefined) dealer.other6 = other6 || '';
     if (other7 !== undefined) dealer.other7 = other7 || '';
     if (other8 !== undefined) dealer.other8 = other8 || '';
+
+    // Handle password update if provided
+    if (password !== undefined && password !== null && password.trim()) {
+      dealer.password = await bcrypt.hash(password.trim(), 10);
+    }
 
     if (isActive !== undefined) {
       dealer.isActive = isActive;
@@ -6002,24 +6129,24 @@ export const createSubDealer = async (req, res) => {
  */
 export const getAllSubDealers = async (req, res) => {
   try {
-    const adminId = req.user.userId;
+    const userId = req.user.userId;
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
     const { includeInactive } = req.query;
 
-    // Check if admin has access to the company
-    const admin = await User.findById(adminId).populate('defaultCompany');
-    if (!admin || !admin.defaultCompany) {
+    // Check if user has access to the company
+    const user = await User.findById(userId).populate('defaultCompany');
+    if (!user || !user.defaultCompany) {
       return res.status(403).json({
         success: false,
-        message: "No company assigned to this admin"
+        message: "No company assigned to this user"
       });
     }
 
     // Convert companyId to string for comparison
-    const adminCompanyId = admin.defaultCompany._id.toString();
+    const userCompanyId = user.defaultCompany._id.toString();
     const targetCompanyId = companyId.toString();
 
-    if (adminCompanyId !== targetCompanyId) {
+    if (userCompanyId !== targetCompanyId) {
       return res.status(403).json({
         success: false,
         message: "Access denied to this company"
@@ -6042,6 +6169,36 @@ export const getAllSubDealers = async (req, res) => {
 
     if (includeInactive !== 'true') {
       query.isActive = true;
+    }
+
+    // For group users, filter by their assigned group(s)
+    // Superadmin and admin can see all subdealers, but group users should only see subdealers in their group
+    if (user.role === 'groupuser' && user.groups && user.groups.length > 0) {
+      // Get active group IDs from user's groups array
+      const activeGroupIds = user.groups
+        .filter(g => g.isActive && g.groupId)
+        .map(g => {
+          // Handle both populated and non-populated groupId
+          return typeof g.groupId === 'object' && g.groupId._id 
+            ? g.groupId._id 
+            : (g.groupId || null);
+        })
+        .filter(id => id !== null);
+
+      if (activeGroupIds.length > 0) {
+        // Filter subdealers by groupId - only show subdealers in the user's group(s)
+        query.groupId = { $in: activeGroupIds };
+        console.log('🔍 Group user filtering subdealers by groupIds:', activeGroupIds);
+      } else {
+        // If user has no active groups, return empty list
+        return res.json({
+          success: true,
+          data: {
+            subdealers: [],
+            totalSubDealers: 0
+          }
+        });
+      }
     }
 
     // Get all subdealers for this company

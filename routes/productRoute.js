@@ -167,7 +167,7 @@ productRoute.post('/', requireAuth, authorizeRoles(['admin', 'zonal', 'rsm', 'as
  *       500:
  *         description: Server error
  */
-productRoute.get('/', requireAuth, authorizeRoles(['admin', 'zonal', 'rsm', 'asm', 'salesman', 'dealers', 'distibutors', 'subdealer']), getProducts);
+productRoute.get('/', requireAuth, authorizeRoles(['admin', 'zonal', 'rsm', 'asm', 'salesman', 'dealers', 'distibutors', 'subdealer', 'groupuser']), getProducts);
 
 /**
  * @swagger
@@ -185,7 +185,7 @@ productRoute.get('/', requireAuth, authorizeRoles(['admin', 'zonal', 'rsm', 'asm
  *       500:
  *         description: Server error
  */
-productRoute.get('/categories', requireAuth, authorizeRoles(['admin', 'zonal', 'rsm', 'asm', 'salesman', 'dealers', 'distibutors', 'subdealer']), getProductCategories);
+productRoute.get('/categories', requireAuth, authorizeRoles(['admin', 'zonal', 'rsm', 'asm', 'salesman', 'dealers', 'distibutors', 'subdealer', 'groupuser']), getProductCategories);
 
 /**
  * @swagger
@@ -229,7 +229,7 @@ productRoute.get('/low-stock', requireAuth, authorizeRoles(['admin', 'zonal', 'r
  *       500:
  *         description: Server error
  */
-productRoute.get('/:productId', requireAuth, authorizeRoles(['admin', 'zonal', 'rsm', 'asm', 'salesman', 'dealers', 'distibutors', 'subdealer']), getProductById);
+productRoute.get('/:productId', requireAuth, authorizeRoles(['admin', 'zonal', 'rsm', 'asm', 'salesman', 'dealers', 'distibutors', 'subdealer', 'groupuser']), getProductById);
 
 /**
  * @swagger

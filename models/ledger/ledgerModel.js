@@ -50,6 +50,11 @@ const ledgerSchema = new mongoose.Schema({
     type: String,
     trim: true,
   },
+  password: {
+    type: String,
+    trim: true,
+    required: false, // Optional - only required if dealer needs to login
+  },
   LedgerGSTIN: {
     type: String,
     trim: true,

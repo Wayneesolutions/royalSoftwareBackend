@@ -52,6 +52,7 @@ const userSchema = new mongoose.Schema({
         enum: [
             'superadmin',
             'admin',
+            'groupuser', // Regular users without specific roles - all get same dashboard
             'dealers',
             'subdealer',
             'asm',
@@ -79,6 +80,7 @@ const userSchema = new mongoose.Schema({
             enum: [
                 'superadmin',
                 'admin',
+                'groupuser', // Regular users without specific roles - all get same dashboard
                 'dealers',
                 'subdealer',
                 'asm',

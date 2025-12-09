@@ -1,11 +1,14 @@
 import bcrypt from 'bcryptjs';
 import { XMLParser } from 'fast-xml-parser';
+import mongoose from 'mongoose';
 import Company from '../models/company/companyModel.js';
 import User from '../models/user/userModel.js';
+import Group from '../models/group/groupModel.js';
 
 const NORMALIZED_ROLES = new Set([
   'superadmin',
   'admin',
+  'groupuser',
   'dealers',
   'subdealer',
   'asm',
@@ -50,6 +53,9 @@ const normalizeRole = (value) => {
   }
   if (lower === 'sub-dealer') {
     return 'subdealer';
+  }
+  if (lower === 'group-user' || lower === 'group user') {
+    return 'groupuser';
   }
   return '';
 };
@@ -207,23 +213,78 @@ export const upsertUserFromTally = async (req, res) => {
         continue;
       }
 
-      const role = normalizeRole(item.role);
-      if (!role) {
+      // Default role to 'groupuser' if not provided
+      const role = item.role ? normalizeRole(item.role) : 'groupuser';
+      if (role && role !== 'groupuser') {
         results.push({
           userName: item.userName,
           success: false,
-          message: 'Invalid or missing role',
+          message: 'Only "groupuser" role is supported for Tally integration',
+          error: 'INVALID_ROLE',
         });
         continue;
       }
 
+      // Required fields validation
       const name = normalizeString(item.name || item.fullName);
       const mobile = normalizeString(item.mobile || item.phone);
       const email = normalizeString(item.email);
+      const userName = normalizeString(item.userName);
+      const password = normalizeString(item.password);
+
+      // Validate required fields
+      if (!name) {
+        results.push({
+          userName: userName || email || mobile,
+          success: false,
+          message: 'Name is required',
+          error: 'MISSING_NAME',
+        });
+        continue;
+      }
+
+      if (!mobile) {
+        results.push({
+          userName: userName || email || name,
+          success: false,
+          message: 'Mobile is required',
+          error: 'MISSING_MOBILE',
+        });
+        continue;
+      }
+
+      if (!email) {
+        results.push({
+          userName: userName || mobile || name,
+          success: false,
+          message: 'Email is required',
+          error: 'MISSING_EMAIL',
+        });
+        continue;
+      }
+
+      if (!userName) {
+        results.push({
+          email: email || mobile || name,
+          success: false,
+          message: 'Username is required',
+          error: 'MISSING_USERNAME',
+        });
+        continue;
+      }
+
+      if (!password) {
+        results.push({
+          userName: userName || email || mobile,
+          success: false,
+          message: 'Password is required',
+          error: 'MISSING_PASSWORD',
+        });
+        continue;
+      }
 
       // Check if this is a new user (not existing) - only check limit for new users
       const uniquenessCriteria = [];
-      const userName = normalizeString(item.userName);
       
       if (userName) uniquenessCriteria.push({ userName });
       if (email) uniquenessCriteria.push({ email });
@@ -248,53 +309,78 @@ export const upsertUserFromTally = async (req, res) => {
         }
       }
 
-      const password = normalizeString(item.password);
 
-      if (!name || !mobile) {
-        results.push({
-          userName: item.userName,
-          success: false,
-          message: 'Name and mobile are required',
-        });
-        continue;
-      }
-
-      if (!password) {
-        results.push({
-          userName: item.userName,
-          success: false,
-          message: 'Password is required',
-        });
-        continue;
-      }
-
+      // Simplified user payload - only required fields
       const userPayload = {
         name,
         mobile,
-        email: email || undefined,
-        userName: normalizeString(item.userName),
-        role,
+        email,
+        userName,
+        role: 'groupuser', // Always groupuser for Tally
         isActive: normalizeBoolean(item.isActive, true),
-        address: mapAddress(item.address),
+        address: mapAddress(item.address || {}),
         defaultCompany: company._id,
         companies: [
           {
             companyId: company._id,
-            role,
+            role: 'groupuser',
             isActive: true,
             assignedBy: null,
-            assignedAt: normalizeDate(item.assignedAt) || new Date(),
+            assignedAt: new Date(),
           },
         ],
       };
 
       // Note: Uniqueness check and limit check already done above
-
+      // If user exists, update instead of creating new
       if (existingUser) {
+        // Update existing user - simplified fields only
+        const updateData = {
+          name,
+          mobile,
+          email,
+          userName,
+          role: 'groupuser', // Always groupuser for Tally
+          isActive: normalizeBoolean(item.isActive, existingUser.isActive),
+          address: mapAddress(item.address || {}),
+          defaultCompany: company._id,
+        };
+
+        // Update or add company assignment
+        const existingCompanyIndex = existingUser.companies?.findIndex(
+          c => c.companyId?.toString() === company._id.toString()
+        );
+
+        if (existingCompanyIndex >= 0) {
+          // Update existing company assignment
+          existingUser.companies[existingCompanyIndex].role = 'groupuser';
+          existingUser.companies[existingCompanyIndex].isActive = true;
+        } else {
+          // Add new company assignment
+          if (!existingUser.companies) existingUser.companies = [];
+          existingUser.companies.push({
+            companyId: company._id,
+            role: 'groupuser',
+            isActive: true,
+            assignedBy: null,
+            assignedAt: new Date(),
+          });
+        }
+        updateData.companies = existingUser.companies;
+
+        // Update password
+        updateData.password = await bcrypt.hash(password, 10);
+
+        await User.findByIdAndUpdate(existingUser._id, { $set: updateData });
+
+        const updatedUser = await User.findById(existingUser._id)
+          .select('-password')
+          .lean();
+
         results.push({
-          userName: item.userName,
-          success: false,
-          message: 'User already exists with provided identifiers',
+          success: true,
+          user: updatedUser,
+          message: 'User updated successfully',
         });
         continue;
       }
@@ -381,16 +467,23 @@ export const updateUsersFromTally = async (req, res) => {
       });
     }
 
-    if (!pathGuid) {
+    // Support companyGuid from body or path parameter
+    let companyGuid = pathGuid;
+    if (!companyGuid && payload.length > 0) {
+      // Try to get from first item in payload
+      companyGuid = normalizeGuid(payload[0].companyGuid || payload[0].guid || payload[0].companyGUID);
+    }
+
+    if (!companyGuid) {
       return res.status(400).json({
         success: false,
-        message: 'Company GUID in path is required',
+        message: 'Company GUID is required (provide in path parameter or in request body)',
         error: 'MISSING_COMPANY_GUID',
       });
     }
 
     const { company, guid: normalizedGuid } =
-      await findCompanyByGuidFlexible(pathGuid);
+      await findCompanyByGuidFlexible(companyGuid);
 
     if (!company) {
       return res.status(404).json({
@@ -404,22 +497,210 @@ export const updateUsersFromTally = async (req, res) => {
 
     for (const item of payload) {
       const guid = normalizedGuid;
+      
+      // Support companyGuid per item (overrides path/global)
+      let itemCompanyGuid = guid;
+      const itemGuidSource = item.companyGuid || item.guid || item.companyGUID;
+      if (itemGuidSource) {
+        const itemCompanyResult = await findCompanyByGuidFlexible(itemGuidSource);
+        if (itemCompanyResult.company) {
+          itemCompanyGuid = itemCompanyResult.guid;
+          // Use item's company if provided
+          const itemCompany = itemCompanyResult.company;
+          if (itemCompany._id.toString() !== company._id.toString()) {
+            // Different company - use item's company for this user
+            const email = normalizeEmail(item.email || item.userEmail);
+            const mobile = normalizeString(item.mobile);
+            const userName = normalizeString(item.userName);
+            
+            if (!email && !mobile && !userName) {
+              results.push({
+                guid: itemCompanyGuid,
+                success: false,
+                message: 'User identifier is required for updates (email, mobile, or userName)',
+                error: 'MISSING_USER_IDENTIFIER',
+              });
+              continue;
+            }
 
+            const itemUserQuery = {
+              'companies.companyId': itemCompany._id,
+            };
+            
+            if (email) itemUserQuery.email = email;
+            else if (mobile) itemUserQuery.mobile = mobile;
+            else if (userName) itemUserQuery.userName = userName;
+
+            const itemUser = await User.findOne(itemUserQuery);
+            
+            if (!itemUser) {
+              results.push({
+                guid: itemCompanyGuid,
+                success: false,
+                message: 'User not found for provided company and identifiers',
+                error: 'USER_NOT_FOUND',
+              });
+              continue;
+            }
+            
+            // Process update for this user with item's company
+            // (Reuse the update logic below, but with itemCompany and itemUser)
+            // For now, skip and use main company logic - will be handled in next iteration
+            // Actually, let's process it here
+            const itemUpdates = {};
+            const itemCompanyUpdates = {};
+
+            if (Object.prototype.hasOwnProperty.call(item, 'name')) {
+              const name = normalizeString(item.name);
+              if (name) itemUpdates.name = name;
+            }
+
+            if (Object.prototype.hasOwnProperty.call(item, 'mobile')) {
+              const mobileVal = normalizeString(item.mobile);
+              if (!mobileVal) {
+                results.push({
+                  guid: itemCompanyGuid,
+                  success: false,
+                  message: 'Mobile cannot be empty when provided',
+                  error: 'INVALID_MOBILE',
+                });
+                continue;
+              }
+              const existingMobile = await User.findOne({
+                mobile: mobileVal,
+                _id: { $ne: itemUser._id },
+              });
+              if (existingMobile) {
+                results.push({
+                  guid: itemCompanyGuid,
+                  success: false,
+                  message: 'Another user already uses this mobile number',
+                  error: 'MOBILE_IN_USE',
+                });
+                continue;
+              }
+              itemUpdates.mobile = mobileVal;
+            }
+
+            if (Object.prototype.hasOwnProperty.call(item, 'role')) {
+              const role = normalizeRole(item.role);
+              if (!role) {
+                results.push({
+                  guid: itemCompanyGuid,
+                  success: false,
+                  message: 'Invalid role provided',
+                  error: 'INVALID_ROLE',
+                });
+                continue;
+              }
+              itemUpdates.role = role;
+              itemCompanyUpdates.role = role;
+            }
+
+            if (Object.prototype.hasOwnProperty.call(item, 'isActive')) {
+              const isActive = normalizeBoolean(item.isActive, itemUser.isActive);
+              itemUpdates.isActive = isActive;
+              itemCompanyUpdates.isActive = isActive;
+            }
+
+            if (Object.prototype.hasOwnProperty.call(item, 'address')) {
+              itemUpdates.address = mapAddress(item.address);
+            }
+
+            if (Object.prototype.hasOwnProperty.call(item, 'userName')) {
+              const newUserName = normalizeString(item.userName);
+              if (newUserName && newUserName !== itemUser.userName) {
+                const existingUserName = await User.findOne({
+                  userName: newUserName,
+                  _id: { $ne: itemUser._id },
+                });
+                if (existingUserName) {
+                  results.push({
+                    guid: itemCompanyGuid,
+                    success: false,
+                    message: 'Another user already uses this username',
+                    error: 'USERNAME_IN_USE',
+                  });
+                  continue;
+                }
+                itemUpdates.userName = newUserName;
+              }
+            }
+
+            // Handle groups, hierarchy, subdealerDetails (similar to main logic)
+            // ... (groups, hierarchy, subdealerDetails logic would go here)
+            
+            if (item.password) {
+              itemUpdates.password = await bcrypt.hash(item.password, 10);
+            }
+
+            if (Object.keys(itemUpdates).length === 0 && Object.keys(itemCompanyUpdates).length === 0) {
+              results.push({
+                guid: itemCompanyGuid,
+                success: false,
+                message: 'No updatable fields provided',
+                error: 'EMPTY_UPDATE',
+              });
+              continue;
+            }
+
+            // Update user fields
+            if (Object.keys(itemUpdates).length > 0) {
+              await User.findByIdAndUpdate(itemUser._id, { $set: itemUpdates }, { new: false });
+            }
+
+            // Update company-specific fields
+            if (Object.keys(itemCompanyUpdates).length > 0) {
+              const itemCompanyUpdateQuery = {};
+              if (itemCompanyUpdates.role) {
+                itemCompanyUpdateQuery['companies.$[elem].role'] = itemCompanyUpdates.role;
+              }
+              if (Object.prototype.hasOwnProperty.call(itemCompanyUpdates, 'isActive')) {
+                itemCompanyUpdateQuery['companies.$[elem].isActive'] = itemCompanyUpdates.isActive;
+              }
+              
+              await User.updateOne(
+                { _id: itemUser._id },
+                { $set: itemCompanyUpdateQuery },
+                { arrayFilters: [{ 'elem.companyId': itemCompany._id }] }
+              );
+            }
+
+            const updatedItemUser = await User.findById(itemUser._id).select('-password').lean();
+
+            results.push({
+              success: true,
+              user: updatedItemUser,
+            });
+            continue; // Skip main company logic for this item
+          }
+        }
+      }
+
+      // Support multiple identifiers: email, mobile, or userName
       const email = normalizeEmail(item.email || item.userEmail);
-      if (!email) {
+      const mobile = normalizeString(item.mobile);
+      const userName = normalizeString(item.userName);
+      
+      if (!email && !mobile && !userName) {
         results.push({
           guid,
           success: false,
-          message: 'User email is required for updates',
-          error: 'MISSING_EMAIL',
+          message: 'User identifier is required for updates (email, mobile, or userName)',
+          error: 'MISSING_USER_IDENTIFIER',
         });
         continue;
       }
 
-      const user = await User.findOne({
-        email,
+      const userQuery = {
         'companies.companyId': company._id,
-      });
+      };
+      
+      if (email) userQuery.email = email;
+      else if (mobile) userQuery.mobile = mobile;
+      else if (userName) userQuery.userName = userName;
+
+      const user = await User.findOne(userQuery);
 
       if (!user) {
         results.push({
@@ -472,20 +753,23 @@ export const updateUsersFromTally = async (req, res) => {
         updates.mobile = mobile;
       }
 
+      // Role is always 'groupuser' for Tally - no need to update
+      // But if role is provided and not 'groupuser', reject it
       if (Object.prototype.hasOwnProperty.call(item, 'role')) {
-        const role = normalizeRole(item.role);
-        if (!role) {
+        const providedRole = normalizeRole(item.role);
+        if (providedRole && providedRole !== 'groupuser') {
           results.push({
             guid,
-            email,
+            email: email || mobile || userName,
             success: false,
-            message: 'Invalid role provided',
+            message: 'Only "groupuser" role is supported for Tally integration',
             error: 'INVALID_ROLE',
           });
           continue;
         }
-        updates.role = role;
-        companyUpdates.role = role;
+        // If role is 'groupuser' or not provided, keep it as 'groupuser'
+        updates.role = 'groupuser';
+        companyUpdates.role = 'groupuser';
       }
 
       if (Object.prototype.hasOwnProperty.call(item, 'isActive')) {
@@ -497,6 +781,29 @@ export const updateUsersFromTally = async (req, res) => {
       if (Object.prototype.hasOwnProperty.call(item, 'address')) {
         updates.address = mapAddress(item.address);
       }
+
+      if (Object.prototype.hasOwnProperty.call(item, 'userName')) {
+        const newUserName = normalizeString(item.userName);
+        if (newUserName && newUserName !== user.userName) {
+          const existingUserName = await User.findOne({
+            userName: newUserName,
+            _id: { $ne: user._id },
+          });
+          if (existingUserName) {
+            results.push({
+              guid,
+              email: email || mobile || userName,
+              success: false,
+              message: 'Another user already uses this username',
+              error: 'USERNAME_IN_USE',
+            });
+            continue;
+          }
+          updates.userName = newUserName;
+        }
+      }
+
+      // Simplified update - no groups, hierarchy, or subdealerDetails for Tally
 
       if (item.password) {
         updates.password = await bcrypt.hash(item.password, 10);
@@ -513,18 +820,27 @@ export const updateUsersFromTally = async (req, res) => {
         continue;
       }
 
-      const updateQuery = { $set: { ...updates } };
-      if (companyUpdates.role) {
-        updateQuery.$set['companies.$.role'] = companyUpdates.role;
-      }
-      if (Object.prototype.hasOwnProperty.call(companyUpdates, 'isActive')) {
-        updateQuery.$set['companies.$.isActive'] = companyUpdates.isActive;
+      // Update user fields
+      if (Object.keys(updates).length > 0) {
+        await User.findByIdAndUpdate(user._id, { $set: updates }, { new: false });
       }
 
-      await User.updateOne(
-        { _id: user._id, 'companies.companyId': company._id },
-        updateQuery
-      );
+      // Update company-specific fields in companies array
+      if (Object.keys(companyUpdates).length > 0) {
+        const companyUpdateQuery = {};
+        if (companyUpdates.role) {
+          companyUpdateQuery['companies.$[elem].role'] = companyUpdates.role;
+        }
+        if (Object.prototype.hasOwnProperty.call(companyUpdates, 'isActive')) {
+          companyUpdateQuery['companies.$[elem].isActive'] = companyUpdates.isActive;
+        }
+        
+        await User.updateOne(
+          { _id: user._id },
+          { $set: companyUpdateQuery },
+          { arrayFilters: [{ 'elem.companyId': company._id }] }
+        );
+      }
 
       const updatedUser = await User.findById(user._id).select('-password').lean();
 
@@ -577,16 +893,23 @@ export const deleteUsersFromTally = async (req, res) => {
       });
     }
 
-    if (!pathGuid) {
+    // Support companyGuid from body or path parameter
+    let companyGuid = pathGuid;
+    if (!companyGuid && payload.length > 0) {
+      // Try to get from first item in payload
+      companyGuid = normalizeGuid(payload[0].companyGuid || payload[0].guid || payload[0].companyGUID);
+    }
+
+    if (!companyGuid) {
       return res.status(400).json({
         success: false,
-        message: 'Company GUID in path is required',
+        message: 'Company GUID is required (provide in path parameter or in request body)',
         error: 'MISSING_COMPANY_GUID',
       });
     }
 
     const { company, guid: normalizedGuid } =
-      await findCompanyByGuidFlexible(pathGuid);
+      await findCompanyByGuidFlexible(companyGuid);
 
     if (!company) {
       return res.status(404).json({
@@ -599,33 +922,89 @@ export const deleteUsersFromTally = async (req, res) => {
     const results = [];
 
     for (const item of payload) {
-      const guid = normalizedGuid;
+      let guid = normalizedGuid;
+      
+      // Support companyGuid per item (overrides path/global)
+      const itemGuidSource = item.companyGuid || item.guid || item.companyGUID;
+      if (itemGuidSource) {
+        const itemCompanyResult = await findCompanyByGuidFlexible(itemGuidSource);
+        if (itemCompanyResult.company) {
+          guid = itemCompanyResult.guid;
+          // Use item's company if provided
+          const itemCompany = itemCompanyResult.company;
+          if (itemCompany._id.toString() !== company._id.toString()) {
+            // Different company - use item's company for this deletion
+            const email = normalizeEmail(item.email || item.userEmail);
+            const mobile = normalizeString(item.mobile);
+            const userName = normalizeString(item.userName);
+            
+            if (!email && !mobile && !userName) {
+              results.push({
+                guid,
+                success: false,
+                message: 'User identifier is required for deletion (email, mobile, or userName)',
+                error: 'MISSING_USER_IDENTIFIER',
+              });
+              continue;
+            }
 
-      if (!company) {
-        results.push({
-          guid,
-          success: false,
-          message: 'Company not found for provided GUID.',
-          error: 'COMPANY_NOT_FOUND',
-        });
-        continue;
+            const userQuery = {
+              'companies.companyId': itemCompany._id,
+            };
+            
+            if (email) userQuery.email = email;
+            else if (mobile) userQuery.mobile = mobile;
+            else if (userName) userQuery.userName = userName;
+
+            const itemUser = await User.findOne(userQuery);
+            
+            if (!itemUser) {
+              results.push({
+                guid,
+                success: false,
+                message: 'User not found for provided company and identifiers',
+                error: 'USER_NOT_FOUND',
+              });
+              continue;
+            }
+
+            await User.deleteOne({ _id: itemUser._id });
+
+            results.push({
+              success: true,
+              guid,
+              email: email || mobile || userName,
+              userId: itemUser._id,
+            });
+            continue;
+          }
+        }
       }
 
+      // Support multiple identifiers: email, mobile, or userName
       const email = normalizeEmail(item.email || item.userEmail);
-      if (!email) {
+      const mobile = normalizeString(item.mobile);
+      const userName = normalizeString(item.userName);
+      
+      if (!email && !mobile && !userName) {
         results.push({
           guid,
           success: false,
-          message: 'User email is required for deletion',
-          error: 'MISSING_EMAIL',
+          message: 'User identifier is required for deletion (email, mobile, or userName)',
+          error: 'MISSING_USER_IDENTIFIER',
         });
         continue;
       }
 
-      const user = await User.findOne({
-        email,
+      const userQuery = {
         'companies.companyId': company._id,
-      });
+      };
+      
+      if (email) userQuery.email = email;
+      else if (mobile) userQuery.mobile = mobile;
+      else if (userName) userQuery.userName = userName;
+
+      const user = await User.findOne(userQuery);
 
       if (!user) {
         results.push({
@@ -643,7 +1022,7 @@ export const deleteUsersFromTally = async (req, res) => {
       results.push({
         success: true,
         guid,
-        email,
+        email: email || mobile || userName,
         userId: user._id,
       });
     }
