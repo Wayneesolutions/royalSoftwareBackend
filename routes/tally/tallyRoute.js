@@ -1296,27 +1296,79 @@ tallyRoute.get('/companies/:guid/users', listUsersByCompanyGuid);
  * @swagger
  * /api/v1/tally/users/update:
  *   patch:
- *     summary: Update one or multiple users (supports companyGuid in body or path)
+ *     summary: Update one or multiple users - Dedicated Update API (supports companyGuid in query, path, or body)
  *     description: >
+ *       **DEDICATED UPDATE API** - This endpoint is specifically for updating existing users only.
+ *       It will NOT create new users. If a user is not found, the update will fail.
+ *       
  *       Accepts single or multiple user payloads. Company GUID can be provided in:
- *       - Path parameter: /api/v1/tally/companies/{guid}/users (applies to all users)
+ *       - Query parameter: ?companyGuid=XXX (applies to all users in the request)
+ *       - Path parameter: /api/v1/tally/companies/{guid}/users/update (applies to all users)
  *       - Request body: Each user object can have its own companyGuid
  *       
  *       **Simplified API - Only required fields:**
- *       - companyGuid (required): Company GUID (required if not in path) - company will be added/updated automatically
- *       - User identifier: One of email, mobile, or userName (required to identify user)
+ *       - companyGuid (required): Company GUID (required if not in query/path) - company will be added/updated automatically
+ *       - User identifier: email (preferred/primary), mobile, or userName (required to identify user)
  *       - Fields to update: name, email, userName, password, mobile, address, isActive
+ *       
+ *       **Note:** Email is the primary identifier. If email is provided, it will be used for user lookup.
+ *       If email is not provided, the system will fall back to mobile, then userName.
  *       
  *       **Role is automatically set to "groupuser" - cannot be changed via Tally API.**
  *       **Company is automatically added/updated based on companyGuid.**
  *       
  *       **Supports both single user object and array of multiple users for batch processing.**
+ *       **Email is the primary identifier for user lookup.**
  *       - Single user: Send a single JSON object
  *       - Multiple users: Send an array of user objects
  *       
- *       User identification: Provide email, mobile, or userName to identify the user.
+ *       User identification: Provide email (preferred), mobile, or userName to identify the user.
+ *       Only provided fields are updated; other fields remain unchanged.
+ *   put:
+ *     summary: Update one or multiple users - Dedicated Update API (supports companyGuid in query, path, or body)
+ *     description: >
+ *       **DEDICATED UPDATE API** - This endpoint is specifically for updating existing users only.
+ *       It will NOT create new users. If a user is not found, the update will fail.
+ *       
+ *       Accepts single or multiple user payloads. Company GUID can be provided in:
+ *       - Query parameter: ?companyGuid=XXX (applies to all users in the request)
+ *       - Path parameter: /api/v1/tally/companies/{guid}/users/update (applies to all users)
+ *       - Request body: Each user object can have its own companyGuid
+ *       
+ *       **Simplified API - Only required fields:**
+ *       - companyGuid (required): Company GUID (required if not in query/path) - company will be added/updated automatically
+ *       - User identifier: email (preferred/primary), mobile, or userName (required to identify user)
+ *       - Fields to update: name, email, userName, password, mobile, address, isActive
+ *       
+ *       **Note:** Email is the primary identifier. If email is provided, it will be used for user lookup.
+ *       If email is not provided, the system will fall back to mobile, then userName.
+ *       
+ *       **Role is automatically set to "groupuser" - cannot be changed via Tally API.**
+ *       **Company is automatically added/updated based on companyGuid.**
+ *       
+ *       **Supports both single user object and array of multiple users for batch processing.**
+ *       **Email is the primary identifier for user lookup.**
+ *       - Single user: Send a single JSON object
+ *       - Multiple users: Send an array of user objects
+ *       
+ *       User identification: Provide email (preferred), mobile, or userName to identify the user.
  *       Only provided fields are updated; other fields remain unchanged.
  *     tags: [Tally Users]
+ *     parameters:
+ *       - in: query
+ *         name: companyGuid
+ *         required: false
+ *         schema:
+ *           type: string
+ *         description: Company GUID (optional if provided in path or body) - Priority: query > path > body
+ *         example: "COM-001"
+ *       - in: path
+ *         name: guid
+ *         required: false
+ *         schema:
+ *           type: string
+ *         description: Company GUID (optional if provided in query or body)
+ *         example: "COM-001"
  *     requestBody:
  *       required: true
  *       content:
@@ -1334,7 +1386,7 @@ tallyRoute.get('/companies/:guid/users', listUsersByCompanyGuid);
  *                   email:
  *                     type: string
  *                     format: email
- *                     description: User email used as identifier (one of email, mobile, or userName required)
+ *                     description: User email (primary identifier - required to identify user for update)
  *                   mobile:
  *                     type: string
  *                     description: User mobile used as identifier (one of email, mobile, or userName required)
@@ -1537,9 +1589,118 @@ tallyRoute.get('/companies/:guid/users', listUsersByCompanyGuid);
  *       500:
  *         description: Server error while updating users
  */
+// Separate update endpoint (dedicated for updates only)
+// Dedicated Update API endpoints (separate from create/upsert)
+// These endpoints ONLY update existing users - they do NOT create new users
 tallyRoute.patch('/users/update', updateUsersFromTally);
-tallyRoute.patch('/companies/:guid/users', updateUsersFromTally);
+tallyRoute.put('/users/update', updateUsersFromTally);
+tallyRoute.patch('/companies/:guid/users/update', updateUsersFromTally);
+tallyRoute.put('/companies/:guid/users/update', updateUsersFromTally);
 
+/**
+ * @swagger
+ * /api/v1/tally/companies/{guid}/users/update:
+ *   patch:
+ *     summary: Update users for a specific company - Dedicated Update API
+ *     description: >
+ *       **DEDICATED UPDATE API** - This endpoint is specifically for updating existing users only.
+ *       It will NOT create new users. If a user is not found, the update will fail.
+ *       
+ *       Company GUID is provided in the path parameter. Users are identified by email (preferred), mobile, or userName.
+ *       
+ *       **Simplified API - Only required fields:**
+ *       - User identifier: email (preferred/primary), mobile, or userName (required to identify user)
+ *       - Fields to update: name, email, userName, password, mobile, address, isActive
+ *       
+ *       **Note:** Email is the primary identifier. If email is provided, it will be used for user lookup.
+ *       If email is not provided, the system will fall back to mobile, then userName.
+ *       
+ *       **Role is automatically set to "groupuser" - cannot be changed via Tally API.**
+ *       **Supports both single user object and array of multiple users for batch processing.**
+ *     tags: [Tally Users]
+ *     parameters:
+ *       - in: path
+ *         name: guid
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Company GUID
+ *         example: "COM-001"
+ *       - in: query
+ *         name: companyGuid
+ *         required: false
+ *         schema:
+ *           type: string
+ *         description: Company GUID (optional, path parameter takes precedence)
+ *         example: "COM-001"
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             oneOf:
+ *               - type: object
+ *                 properties:
+ *                   email:
+ *                     type: string
+ *                     format: email
+ *                     description: User email (primary identifier - required to identify user for update)
+ *                   mobile:
+ *                     type: string
+ *                     description: User mobile (alternative identifier)
+ *                   userName:
+ *                     type: string
+ *                     description: User username (alternative identifier)
+ *                   name:
+ *                     type: string
+ *                   password:
+ *                     type: string
+ *                   isActive:
+ *                     type: boolean
+ *                   address:
+ *                     type: object
+ *                     properties:
+ *                       street:
+ *                         type: string
+ *                       city:
+ *                         type: string
+ *                       state:
+ *                         type: string
+ *                       pincode:
+ *                         type: string
+ *                       country:
+ *                         type: string
+ *               - type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     email:
+ *                       type: string
+ *                       format: email
+ *                     mobile:
+ *                       type: string
+ *                     userName:
+ *                       type: string
+ *                     name:
+ *                       type: string
+ *                     password:
+ *                       type: string
+ *                     isActive:
+ *                       type: boolean
+ *                     address:
+ *                       type: object
+ *     responses:
+ *       200:
+ *         description: All users updated successfully
+ *       207:
+ *         description: Partial success (some updates failed)
+ *       400:
+ *         description: Validation error or missing fields
+ *       404:
+ *         description: User not found
+ *       500:
+ *         description: Server error while updating users
+ */
 /**
  * @swagger
  * /api/v1/tally/users/delete:
@@ -1620,6 +1781,9 @@ tallyRoute.delete('/companies/:guid/users', deleteUsersFromTally);
  *       Accepts group information pushed from Tally ERP (JSON or XML payload). Can accept a single group object or an array
  *       of multiple groups for batch processing. All groups are upserted (created or updated) into Royal Software.
  *       Groups are identified by GroupGUID and cmpcode combination.
+ *       
+ *       **Important:** `companyGuid` is required. The `cmpcode` will be automatically assigned from the company based on the `companyGuid`.
+ *       You do not need to provide `cmpcode` - it will be derived from the company's `companyCode`.
  *     tags: [Tally Groups]
  *     requestBody:
  *       required: true
@@ -1632,11 +1796,8 @@ tallyRoute.delete('/companies/:guid/users', deleteUsersFromTally);
  *                 required:
  *                   - GroupGUID
  *                   - GroupName
- *                   - cmpcode
+ *                   - companyGuid
  *                 properties:
- *                   id:
- *                     type: string
- *                     description: Optional internal ID (not used for identification)
  *                   GroupGUID:
  *                     type: string
  *                     description: Group GUID from Tally (alphanumeric string)
@@ -1645,14 +1806,10 @@ tallyRoute.delete('/companies/:guid/users', deleteUsersFromTally);
  *                     type: string
  *                     description: Name of the group
  *                     example: "Sales Group"
- *                   GroupParent:
+ *                   companyGuid:
  *                     type: string
- *                     description: Parent group GUID (optional, for hierarchical groups)
- *                     example: "GRP000"
- *                   cmpcode:
- *                     type: string
- *                     description: Company code
- *                     example: "ROYAL01"
+ *                     description: Company GUID (required) - cmpcode will be auto-assigned from company
+ *                     example: "COM-001"
  *                   Remarks:
  *                     type: string
  *                     description: Additional remarks or notes
@@ -1676,18 +1833,15 @@ tallyRoute.delete('/companies/:guid/users', deleteUsersFromTally);
  *                   required:
  *                     - GroupGUID
  *                     - GroupName
- *                     - cmpcode
+ *                     - companyGuid
  *                   properties:
- *                     id:
- *                       type: string
  *                     GroupGUID:
  *                       type: string
  *                     GroupName:
  *                       type: string
- *                     GroupParent:
+ *                     companyGuid:
  *                       type: string
- *                     cmpcode:
- *                       type: string
+ *                       description: Company GUID (required) - cmpcode will be auto-assigned from company
  *                     Remarks:
  *                       type: string
  *                     Other1:
@@ -1757,8 +1911,11 @@ tallyRoute.post('/groups', upsertGroupFromTally);
  *   patch:
  *     summary: Update groups from Tally
  *     description: >
- *       Accepts one or more group payloads. Each payload must include the GroupGUID and optionally cmpcode.
+ *       Accepts one or more group payloads. Each payload must include the GroupGUID and companyGuid.
  *       Only provided fields are updated; other fields remain unchanged.
+ *       
+ *       **Important:** `companyGuid` is required to identify the group. The `cmpcode` will be automatically 
+ *       assigned from the company based on the `companyGuid`. You do not need to provide `cmpcode`.
  *     tags: [Tally Groups]
  *     requestBody:
  *       required: true
@@ -1769,15 +1926,17 @@ tallyRoute.post('/groups', upsertGroupFromTally);
  *               - type: object
  *                 required:
  *                   - GroupGUID
+ *                   - companyGuid
  *                 properties:
  *                   GroupGUID:
  *                     type: string
  *                     description: Group GUID used to locate the record
+ *                     example: "GRP001"
+ *                   companyGuid:
+ *                     type: string
+ *                     description: Company GUID (required) - cmpcode will be auto-assigned from company
+ *                     example: "COM-001"
  *                   GroupName:
- *                     type: string
- *                   GroupParent:
- *                     type: string
- *                   cmpcode:
  *                     type: string
  *                   Remarks:
  *                     type: string
@@ -1794,14 +1953,14 @@ tallyRoute.post('/groups', upsertGroupFromTally);
  *                   type: object
  *                   required:
  *                     - GroupGUID
+ *                     - companyGuid
  *                   properties:
  *                     GroupGUID:
  *                       type: string
+ *                     companyGuid:
+ *                       type: string
+ *                       description: Company GUID (required) - cmpcode will be auto-assigned from company
  *                     GroupName:
- *                       type: string
- *                     GroupParent:
- *                       type: string
- *                     cmpcode:
  *                       type: string
  *                     Remarks:
  *                       type: string
@@ -2192,6 +2351,22 @@ tallyRoute.get('/groups/:groupGuid/users', listUsersByGroupGuid);
  *       Accepts dealer information pushed from Tally ERP (JSON or XML payload) and creates or updates
  *       the corresponding dealers inside Royal Software. 
  *       
+ *       **Simplified API - Only required fields:**
+ *       - companyGuid (required): Company GUID - company details (cmpcode, Cmpguid, companyId) will be auto-assigned
+ *       - LedgerGUID (required): Unique GUID for the dealer
+ *       - LedgerName (required): Name of the dealer
+ *       
+ *       **Optional fields:**
+ *       - LedgerMobile, Email, password, LedgerGSTIN
+ *       - LedgerAddress1, LedgerAddress2, LedgerState
+ *       - LedgerOpening, LedgerOpeningDate, LedgerJoinDate
+ *       - groupGUID (optional): Group GUID to assign dealer to
+ *       - Remarks, Other1-Other8: Additional fields
+ *       - isActive: Active status (default: true)
+ *       
+ *       **Note:** Company details (cmpcode, Cmpguid, companyId) are automatically assigned from companyGuid.
+ *       You do not need to provide these fields - they will be derived from the company.
+ *       
  *       **Supports both single dealer object and array of multiple dealers for batch processing.**
  *       - Single dealer: Send a single JSON object
  *       - Multiple dealers: Send an array of dealer objects
@@ -2213,7 +2388,7 @@ tallyRoute.get('/groups/:groupGuid/users', listUsersByGroupGuid);
  *                 properties:
  *                   companyGuid:
  *                     type: string
- *                     description: Company GUID to associate the dealer with
+ *                     description: Company GUID (required) - company details will be auto-assigned from this
  *                     example: "COM-001"
  *                   LedgerGUID:
  *                     type: string
@@ -2225,63 +2400,76 @@ tallyRoute.get('/groups/:groupGuid/users', listUsersByGroupGuid);
  *                     example: "ABC Traders"
  *                   LedgerMobile:
  *                     type: string
+ *                     description: Mobile number of the dealer
  *                     example: "+919876543210"
  *                   Email:
  *                     type: string
  *                     format: email
+ *                     description: Email address of the dealer
  *                     example: "dealer@example.com"
+ *                   password:
+ *                     type: string
+ *                     description: Password for dealer login (will be hashed)
  *                   LedgerGSTIN:
  *                     type: string
+ *                     description: GSTIN number
  *                     example: "29ABCDE1234F1Z5"
  *                   LedgerAddress1:
  *                     type: string
+ *                     description: Address line 1
  *                   LedgerAddress2:
  *                     type: string
+ *                     description: Address line 2
  *                   LedgerState:
  *                     type: string
+ *                     description: State
  *                   LedgerOpening:
  *                     type: number
+ *                     description: Opening balance
+ *                     default: 0
  *                   LedgerOpeningDate:
  *                     type: string
  *                     format: date
+ *                     description: Opening date (YYYY-MM-DD)
+ *                     example: "2025-12-09"
  *                   LedgerJoinDate:
  *                     type: string
  *                     format: date
+ *                     description: Join date (YYYY-MM-DD)
+ *                     example: "2025-12-09"
  *                   groupGUID:
  *                     type: string
- *                     description: Group GUID to assign the dealer to
- *                   SalesMan:
- *                     type: object
- *                     properties:
- *                       mobile:
- *                         type: string
- *                       email:
- *                         type: string
- *                   ASM:
- *                     type: object
- *                     properties:
- *                       mobile:
- *                         type: string
- *                       email:
- *                         type: string
- *                   RSM:
- *                     type: object
- *                     properties:
- *                       mobile:
- *                         type: string
- *                       email:
- *                         type: string
- *                   ZSM:
- *                     type: object
- *                     properties:
- *                       mobile:
- *                         type: string
- *                       email:
- *                         type: string
+ *                     description: Group GUID to assign the dealer to (optional)
  *                   Remarks:
  *                     type: string
+ *                     description: Additional remarks
+ *                   Other1:
+ *                     type: string
+ *                     description: Additional field 1
+ *                   Other2:
+ *                     type: string
+ *                     description: Additional field 2
+ *                   Other3:
+ *                     type: string
+ *                     description: Additional field 3
+ *                   Other4:
+ *                     type: string
+ *                     description: Additional field 4
+ *                   Other5:
+ *                     type: string
+ *                     description: Additional field 5
+ *                   other6:
+ *                     type: string
+ *                     description: Additional field 6
+ *                   other7:
+ *                     type: string
+ *                     description: Additional field 7
+ *                   other8:
+ *                     type: string
+ *                     description: Additional field 8
  *                   isActive:
  *                     type: boolean
+ *                     description: Active status
  *                     default: true
  *               - type: array
  *                 description: Array of dealers for batch processing
@@ -2294,20 +2482,53 @@ tallyRoute.get('/groups/:groupGuid/users', listUsersByGroupGuid);
  *                   properties:
  *                     companyGuid:
  *                       type: string
- *                       example: "COM-001"
+ *                       description: Company GUID (required) - company details will be auto-assigned from this
  *                     LedgerGUID:
  *                       type: string
- *                       example: "LED-002"
  *                     LedgerName:
  *                       type: string
- *                       example: "XYZ Traders"
  *                     LedgerMobile:
  *                       type: string
  *                     Email:
  *                       type: string
+ *                       format: email
+ *                     password:
+ *                       type: string
  *                     LedgerGSTIN:
  *                       type: string
+ *                     LedgerAddress1:
+ *                       type: string
+ *                     LedgerAddress2:
+ *                       type: string
+ *                     LedgerState:
+ *                       type: string
+ *                     LedgerOpening:
+ *                       type: number
+ *                     LedgerOpeningDate:
+ *                       type: string
+ *                       format: date
+ *                     LedgerJoinDate:
+ *                       type: string
+ *                       format: date
  *                     groupGUID:
+ *                       type: string
+ *                     Remarks:
+ *                       type: string
+ *                     Other1:
+ *                       type: string
+ *                     Other2:
+ *                       type: string
+ *                     Other3:
+ *                       type: string
+ *                     Other4:
+ *                       type: string
+ *                     Other5:
+ *                       type: string
+ *                     other6:
+ *                       type: string
+ *                     other7:
+ *                       type: string
+ *                     other8:
  *                       type: string
  *                     isActive:
  *                       type: boolean

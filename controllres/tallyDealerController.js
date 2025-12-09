@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import bcrypt from 'bcryptjs';
 import Company from '../models/company/companyModel.js';
 import Ledger from '../models/ledger/ledgerModel.js';
 import SubDealer from '../models/subdealer/subdealerModel.js';
@@ -325,30 +326,30 @@ export const upsertDealerFromTally = async (req, res) => {
         }
       }
 
-      // Prepare dealer data
+      // Prepare dealer data - simplified fields only
       const dealerData = {
         LedgerGUID: ledgerGuid,
         LedgerName: ledgerName,
-        LedgerParent: normalizeString(item.LedgerParent || item.ledgerParent) || null,
-        LedgerMobile: normalizeString(item.LedgerMobile || item.mobile || item.phone),
-        LedgerContact: normalizeString(item.LedgerContact || item.contact),
-        Email: normalizeString(item.Email || item.email),
-        LedgerGSTIN: normalizeString(item.LedgerGSTIN || item.gstin || item.GSTIN)?.toUpperCase() || '',
-        LedgerAddress1: normalizeString(item.LedgerAddress1 || item.address1 || item.address?.street),
-        LedgerAddress2: normalizeString(item.LedgerAddress2 || item.address2),
-        LedgerState: normalizeString(item.LedgerState || item.state || item.address?.state),
-        LedgerOpening: toNumber(item.LedgerOpening || item.openingBalance, 0),
-        LedgerOpeningDate: normalizeDate(item.LedgerOpeningDate || item.openingDate),
-        LedgerJoinDate: normalizeDate(item.LedgerJoinDate || item.joinDate),
-        Remarks: normalizeString(item.Remarks || item.remarks),
-        Other1: normalizeString(item.Other1 || item.other1),
-        Other2: normalizeString(item.Other2 || item.other2),
-        Other3: normalizeString(item.Other3 || item.other3),
-        Other4: normalizeString(item.Other4 || item.other4),
-        Other5: normalizeString(item.Other5 || item.other5),
-        other6: normalizeString(item.other6),
-        other7: normalizeString(item.other7),
-        other8: normalizeString(item.other8),
+        LedgerMobile: item.LedgerMobile !== undefined ? normalizeString(item.LedgerMobile) : undefined,
+        Email: item.Email !== undefined ? normalizeString(item.Email) : undefined,
+        password: item.password !== undefined ? normalizeString(item.password) : undefined,
+        LedgerGSTIN: item.LedgerGSTIN !== undefined ? normalizeString(item.LedgerGSTIN)?.toUpperCase() || '' : undefined,
+        LedgerAddress1: item.LedgerAddress1 !== undefined ? normalizeString(item.LedgerAddress1) : undefined,
+        LedgerAddress2: item.LedgerAddress2 !== undefined ? normalizeString(item.LedgerAddress2) : undefined,
+        LedgerState: item.LedgerState !== undefined ? normalizeString(item.LedgerState) : undefined,
+        LedgerOpening: item.LedgerOpening !== undefined ? toNumber(item.LedgerOpening, 0) : undefined,
+        LedgerOpeningDate: item.LedgerOpeningDate !== undefined ? normalizeDate(item.LedgerOpeningDate) : undefined,
+        LedgerJoinDate: item.LedgerJoinDate !== undefined ? normalizeDate(item.LedgerJoinDate) : undefined,
+        Remarks: item.Remarks !== undefined ? normalizeString(item.Remarks) : undefined,
+        Other1: item.Other1 !== undefined ? normalizeString(item.Other1) : undefined,
+        Other2: item.Other2 !== undefined ? normalizeString(item.Other2) : undefined,
+        Other3: item.Other3 !== undefined ? normalizeString(item.Other3) : undefined,
+        Other4: item.Other4 !== undefined ? normalizeString(item.Other4) : undefined,
+        Other5: item.Other5 !== undefined ? normalizeString(item.Other5) : undefined,
+        other6: item.other6 !== undefined ? normalizeString(item.other6) : undefined,
+        other7: item.other7 !== undefined ? normalizeString(item.other7) : undefined,
+        other8: item.other8 !== undefined ? normalizeString(item.other8) : undefined,
+        // Auto-assign company details from companyGuid
         Cmpguid: company.guid,
         cmpcode: company.companyCode,
         cmpCode: company.companyCode,
@@ -356,49 +357,16 @@ export const upsertDealerFromTally = async (req, res) => {
         isActive: item.isActive !== undefined ? (item.isActive === true || item.isActive === 'true' || item.isActive === 1) : true,
       };
 
-      // Handle hierarchy users (SalesMan, ASM, RSM, ZSM)
-      if (item.SalesMan || item.salesMan || item.salesman) {
-        const salesman = await findUserByMobileOrEmail(
-          item.SalesMan?.mobile || item.salesMan?.mobile || item.salesman?.mobile,
-          item.SalesMan?.email || item.salesMan?.email || item.salesman?.email,
-          company._id
-        );
-        if (salesman) {
-          dealerData.SalesMan = salesman._id;
+      // Remove undefined fields
+      Object.keys(dealerData).forEach(key => {
+        if (dealerData[key] === undefined) {
+          delete dealerData[key];
         }
-      }
+      });
 
-      if (item.ASM || item.asm) {
-        const asm = await findUserByMobileOrEmail(
-          item.ASM?.mobile || item.asm?.mobile,
-          item.ASM?.email || item.asm?.email,
-          company._id
-        );
-        if (asm) {
-          dealerData.ASM = asm._id;
-        }
-      }
-
-      if (item.RSM || item.rsm) {
-        const rsm = await findUserByMobileOrEmail(
-          item.RSM?.mobile || item.rsm?.mobile,
-          item.RSM?.email || item.rsm?.email,
-          company._id
-        );
-        if (rsm) {
-          dealerData.RSM = rsm._id;
-        }
-      }
-
-      if (item.ZSM || item.zsm) {
-        const zsm = await findUserByMobileOrEmail(
-          item.ZSM?.mobile || item.zsm?.mobile,
-          item.ZSM?.email || item.zsm?.email,
-          company._id
-        );
-        if (zsm) {
-          dealerData.ZSM = zsm._id;
-        }
+      // Hash password if provided
+      if (dealerData.password) {
+        dealerData.password = await bcrypt.hash(dealerData.password, 10);
       }
 
       // Handle group assignment
@@ -841,14 +809,67 @@ export const updateDealerFromTally = async (req, res) => {
         continue;
       }
 
-      // Update fields
+      // Update fields - simplified fields only
       if (!isBlank(item.LedgerName || item.ledgerName || item.name)) {
         dealer.LedgerName = normalizeString(item.LedgerName || item.ledgerName || item.name);
       }
-      if (item.LedgerMobile !== undefined) dealer.LedgerMobile = normalizeString(item.LedgerMobile || item.mobile);
-      if (item.Email !== undefined) dealer.Email = normalizeString(item.Email || item.email);
-      if (item.LedgerGSTIN !== undefined) dealer.LedgerGSTIN = normalizeString(item.LedgerGSTIN || item.gstin)?.toUpperCase() || '';
-      if (item.LedgerState !== undefined) dealer.LedgerState = normalizeString(item.LedgerState || item.state);
+      if (item.LedgerMobile !== undefined) {
+        dealer.LedgerMobile = normalizeString(item.LedgerMobile);
+      }
+      if (item.Email !== undefined) {
+        dealer.Email = normalizeString(item.Email);
+      }
+      if (item.password !== undefined && item.password) {
+        dealer.password = await bcrypt.hash(normalizeString(item.password), 10);
+      }
+      if (item.LedgerGSTIN !== undefined) {
+        dealer.LedgerGSTIN = normalizeString(item.LedgerGSTIN)?.toUpperCase() || '';
+      }
+      if (item.LedgerAddress1 !== undefined) {
+        dealer.LedgerAddress1 = normalizeString(item.LedgerAddress1);
+      }
+      if (item.LedgerAddress2 !== undefined) {
+        dealer.LedgerAddress2 = normalizeString(item.LedgerAddress2);
+      }
+      if (item.LedgerState !== undefined) {
+        dealer.LedgerState = normalizeString(item.LedgerState);
+      }
+      if (item.LedgerOpening !== undefined) {
+        dealer.LedgerOpening = toNumber(item.LedgerOpening, 0);
+      }
+      if (item.LedgerOpeningDate !== undefined) {
+        dealer.LedgerOpeningDate = normalizeDate(item.LedgerOpeningDate);
+      }
+      if (item.LedgerJoinDate !== undefined) {
+        dealer.LedgerJoinDate = normalizeDate(item.LedgerJoinDate);
+      }
+      if (item.Remarks !== undefined) {
+        dealer.Remarks = normalizeString(item.Remarks);
+      }
+      if (item.Other1 !== undefined) {
+        dealer.Other1 = normalizeString(item.Other1);
+      }
+      if (item.Other2 !== undefined) {
+        dealer.Other2 = normalizeString(item.Other2);
+      }
+      if (item.Other3 !== undefined) {
+        dealer.Other3 = normalizeString(item.Other3);
+      }
+      if (item.Other4 !== undefined) {
+        dealer.Other4 = normalizeString(item.Other4);
+      }
+      if (item.Other5 !== undefined) {
+        dealer.Other5 = normalizeString(item.Other5);
+      }
+      if (item.other6 !== undefined) {
+        dealer.other6 = normalizeString(item.other6);
+      }
+      if (item.other7 !== undefined) {
+        dealer.other7 = normalizeString(item.other7);
+      }
+      if (item.other8 !== undefined) {
+        dealer.other8 = normalizeString(item.other8);
+      }
       if (item.isActive !== undefined) {
         dealer.isActive = item.isActive === true || item.isActive === 'true' || item.isActive === 1;
       }

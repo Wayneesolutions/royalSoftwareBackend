@@ -459,6 +459,7 @@ export const updateUsersFromTally = async (req, res) => {
     const parsedBody = parseIncomingPayload(req);
     const payload = Array.isArray(parsedBody) ? parsedBody : [parsedBody];
     const pathGuid = normalizeGuid(req.params.guid);
+    const queryGuid = normalizeGuid(req.query.companyGuid || req.query.guid || req.query.companyGUID);
 
     if (!payload.length) {
       return res.status(400).json({
@@ -467,8 +468,9 @@ export const updateUsersFromTally = async (req, res) => {
       });
     }
 
-    // Support companyGuid from body or path parameter
-    let companyGuid = pathGuid;
+    // Support companyGuid from query parameter, path parameter, or body
+    // Priority: query parameter > path parameter > body (first item)
+    let companyGuid = queryGuid || pathGuid;
     if (!companyGuid && payload.length > 0) {
       // Try to get from first item in payload
       companyGuid = normalizeGuid(payload[0].companyGuid || payload[0].guid || payload[0].companyGUID);
@@ -477,7 +479,7 @@ export const updateUsersFromTally = async (req, res) => {
     if (!companyGuid) {
       return res.status(400).json({
         success: false,
-        message: 'Company GUID is required (provide in path parameter or in request body)',
+        message: 'Company GUID is required (provide in query parameter ?companyGuid=XXX, path parameter, or in request body)',
         error: 'MISSING_COMPANY_GUID',
       });
     }
@@ -677,7 +679,8 @@ export const updateUsersFromTally = async (req, res) => {
         }
       }
 
-      // Support multiple identifiers: email, mobile, or userName
+      // Support multiple identifiers: email (preferred), mobile, or userName
+      // Email is the primary identifier as requested
       const email = normalizeEmail(item.email || item.userEmail);
       const mobile = normalizeString(item.mobile);
       const userName = normalizeString(item.userName);
@@ -686,19 +689,25 @@ export const updateUsersFromTally = async (req, res) => {
         results.push({
           guid,
           success: false,
-          message: 'User identifier is required for updates (email, mobile, or userName)',
+          message: 'User identifier is required for updates (email preferred, or mobile, or userName)',
           error: 'MISSING_USER_IDENTIFIER',
         });
         continue;
       }
 
+      // Build user query - prioritize email as the primary identifier
       const userQuery = {
         'companies.companyId': company._id,
       };
       
-      if (email) userQuery.email = email;
-      else if (mobile) userQuery.mobile = mobile;
-      else if (userName) userQuery.userName = userName;
+      // Email is the primary identifier - use it if available
+      if (email) {
+        userQuery.email = email;
+      } else if (mobile) {
+        userQuery.mobile = mobile;
+      } else if (userName) {
+        userQuery.userName = userName;
+      }
 
       const user = await User.findOne(userQuery);
 

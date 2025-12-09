@@ -3345,18 +3345,46 @@ export const getUsersByCompany = async (req, res) => {
     }
 
     // Build base query - only active users in the company
+    // Use ObjectId for proper comparison - handle both string and ObjectId
+    let companyObjectId = companyId;
+    if (typeof companyId === 'object' && companyId._id) {
+      companyObjectId = companyId._id;
+    }
+    if (typeof companyObjectId === 'string') {
+      // Ensure it's a valid ObjectId string
+      if (mongoose.Types.ObjectId.isValid(companyObjectId)) {
+        companyObjectId = new mongoose.Types.ObjectId(companyObjectId);
+      }
+    }
+    
+    // Build base query - match users who have this company
+    // Check both companies array and defaultCompany field
     const query = {
-      'companies.companyId': companyId,
-      'companies.isActive': true,
-      isActive: true
+      $or: [
+        // Users with company in companies array (isActive not false)
+        {
+          'companies.companyId': companyObjectId,
+          'companies.isActive': { $ne: false }
+        },
+        // Users with company as defaultCompany
+        {
+          defaultCompany: companyObjectId
+        }
+      ],
+      isActive: { $ne: false } // Include active users and those without isActive set
     };
+    
+    console.log('🔍 Query companyObjectId:', companyObjectId);
+    console.log('🔍 Query companyObjectId type:', typeof companyObjectId);
+    console.log('🔍 Admin role:', admin.role);
 
     // Apply hierarchy-based filtering
     // Admin can see all users in their company (except superadmin, dealers, and subdealers)
     // Dealers and subdealers are managed separately through Ledger and SubDealer models
     if (admin.role === 'admin' || admin.role === 'superadmin') {
+      // For admin/superadmin, show all users except other admins/superadmins and dealers/subdealers
       query.role = { $nin: ['admin', 'superadmin', 'dealers', 'subdealer'] };
-      query._id = { $ne: adminId }; // Exclude the admin user
+      query._id = { $ne: adminId }; // Exclude the admin user themselves
     } else if (admin.role === 'groupuser') {
       // For group users, only show users in their assigned group(s)
       if (admin.groups && admin.groups.length > 0) {
@@ -3437,39 +3465,162 @@ export const getUsersByCompany = async (req, res) => {
     }
 
     if (role) {
-      // Add role filter
-      query.role = role;
+      // Add role filter - but don't overwrite existing role filter for admin/superadmin
+      if (admin.role === 'admin' || admin.role === 'superadmin') {
+        // Combine role filter with existing $nin filter
+        if (query.role && typeof query.role === 'object' && query.role.$nin) {
+          // Add role to the exclusion list if it's not already there
+          if (!query.role.$nin.includes(role)) {
+            query.role = { $nin: [...query.role.$nin, role] };
+          }
+        } else {
+          query.role = role;
+        }
+      } else {
+        query.role = role;
+      }
     }
 
     // Get users with pagination
     const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    // Debug logging
+    console.log('🔍 Admin getUsersByCompany query:', JSON.stringify(query, null, 2));
+    console.log('🔍 Admin companyId:', companyObjectId);
+    console.log('🔍 Admin role:', admin.role);
+    console.log('🔍 Query details:', {
+      companyObjectId: companyObjectId.toString(),
+      companyObjectIdType: typeof companyObjectId,
+      queryKeys: Object.keys(query)
+    });
+    
     const users = await User.find(query)
-      .select('name email mobile role userName isActive address companies.$ lastLogin createdAt groups hierarchy subdealerDetails')
+      .select('name email mobile role userName isActive address companies defaultCompany lastLogin createdAt groups hierarchy subdealerDetails')
       .populate('hierarchy.parentUserId', 'name email role mobile')
       .populate('companies.companyId', 'companyName companyCode')
+      .populate('defaultCompany', 'companyName companyCode')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit))
       .lean(); // Use lean() to get plain objects for easier manipulation
+    
+    console.log('🔍 Found users count:', users.length);
+    if (users.length > 0) {
+      console.log('🔍 Sample user companies:', users[0].companies);
+      console.log('🔍 Sample user defaultCompany:', users[0].defaultCompany);
+    } else {
+      // If no users found, try a simpler query to debug
+      const simpleQuery = {
+        $or: [
+          { 'companies.companyId': companyObjectId },
+          { defaultCompany: companyObjectId }
+        ]
+      };
+      const allUsersInCompany = await User.find(simpleQuery).select('_id name email role companies defaultCompany').limit(5).lean();
+      console.log('🔍 Debug - All users with company (first 5):', allUsersInCompany);
+    }
 
     // Get total count
     const totalUsers = await User.countDocuments(query);
 
     // Get company details
     const company = await Company.findById(companyId).select('companyName companyCode maxUser currentUsers').lean();
+    
+    // Get all companies that users might reference (for populating company names)
+    const allCompanyIds = new Set();
+    users.forEach(user => {
+      if (user.companies && Array.isArray(user.companies)) {
+        user.companies.forEach(comp => {
+          const cid = comp.companyId?._id || comp.companyId;
+          if (cid) {
+            allCompanyIds.add(cid.toString());
+          }
+        });
+      }
+    });
+    
+    const companies = await Company.find({
+      _id: { $in: Array.from(allCompanyIds).map(id => new mongoose.Types.ObjectId(id)) }
+    }).select('companyName companyCode').lean();
 
     // Format users with correct structure (matching create/edit user format)
     const formattedUsers = await Promise.all(users.map(async (userObj) => {
+      // Filter companies to only show the current company
+      // Handle both populated and non-populated companyId
+      const userCompanies = (userObj.companies || []).filter(comp => {
+        if (!comp || !comp.companyId) {
+          // If no companyId in companies array, check defaultCompany
+          if (userObj.defaultCompany) {
+            const defaultCompId = typeof userObj.defaultCompany === 'object' && userObj.defaultCompany._id
+              ? userObj.defaultCompany._id.toString()
+              : userObj.defaultCompany.toString();
+            return defaultCompId === companyObjectId.toString();
+          }
+          return false;
+        }
+        
+        // Handle populated companyId (object with _id) or direct ObjectId
+        let compId = comp.companyId;
+        if (typeof compId === 'object' && compId._id) {
+          compId = compId._id;
+        }
+        if (typeof compId === 'object' && compId.toString) {
+          compId = compId.toString();
+        }
+        
+        // Compare with target company ID (both as strings for consistency)
+        const targetIdStr = companyObjectId.toString();
+        const compIdStr = compId.toString();
+        
+        return compIdStr === targetIdStr && comp.isActive !== false;
+      });
+      
+      // If no companies found in companies array but user has defaultCompany matching, include it
+      if (userCompanies.length === 0 && userObj.defaultCompany) {
+        const defaultCompId = typeof userObj.defaultCompany === 'object' && userObj.defaultCompany._id
+          ? userObj.defaultCompany._id.toString()
+          : userObj.defaultCompany.toString();
+        if (defaultCompId === companyObjectId.toString()) {
+          // User has defaultCompany matching, but no entry in companies array
+          // This is valid - include the user
+        }
+      }
+      
+      // If no company found, log for debugging but still include the user
+      if (userCompanies.length === 0 && userObj.companies && userObj.companies.length > 0) {
+        console.log('⚠️ User has companies but not matching current company:', {
+          userId: userObj._id,
+          userName: userObj.userName,
+          userCompanies: userObj.companies.map(c => {
+            let cid = c.companyId?._id || c.companyId;
+            if (typeof cid === 'object' && cid.toString) cid = cid.toString();
+            return {
+              companyId: cid,
+              companyName: c.companyId?.companyName || 'N/A',
+              isActive: c.isActive
+            };
+          }),
+          targetCompanyId: companyObjectId.toString()
+        });
+      }
+      
       const parentUserPopulated = userObj.hierarchy?.parentUserId;
       const parentUserName = parentUserPopulated?.name || '';
       
-      // Format groups array - ensure groupId is string, not populated object
+      // Format groups array - ensure groupId is object with GroupName for frontend compatibility
       const formattedGroups = await Promise.all((userObj.groups || []).map(async (group) => {
-        // Get groupId as string (not populated object)
+        // Get groupId - handle both ObjectId and string
         const groupIdValue = group.groupId;
-        const groupIdString = groupIdValue?._id 
-          ? groupIdValue._id.toString() 
-          : (groupIdValue?.toString() || groupIdValue || '');
+        let groupIdString = '';
+        if (groupIdValue) {
+          if (typeof groupIdValue === 'object' && groupIdValue._id) {
+            groupIdString = groupIdValue._id.toString();
+          } else if (typeof groupIdValue === 'object' && groupIdValue.toString) {
+            groupIdString = groupIdValue.toString();
+          } else {
+            groupIdString = groupIdValue.toString();
+          }
+        }
         
         // If groupId exists, fetch the group to get all details
         let groupDetails = null;
@@ -3477,22 +3628,189 @@ export const getUsersByCompany = async (req, res) => {
           groupDetails = await Group.findById(groupIdString).lean();
         }
         
+        // Get group name - prioritize from groupDetails, then group object, then fallback
+        const groupName = groupDetails?.GroupName 
+          || group.groupName 
+          || group.GroupName 
+          || `Group for ${userObj.name} (${userObj.role})`;
+        
+        const groupGUID = groupDetails?.GroupGUID 
+          || group.groupGUID 
+          || group.GroupGUID 
+          || '';
+        
+        // Build groupId object for frontend (must have GroupName)
+        const groupIdObject = groupIdString ? {
+          _id: groupIdString,
+          GroupGUID: groupGUID,
+          GroupName: groupName,
+          GroupParent: groupDetails?.GroupParent 
+            || group.groupParentUser 
+            || group.GroupParent 
+            || (parentUserPopulated ? parentUserPopulated._id.toString() : null),
+          cmpcode: groupDetails?.cmpcode 
+            || group.cmpcode 
+            || '',
+          Remarks: groupDetails?.Remarks 
+            || group.remarks 
+            || group.Remarks 
+            || `Group for ${userObj.name} (${userObj.role})`,
+          other1: groupDetails?.other1 
+            || group.other1 
+            || userObj.email 
+            || '',
+          other2: groupDetails?.other2 
+            || group.other2 
+            || userObj.mobile 
+            || '',
+          other3: groupDetails?.other3 
+            || group.other3 
+            || userObj.role 
+            || '',
+          other4: groupDetails?.other4 
+            || group.other4 
+            || parentUserName 
+            || ''
+        } : null;
+        
         return {
-          groupId: groupIdString,
-          groupGUID: group.groupGUID || groupDetails?.GroupGUID || '',
-          groupName: group.groupName || groupDetails?.GroupName || '',
-          groupParentUser: group.groupParentUser || groupDetails?.GroupParent || (parentUserPopulated ? parentUserPopulated._id.toString() : null),
-          cmpcode: group.cmpcode || groupDetails?.cmpcode || '',
-          remarks: group.remarks || groupDetails?.Remarks || `Group for ${userObj.name} (${userObj.role})`,
-          other1: group.other1 || groupDetails?.other1 || userObj.email || '',
-          other2: group.other2 || groupDetails?.other2 || userObj.mobile || '',
-          other3: group.other3 || groupDetails?.other3 || userObj.role || '',
-          other4: group.other4 || groupDetails?.other4 || parentUserName || '',
+          groupId: groupIdObject, // Frontend expects this as object with GroupName
+          groupGUID: groupGUID,
+          GroupGUID: groupGUID,
+          groupName: groupName,
+          GroupName: groupName, // Frontend checks this directly too
+          groupParentUser: groupDetails?.GroupParent 
+            || group.groupParentUser 
+            || group.GroupParent 
+            || (parentUserPopulated ? parentUserPopulated._id.toString() : null),
+          GroupParent: groupDetails?.GroupParent 
+            || group.groupParentUser 
+            || group.GroupParent 
+            || (parentUserPopulated ? parentUserPopulated._id.toString() : null),
+          cmpcode: groupDetails?.cmpcode 
+            || group.cmpcode 
+            || '',
+          Remarks: groupDetails?.Remarks 
+            || group.remarks 
+            || group.Remarks 
+            || `Group for ${userObj.name} (${userObj.role})`,
+          Other1: groupDetails?.other1 
+            || group.other1 
+            || userObj.email 
+            || '',
+          Other2: groupDetails?.other2 
+            || group.other2 
+            || userObj.mobile 
+            || '',
+          Other3: groupDetails?.other3 
+            || group.other3 
+            || userObj.role 
+            || '',
+          Other4: groupDetails?.other4 
+            || group.other4 
+            || parentUserName 
+            || '',
           assignedBy: group.assignedBy || null,
           assignedAt: group.assignedAt || null,
           isActive: group.isActive !== undefined ? group.isActive : true
         };
       }));
+      
+      // Format companies array
+      let formattedCompanies = [];
+      
+      // Use filtered companies if found, otherwise use all companies
+      const companiesToMap = userCompanies.length > 0 ? userCompanies : (userObj.companies || []);
+      
+      // If still no companies but user has defaultCompany, try to get company info
+      if (companiesToMap.length === 0 && userObj.defaultCompany) {
+        const defaultComp = await Company.findById(userObj.defaultCompany).lean();
+        if (defaultComp) {
+          formattedCompanies = [{
+            companyId: {
+              _id: defaultComp._id,
+              companyName: defaultComp.companyName || '',
+              companyCode: defaultComp.companyCode || ''
+            },
+            role: userObj.role || 'groupuser',
+            isActive: true,
+            assignedBy: null,
+            assignedAt: null
+          }];
+        }
+      } else {
+        formattedCompanies = companiesToMap.map(comp => {
+          // Handle both populated and non-populated companyId
+          let compId = comp.companyId;
+          if (typeof compId === 'object' && compId._id) {
+            compId = compId._id;
+          }
+          
+          // Get company name and code - check if populated or need to fetch
+          let companyName = '';
+          let companyCode = '';
+          
+          if (typeof comp.companyId === 'object' && comp.companyId?.companyName) {
+            // Already populated
+            companyName = comp.companyId.companyName;
+            companyCode = comp.companyId.companyCode || '';
+          } else if (compId && mongoose.Types.ObjectId.isValid(compId)) {
+            // Not populated, but we have the ID - fetch it from companies array
+            const companyDoc = companies.find(c => c._id.toString() === compId.toString());
+            if (companyDoc) {
+              companyName = companyDoc.companyName || '';
+              companyCode = companyDoc.companyCode || '';
+            }
+          }
+          
+          return {
+            companyId: {
+              _id: compId,
+              companyName: companyName,
+              companyCode: companyCode
+            },
+            role: comp.role || userObj.role || 'groupuser',
+            isActive: comp.isActive !== undefined ? comp.isActive : true,
+            assignedBy: comp.assignedBy || null,
+            assignedAt: comp.assignedAt || null
+          };
+        });
+      }
+      
+      // Determine primaryGroup (first active group with valid groupId)
+      let primaryGroup = null;
+      if (formattedGroups.length > 0) {
+        const firstGroup = formattedGroups[0];
+        if (firstGroup.groupId && typeof firstGroup.groupId === 'object' && firstGroup.groupId._id) {
+          // groupId is an object
+          primaryGroup = {
+            _id: firstGroup.groupId._id,
+            GroupGUID: firstGroup.GroupGUID || firstGroup.groupId.GroupGUID || '',
+            GroupName: firstGroup.GroupName || firstGroup.groupId.GroupName || '',
+            GroupParent: firstGroup.GroupParent || firstGroup.groupId.GroupParent || null,
+            cmpcode: firstGroup.cmpcode || firstGroup.groupId.cmpcode || '',
+            Remarks: firstGroup.Remarks || firstGroup.groupId.Remarks || '',
+            Other1: firstGroup.Other1 || firstGroup.groupId.Other1 || '',
+            Other2: firstGroup.Other2 || firstGroup.groupId.Other2 || '',
+            Other3: firstGroup.Other3 || firstGroup.groupId.Other3 || '',
+            Other4: firstGroup.Other4 || firstGroup.groupId.Other4 || ''
+          };
+        } else if (firstGroup.GroupName) {
+          // groupId is a string but we have GroupName
+          primaryGroup = {
+            _id: firstGroup.groupId || '',
+            GroupGUID: firstGroup.GroupGUID || '',
+            GroupName: firstGroup.GroupName || '',
+            GroupParent: firstGroup.GroupParent || null,
+            cmpcode: firstGroup.cmpcode || '',
+            Remarks: firstGroup.Remarks || '',
+            Other1: firstGroup.Other1 || '',
+            Other2: firstGroup.Other2 || '',
+            Other3: firstGroup.Other3 || '',
+            Other4: firstGroup.Other4 || ''
+          };
+        }
+      }
       
       return {
         _id: userObj._id,
@@ -3502,7 +3820,9 @@ export const getUsersByCompany = async (req, res) => {
         role: userObj.role,
         userName: userObj.userName,
         isActive: userObj.isActive,
+        address: userObj.address || {}, // Include address in response
         groups: formattedGroups,
+        primaryGroup: primaryGroup,
         hierarchy: {
           parentUser: parentUserPopulated ? {
             _id: parentUserPopulated._id || parentUserPopulated.toString(),
@@ -3512,15 +3832,7 @@ export const getUsersByCompany = async (req, res) => {
           } : null,
           level: userObj.hierarchy?.level || null
         },
-        companies: userObj.companies.map(comp => ({
-          companyId: comp.companyId?._id || comp.companyId,
-          companyName: comp.companyId?.companyName || '',
-          companyCode: comp.companyId?.companyCode || '',
-          role: comp.role,
-          isActive: comp.isActive,
-          assignedBy: comp.assignedBy || null,
-          assignedAt: comp.assignedAt || null
-        })),
+        companies: formattedCompanies,
         createdAt: userObj.createdAt
       };
     }));
@@ -4116,10 +4428,11 @@ export const editUser = async (req, res) => {
       }
     }
 
-    // Update parent user if parentUserId is provided and create/update Group
+    // Handle parent user update
+    let parentUser = null;
     if (parentUserId) {
       // Validate that the parent user exists and is in the same company
-      const parentUser = await User.findOne({
+      parentUser = await User.findOne({
         _id: parentUserId,
         'companies.companyId': companyId,
         'companies.isActive': true,
@@ -4227,7 +4540,7 @@ export const editUser = async (req, res) => {
         }
       }
 
-      // Update groups array with the found/created group
+      // Update groups array with the found/created group (when parentUserId is provided)
       if (foundGroupId) {
         const groupIndex = userToEdit.groups.findIndex(
           g => g.groupId && g.groupId.toString() === foundGroupId.toString()
@@ -4251,7 +4564,7 @@ export const editUser = async (req, res) => {
             assignedAt: new Date()
           });
         } else {
-          // Update existing group in groups array
+          // Update existing group in groups array - ALWAYS update if groupId is provided
           userToEdit.groups[groupIndex] = {
             ...userToEdit.groups[groupIndex],
             groupId: foundGroupId,
@@ -4270,14 +4583,67 @@ export const editUser = async (req, res) => {
           };
         }
       }
-    } else {
-      // If parentUserId is not provided, clear hierarchy
-      userToEdit.hierarchy.parentUserId = null;
-      userToEdit.hierarchy.parentUserName = null;
-      userToEdit.hierarchy.parentUserRole = null;
-      userToEdit.hierarchy.parentGroupGUID = null;
-      // Clear groups array
-      userToEdit.groups = [];
+    } else if (parentUserId === null || parentUserId === undefined || parentUserId === '') {
+      // If parentUserId is explicitly cleared/not provided, check if we should clear hierarchy
+      // Only clear if groupId/groupGUID is also not provided
+      if (!groupId && !groupGUID) {
+        userToEdit.hierarchy.parentUserId = null;
+        userToEdit.hierarchy.parentUserName = null;
+        userToEdit.hierarchy.parentUserRole = null;
+        userToEdit.hierarchy.parentGroupGUID = null;
+        // Clear groups array only if no group is being assigned
+        userToEdit.groups = [];
+      }
+    }
+    
+    // Handle direct group assignment (groupId/groupGUID) when parentUserId is NOT provided
+    // This handles the case where user only changes the group without changing parent user
+    // OR when user explicitly removes parent user but keeps/assigns a group
+    if ((groupId || groupGUID) && foundGroupId && !parentUserId) {
+      // Check if this group is already in the user's groups array
+      const groupIndex = userToEdit.groups.findIndex(
+        g => g.groupId && g.groupId.toString() === foundGroupId.toString()
+      );
+      
+      // Get parent user name for other4 field (from existing hierarchy if available)
+      const parentUserNameForGroup = userToEdit.hierarchy?.parentUserName || foundOther4 || '';
+      
+      if (groupIndex === -1) {
+        // Add new group to groups array
+        userToEdit.groups.push({
+          groupId: foundGroupId,
+          groupGUID: foundGroupGUID,
+          groupName: foundGroupName,
+          groupParentUser: foundGroupParent || null,
+          cmpcode: foundCmpcode,
+          remarks: foundGroupRemarks || `Group for ${name} (${role})`,
+          other1: foundOther1 || email || userToEdit.email || '',
+          other2: foundOther2 || mobile || userToEdit.mobile || '',
+          other3: foundOther3 || role || '',
+          other4: foundOther4 || parentUserNameForGroup || '',
+          assignedBy: adminId,
+          isActive: true,
+          assignedAt: new Date()
+        });
+      } else {
+        // Update existing group in groups array
+        userToEdit.groups[groupIndex] = {
+          ...userToEdit.groups[groupIndex],
+          groupId: foundGroupId,
+          groupGUID: foundGroupGUID,
+          groupName: foundGroupName,
+          groupParentUser: foundGroupParent || userToEdit.groups[groupIndex].groupParentUser,
+          cmpcode: foundCmpcode,
+          remarks: foundGroupRemarks || `Group for ${name} (${role})`,
+          other1: foundOther1 || email || userToEdit.email || '',
+          other2: foundOther2 || mobile || userToEdit.mobile || '',
+          other3: foundOther3 || role || '',
+          other4: foundOther4 || parentUserNameForGroup || '',
+          assignedBy: adminId,
+          isActive: true,
+          assignedAt: new Date()
+        };
+      }
     }
 
     await userToEdit.save();
@@ -4303,13 +4669,20 @@ export const editUser = async (req, res) => {
     const parentUserPopulated = updatedUser.hierarchy?.parentUserId;
     const parentUserName = parentUserPopulated?.name || '';
     
-    // Format groups array - ensure groupId is string, not populated object
+    // Format groups array - ensure groupId is object with GroupName for frontend compatibility (same as getUsersByCompany)
     const formattedGroups = await Promise.all((updatedUser.groups || []).map(async (group) => {
-      // Get groupId as string (not populated object)
+      // Get groupId - handle both ObjectId and string
       const groupIdValue = group.groupId;
-      const groupIdString = groupIdValue?._id 
-        ? groupIdValue._id.toString() 
-        : (groupIdValue?.toString() || groupIdValue || '');
+      let groupIdString = '';
+      if (groupIdValue) {
+        if (typeof groupIdValue === 'object' && groupIdValue._id) {
+          groupIdString = groupIdValue._id.toString();
+        } else if (typeof groupIdValue === 'object' && groupIdValue.toString) {
+          groupIdString = groupIdValue.toString();
+        } else {
+          groupIdString = groupIdValue.toString();
+        }
+      }
       
       // If groupId exists, fetch the group to get all details
       let groupDetails = null;
@@ -4317,22 +4690,170 @@ export const editUser = async (req, res) => {
         groupDetails = await Group.findById(groupIdString).lean();
       }
       
+      // Get group name - prioritize from groupDetails, then group object, then fallback
+      const groupName = groupDetails?.GroupName 
+        || group.groupName 
+        || group.GroupName 
+        || `Group for ${updatedUser.name} (${updatedUser.role})`;
+      
+      const groupGUID = groupDetails?.GroupGUID 
+        || group.groupGUID 
+        || group.GroupGUID 
+        || '';
+      
+      // Build groupId object for frontend (must have GroupName)
+      const groupIdObject = groupIdString ? {
+        _id: groupIdString,
+        GroupGUID: groupGUID,
+        GroupName: groupName,
+        GroupParent: groupDetails?.GroupParent 
+          || group.groupParentUser 
+          || group.GroupParent 
+          || (parentUserId ? parentUserId.toString() : null),
+        cmpcode: groupDetails?.cmpcode 
+          || group.cmpcode 
+          || '',
+        Remarks: groupDetails?.Remarks 
+          || group.remarks 
+          || group.Remarks 
+          || `Group for ${updatedUser.name} (${updatedUser.role})`,
+        other1: groupDetails?.other1 
+          || group.other1 
+          || updatedUser.email 
+          || '',
+        other2: groupDetails?.other2 
+          || group.other2 
+          || updatedUser.mobile 
+          || '',
+        other3: groupDetails?.other3 
+          || group.other3 
+          || updatedUser.role 
+          || '',
+        other4: groupDetails?.other4 
+          || group.other4 
+          || parentUserName 
+          || ''
+      } : null;
+      
       return {
-        groupId: groupIdString,
-        groupGUID: group.groupGUID || groupDetails?.GroupGUID || '',
-        groupName: group.groupName || groupDetails?.GroupName || '',
-        groupParentUser: group.groupParentUser || groupDetails?.GroupParent || (parentUserId ? parentUserId.toString() : null),
-        cmpcode: group.cmpcode || groupDetails?.cmpcode || '',
-        remarks: group.remarks || groupDetails?.Remarks || `Group for ${updatedUser.name} (${updatedUser.role})`,
-        other1: group.other1 || groupDetails?.other1 || updatedUser.email || '',
-        other2: group.other2 || groupDetails?.other2 || updatedUser.mobile || '',
-        other3: group.other3 || groupDetails?.other3 || updatedUser.role || '',
-        other4: group.other4 || groupDetails?.other4 || parentUserName || '',
+        groupId: groupIdObject, // Frontend expects this as object with GroupName
+        groupGUID: groupGUID,
+        GroupGUID: groupGUID,
+        groupName: groupName,
+        GroupName: groupName, // Frontend checks this directly too
+        groupParentUser: groupDetails?.GroupParent 
+          || group.groupParentUser 
+          || group.GroupParent 
+          || (parentUserId ? parentUserId.toString() : null),
+        GroupParent: groupDetails?.GroupParent 
+          || group.groupParentUser 
+          || group.GroupParent 
+          || (parentUserId ? parentUserId.toString() : null),
+        cmpcode: groupDetails?.cmpcode 
+          || group.cmpcode 
+          || '',
+        Remarks: groupDetails?.Remarks 
+          || group.remarks 
+          || group.Remarks 
+          || `Group for ${updatedUser.name} (${updatedUser.role})`,
+        Other1: groupDetails?.other1 
+          || group.other1 
+          || updatedUser.email 
+          || '',
+        Other2: groupDetails?.other2 
+          || group.other2 
+          || updatedUser.mobile 
+          || '',
+        Other3: groupDetails?.other3 
+          || group.other3 
+          || updatedUser.role 
+          || '',
+        Other4: groupDetails?.other4 
+          || group.other4 
+          || parentUserName 
+          || '',
         assignedBy: group.assignedBy || adminId,
         assignedAt: group.assignedAt || new Date(),
         isActive: group.isActive !== undefined ? group.isActive : true
       };
     }));
+    
+    // Determine primaryGroup (first active group with valid groupId)
+    let primaryGroup = null;
+    if (formattedGroups.length > 0) {
+      const firstGroup = formattedGroups[0];
+      if (firstGroup.groupId && typeof firstGroup.groupId === 'object' && firstGroup.groupId._id) {
+        // groupId is an object
+        primaryGroup = {
+          _id: firstGroup.groupId._id,
+          GroupGUID: firstGroup.GroupGUID || firstGroup.groupId.GroupGUID || '',
+          GroupName: firstGroup.GroupName || firstGroup.groupId.GroupName || '',
+          GroupParent: firstGroup.GroupParent || firstGroup.groupId.GroupParent || null,
+          cmpcode: firstGroup.cmpcode || firstGroup.groupId.cmpcode || '',
+          Remarks: firstGroup.Remarks || firstGroup.groupId.Remarks || '',
+          Other1: firstGroup.Other1 || firstGroup.groupId.Other1 || '',
+          Other2: firstGroup.Other2 || firstGroup.groupId.Other2 || '',
+          Other3: firstGroup.Other3 || firstGroup.groupId.Other3 || '',
+          Other4: firstGroup.Other4 || firstGroup.groupId.Other4 || ''
+        };
+      } else if (firstGroup.GroupName) {
+        // groupId is a string but we have GroupName
+        primaryGroup = {
+          _id: firstGroup.groupId || '',
+          GroupGUID: firstGroup.GroupGUID || '',
+          GroupName: firstGroup.GroupName || '',
+          GroupParent: firstGroup.GroupParent || null,
+          cmpcode: firstGroup.cmpcode || '',
+          Remarks: firstGroup.Remarks || '',
+          Other1: firstGroup.Other1 || '',
+          Other2: firstGroup.Other2 || '',
+          Other3: firstGroup.Other3 || '',
+          Other4: firstGroup.Other4 || ''
+        };
+      }
+    }
+    
+    // Format companies array (same as getUsersByCompany)
+    const formattedCompanies = (updatedUser.companies || []).map(comp => {
+      let compId = comp.companyId;
+      if (typeof compId === 'object' && compId._id) {
+        compId = compId._id;
+      }
+      if (typeof compId === 'object' && compId.toString) {
+        compId = compId.toString();
+      }
+      
+      let companyName = '';
+      let companyCode = '';
+      
+      if (typeof comp.companyId === 'object' && comp.companyId?.companyName) {
+        // Already populated
+        companyName = comp.companyId.companyName;
+        companyCode = comp.companyId.companyCode || '';
+      } else if (compId && mongoose.Types.ObjectId.isValid(compId)) {
+        // Not populated, fetch from populated companies
+        const companyDoc = updatedUser.companies?.find(c => {
+          const cid = c.companyId?._id || c.companyId;
+          return cid && cid.toString() === compId.toString();
+        });
+        if (companyDoc && typeof companyDoc.companyId === 'object' && companyDoc.companyId?.companyName) {
+          companyName = companyDoc.companyId.companyName;
+          companyCode = companyDoc.companyId.companyCode || '';
+        }
+      }
+      
+      return {
+        companyId: {
+          _id: compId,
+          companyName: companyName,
+          companyCode: companyCode
+        },
+        role: comp.role || updatedUser.role || 'groupuser',
+        isActive: comp.isActive !== undefined ? comp.isActive : true,
+        assignedBy: comp.assignedBy || null,
+        assignedAt: comp.assignedAt || null
+      };
+    });
     
     const responseUser = {
       _id: updatedUser._id,
@@ -4342,7 +4863,9 @@ export const editUser = async (req, res) => {
       role: updatedUser.role,
       userName: updatedUser.userName,
       isActive: updatedUser.isActive,
+      address: updatedUser.address || {}, // Include address in response
       groups: formattedGroups,
+      primaryGroup: primaryGroup, // Include primaryGroup for frontend
       hierarchy: {
         parentUser: parentUserPopulated ? {
           _id: parentUserPopulated._id || parentUserPopulated.toString(),
@@ -4352,15 +4875,7 @@ export const editUser = async (req, res) => {
         } : null,
         level: updatedUser.hierarchy?.level || null
       },
-      companies: updatedUser.companies.map(comp => ({
-        companyId: comp.companyId?._id || comp.companyId,
-        companyName: comp.companyId?.companyName || '',
-        companyCode: comp.companyId?.companyCode || '',
-        role: comp.role,
-        isActive: comp.isActive,
-        assignedBy: comp.assignedBy || null,
-        assignedAt: comp.assignedAt || null
-      }))
+      companies: formattedCompanies // Use formatted companies
     };
     
     // Only include subdealerDetails if role is subdealer and it has meaningful data

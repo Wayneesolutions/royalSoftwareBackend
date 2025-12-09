@@ -240,54 +240,90 @@ export const upsertGroupFromTally = async (req, res) => {
       });
     }
 
-    const requiredFields = ['GroupGUID', 'GroupName', 'cmpcode'];
+    // Required fields: GroupGUID, GroupName, and companyGuid (cmpcode will be auto-assigned)
+    const requiredFields = ['GroupGUID', 'GroupName', 'companyGuid'];
 
     const results = [];
 
     for (const item of payload) {
+      const groupGuid = normalizeGuid(item.GroupGUID || item.groupGUID || item.group_guid);
+      const groupName = normalizeString(item.GroupName || item.groupName || item.group_name);
+      
+      // Get companyGuid from item (required)
+      const companyGuidSource = item.companyGuid || item.guid || item.companyGUID || item.GUID;
+      const companyGuid = normalizeGuid(companyGuidSource);
+      
       // Validate required fields
-      const missingFields = requiredFields.filter((field) => isBlank(item[field]));
-
-      if (missingFields.length > 0) {
+      if (!groupGuid) {
         results.push({
           GroupGUID: normalizeString(item.GroupGUID),
           GroupName: normalizeString(item.GroupName),
           success: false,
-          message: `Missing required fields: ${missingFields.join(', ')}`,
-          error: 'MISSING_FIELDS',
+          message: 'GroupGUID is required',
+          error: 'MISSING_GROUPGUID',
         });
         continue;
       }
 
-      const groupGuid = normalizeGuid(item.GroupGUID || item.groupGUID || item.group_guid);
-      const groupName = normalizeString(item.GroupName || item.groupName || item.group_name);
-      const cmpcode = normalizeString(item.cmpcode || item.cmpCode || item.companyCode);
-      const groupParent = normalizeString(item.GroupParent || item.groupParent || item.group_parent) || null;
-      const remarks = normalizeString(item.Remarks || item.remarks);
-      const other1 = normalizeString(item.Other1 || item.other1);
-      const other2 = normalizeString(item.Other2 || item.other2);
-      const other3 = normalizeString(item.Other3 || item.other3);
-      const other4 = normalizeString(item.Other4 || item.other4);
+      if (!groupName) {
+        results.push({
+          GroupGUID: groupGuid,
+          GroupName: normalizeString(item.GroupName),
+          success: false,
+          message: 'GroupName is required',
+          error: 'MISSING_GROUPNAME',
+        });
+        continue;
+      }
 
-      if (!groupGuid || !groupName || !cmpcode) {
+      if (!companyGuid) {
         results.push({
           GroupGUID: groupGuid,
           GroupName: groupName,
           success: false,
-          message: 'GroupGUID, GroupName, and cmpcode are required',
-          error: 'MISSING_REQUIRED_FIELDS',
+          message: 'companyGuid is required (cmpcode will be auto-assigned from company)',
+          error: 'MISSING_COMPANYGUID',
         });
         continue;
       }
 
-      // Try to find company by cmpcode (optional, for linking)
+      // Find company by GUID (required - cmpcode will be derived from company)
+      let company = null;
       let companyId = null;
-      if (cmpcode) {
-        const company = await Company.findOne({ companyCode: cmpcode.toUpperCase() });
-        if (company) {
-          companyId = company._id;
-        }
+      let cmpcode = null;
+      
+      // Try to find company by GUID
+      company = await Company.findOne({ guid: companyGuid });
+      if (!company) {
+        // Try case-insensitive search
+        company = await Company.findOne({
+          guid: { $regex: new RegExp(`^${companyGuid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
+        });
       }
+      
+      if (!company) {
+        results.push({
+          GroupGUID: groupGuid,
+          GroupName: groupName,
+          companyGuid: companyGuid,
+          success: false,
+          message: `Company not found for GUID: ${companyGuid}. Please ensure the company is registered in the system with this GUID.`,
+          error: 'COMPANY_NOT_FOUND',
+        });
+        continue;
+      }
+
+      // Get companyId and cmpcode from found company
+      companyId = company._id;
+      cmpcode = company.companyCode; // Auto-assign cmpcode from company
+
+      const groupParent = normalizeString(item.GroupParent || item.groupParent || item.group_parent) || null;
+      const remarks = item.Remarks !== undefined || item.remarks !== undefined ? normalizeString(item.Remarks || item.remarks) : undefined;
+      // Handle Other1-Other4: save them if provided, even if empty string
+      const other1 = item.Other1 !== undefined || item.other1 !== undefined ? normalizeString(item.Other1 || item.other1) : undefined;
+      const other2 = item.Other2 !== undefined || item.other2 !== undefined ? normalizeString(item.Other2 || item.other2) : undefined;
+      const other3 = item.Other3 !== undefined || item.other3 !== undefined ? normalizeString(item.Other3 || item.other3) : undefined;
+      const other4 = item.Other4 !== undefined || item.other4 !== undefined ? normalizeString(item.Other4 || item.other4) : undefined;
 
       // Check if group already exists
       const existingGroup = await Group.findOne({
@@ -309,21 +345,21 @@ export const upsertGroupFromTally = async (req, res) => {
         updates.tallySyncStatus = 'synced';
         updates.tallySyncAt = new Date();
         
-        // Only update optional fields if they are provided and different
-        if (remarks !== undefined && remarks !== null && remarks !== '' && remarks !== existingGroup.Remarks) {
-          updates.Remarks = remarks;
+        // Update optional fields if they are provided (even if empty string)
+        if (remarks !== undefined) {
+          updates.Remarks = remarks || null;
         }
-        if (other1 !== undefined && other1 !== null && other1 !== '' && other1 !== existingGroup.other1) {
-          updates.other1 = other1;
+        if (other1 !== undefined) {
+          updates.other1 = other1 || null;
         }
-        if (other2 !== undefined && other2 !== null && other2 !== '' && other2 !== existingGroup.other2) {
-          updates.other2 = other2;
+        if (other2 !== undefined) {
+          updates.other2 = other2 || null;
         }
-        if (other3 !== undefined && other3 !== null && other3 !== '' && other3 !== existingGroup.other3) {
-          updates.other3 = other3;
+        if (other3 !== undefined) {
+          updates.other3 = other3 || null;
         }
-        if (other4 !== undefined && other4 !== null && other4 !== '' && other4 !== existingGroup.other4) {
-          updates.other4 = other4;
+        if (other4 !== undefined) {
+          updates.other4 = other4 || null;
         }
 
         if (companyId) {
@@ -351,29 +387,37 @@ export const upsertGroupFromTally = async (req, res) => {
             message: 'Group already up to date',
           });
         }
-
-        results.push({
-          success: true,
-          group: updatedGroup.toObject(),
-          message: 'Group updated successfully',
-        });
       } else {
         // Create new group
         try {
-          const newGroup = await Group.create({
+          const newGroupData = {
             GroupGUID: groupGuid,
             GroupName: groupName,
             GroupParent: groupParent,
             cmpcode: cmpcode,
-            Remarks: remarks,
-            other1: other1,
-            other2: other2,
-            other3: other3,
-            other4: other4,
             companyId: companyId,
             tallySyncStatus: 'synced',
             tallySyncAt: new Date(),
-          });
+          };
+          
+          // Add optional fields only if they are provided
+          if (remarks !== undefined) {
+            newGroupData.Remarks = remarks || null;
+          }
+          if (other1 !== undefined) {
+            newGroupData.other1 = other1 || null;
+          }
+          if (other2 !== undefined) {
+            newGroupData.other2 = other2 || null;
+          }
+          if (other3 !== undefined) {
+            newGroupData.other3 = other3 || null;
+          }
+          if (other4 !== undefined) {
+            newGroupData.other4 = other4 || null;
+          }
+          
+          const newGroup = await Group.create(newGroupData);
 
           results.push({
             success: true,
@@ -393,14 +437,26 @@ export const upsertGroupFromTally = async (req, res) => {
               const updates = {
                 GroupName: groupName,
                 GroupParent: groupParent,
-                Remarks: remarks !== undefined && remarks !== null ? remarks : raceConditionGroup.Remarks,
-                other1: other1 !== undefined && other1 !== null ? other1 : raceConditionGroup.other1,
-                other2: other2 !== undefined && other2 !== null ? other2 : raceConditionGroup.other2,
-                other3: other3 !== undefined && other3 !== null ? other3 : raceConditionGroup.other3,
-                other4: other4 !== undefined && other4 !== null ? other4 : raceConditionGroup.other4,
                 tallySyncStatus: 'synced',
                 tallySyncAt: new Date(),
               };
+              
+              // Add optional fields if provided
+              if (remarks !== undefined) {
+                updates.Remarks = remarks || null;
+              }
+              if (other1 !== undefined) {
+                updates.other1 = other1 || null;
+              }
+              if (other2 !== undefined) {
+                updates.other2 = other2 || null;
+              }
+              if (other3 !== undefined) {
+                updates.other3 = other3 || null;
+              }
+              if (other4 !== undefined) {
+                updates.other4 = other4 || null;
+              }
 
               if (companyId) {
                 updates.companyId = companyId;
@@ -480,7 +536,6 @@ export const updateGroupFromTally = async (req, res) => {
 
     for (const item of payload) {
       const groupGuid = normalizeGuid(item.GroupGUID || item.groupGUID || item.group_guid);
-      const cmpcode = normalizeString(item.cmpcode || item.cmpCode || item.companyCode);
 
       if (!groupGuid) {
         results.push({
@@ -491,13 +546,57 @@ export const updateGroupFromTally = async (req, res) => {
         continue;
       }
 
-      const { group, error, message } = await findGroupByGuid(groupGuid, cmpcode);
-      if (!group) {
+      // Get companyGuid from item (required)
+      const companyGuidSource = item.companyGuid || item.guid || item.companyGUID || item.GUID;
+      const companyGuid = normalizeGuid(companyGuidSource);
+      
+      if (!companyGuid) {
         results.push({
           GroupGUID: groupGuid,
           success: false,
-          message: message || 'Group not found for provided GroupGUID.',
-          error: error || 'GROUP_NOT_FOUND',
+          message: 'companyGuid is required to identify the group (cmpcode will be auto-assigned from company)',
+          error: 'MISSING_COMPANYGUID',
+        });
+        continue;
+      }
+
+      // Find company by GUID to get cmpcode
+      let company = await Company.findOne({ guid: companyGuid });
+      if (!company) {
+        // Try case-insensitive search
+        company = await Company.findOne({
+          guid: { $regex: new RegExp(`^${companyGuid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
+        });
+      }
+      
+      if (!company) {
+        results.push({
+          GroupGUID: groupGuid,
+          companyGuid: companyGuid,
+          success: false,
+          message: `Company not found for GUID: ${companyGuid}`,
+          error: 'COMPANY_NOT_FOUND',
+        });
+        continue;
+      }
+
+      // Get cmpcode from company (auto-assigned)
+      const cmpcode = company.companyCode;
+
+      // Find the group using GroupGUID and cmpcode
+      const group = await Group.findOne({
+        GroupGUID: groupGuid,
+        cmpcode: cmpcode,
+      });
+
+      if (!group) {
+        results.push({
+          GroupGUID: groupGuid,
+          companyGuid: companyGuid,
+          cmpcode: cmpcode,
+          success: false,
+          message: `Group not found with GroupGUID ${groupGuid} and cmpcode ${cmpcode}`,
+          error: 'GROUP_NOT_FOUND',
         });
         continue;
       }
@@ -507,13 +606,26 @@ export const updateGroupFromTally = async (req, res) => {
       if (!isBlank(item.GroupName || item.groupName)) {
         updates.GroupName = normalizeString(item.GroupName || item.groupName);
       }
-      if (item.GroupParent !== undefined || item.groupParent !== undefined) {
-        updates.GroupParent = normalizeString(item.GroupParent || item.groupParent) || null;
-      }
-      if (!isBlank(item.cmpcode || item.cmpCode || item.companyCode)) {
-        const newCmpcode = normalizeString(item.cmpcode || item.cmpCode || item.companyCode);
-        if (newCmpcode !== group.cmpcode) {
-          // Check for duplicate
+      // GroupParent is not included in the update payload - removed per requirements
+      
+      // Note: cmpcode is auto-assigned from company, so it should not be changed directly
+      // If companyGuid changes in the update request, we need to find the new company and update cmpcode accordingly
+      const newCompanyGuidSource = item.companyGuid || item.guid || item.companyGUID || item.GUID;
+      const newCompanyGuid = normalizeGuid(newCompanyGuidSource);
+      
+      // If a new companyGuid is provided and it's different from the current one, update company and cmpcode
+      if (newCompanyGuid && newCompanyGuid !== companyGuid) {
+        // Company is being changed - find new company
+        let newCompany = await Company.findOne({ guid: newCompanyGuid });
+        if (!newCompany) {
+          newCompany = await Company.findOne({
+            guid: { $regex: new RegExp(`^${newCompanyGuid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
+          });
+        }
+        
+        if (newCompany) {
+          const newCmpcode = newCompany.companyCode;
+          // Check for duplicate group with new cmpcode
           const duplicate = await Group.findOne({
             GroupGUID: group.GroupGUID,
             cmpcode: newCmpcode,
@@ -529,6 +641,15 @@ export const updateGroupFromTally = async (req, res) => {
             continue;
           }
           updates.cmpcode = newCmpcode;
+          updates.companyId = newCompany._id;
+        } else {
+          results.push({
+            GroupGUID: groupGuid,
+            success: false,
+            message: `New company not found for GUID: ${newCompanyGuid}`,
+            error: 'COMPANY_NOT_FOUND',
+          });
+          continue;
         }
       }
       if (item.Remarks !== undefined || item.remarks !== undefined) {
@@ -547,12 +668,9 @@ export const updateGroupFromTally = async (req, res) => {
         updates.other4 = normalizeString(item.Other4 || item.other4);
       }
 
-      // Update company link if cmpcode changes
-      if (updates.cmpcode) {
-        const company = await Company.findOne({ companyCode: updates.cmpcode.toUpperCase() });
-        if (company) {
-          updates.companyId = company._id;
-        }
+      // Update company link (always set from found company)
+      if (!updates.companyId) {
+        updates.companyId = company._id;
       }
 
       updates.tallySyncStatus = 'synced';
