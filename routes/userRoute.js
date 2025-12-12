@@ -5,7 +5,8 @@ import {
   getUserProfile,
   updateUserProfile,
   deleteUser,
-  switchCompany
+  switchCompany,
+  getSubDealersByDealer
 } from '../controllres/userController.js'
 import { requireAuth, authorizeRoles } from '../middleware/authMiddleware.js'
 
@@ -35,5 +36,8 @@ userRoute.put('/profile', requireAuth, updateUserProfile)
 
 // Delete user (accessible by admin and superadmin only)
 userRoute.delete('/delete/:userId', requireAuth, authorizeRoles(['admin', 'superadmin']), deleteUser)
+
+// Get subdealers by dealer ID (accessible by all authenticated users for order creation)
+userRoute.get('/subdealers/by-dealer/:dealerId', requireAuth, getSubDealersByDealer)
 
 export default userRoute

@@ -234,52 +234,10 @@ export const getSubDealers = async (req, res) => {
     console.log('getSubDealers - Company ID:', companyId);
     console.log('getSubDealers - Dealer ID:', dealerId);
 
-    // Get dealer's groupId from Ledger model (dealers are stored in Ledger)
-    let dealerGroupId = null;
-    try {
-      const dealer = await Ledger.findById(dealerId).lean();
-      if (dealer && dealer.groupId) {
-        dealerGroupId = dealer.groupId;
-        console.log('getSubDealers - Dealer groupId:', dealerGroupId);
-      } else {
-        // If dealer not found in Ledger, try User model (for backward compatibility)
-        const dealerUser = await User.findById(dealerId).lean();
-        if (dealerUser && dealerUser.groups && dealerUser.groups.length > 0) {
-          // Get first active group
-          const activeGroup = dealerUser.groups.find((g) => g.isActive);
-          if (activeGroup && activeGroup.groupId) {
-            dealerGroupId = typeof activeGroup.groupId === 'object' 
-              ? activeGroup.groupId._id 
-              : activeGroup.groupId;
-            console.log('getSubDealers - Dealer groupId from User model:', dealerGroupId);
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Error fetching dealer groupId:', error);
-    }
-
-    if (!dealerGroupId) {
-      console.log('getSubDealers - No groupId found for dealer, returning empty list');
-      return res.json({
-        success: true,
-        data: {
-          subDealers: [],
-          pagination: {
-            currentPage: parseInt(page),
-            totalPages: 0,
-            totalSubDealers: 0,
-            hasNext: false,
-            hasPrev: false
-          }
-        }
-      });
-    }
-
-    // Build query for SubDealer model - filter by groupId and companyId
-    // Include subdealers created by admin (same groupId) and subdealers created by dealer
+    // Build query for SubDealer model - filter by createdBy (dealer who created them) and companyId
+    // Each dealer/ledger should only see the subdealers they created
     const query = {
-      groupId: dealerGroupId,
+      createdBy: dealerId,
       companyId: companyId,
       isActive: true
     };
@@ -360,37 +318,10 @@ export const getSubDealerById = async (req, res) => {
     const dealerId = req.user.userId;
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
 
-    // Get dealer's groupId
-    let dealerGroupId = null;
-    try {
-      const dealer = await Ledger.findById(dealerId).lean();
-      if (dealer && dealer.groupId) {
-        dealerGroupId = dealer.groupId;
-      } else {
-        const dealerUser = await User.findById(dealerId).lean();
-        if (dealerUser && dealerUser.groups && dealerUser.groups.length > 0) {
-          const activeGroup = dealerUser.groups.find((g) => g.isActive);
-          if (activeGroup && activeGroup.groupId) {
-            dealerGroupId = typeof activeGroup.groupId === 'object' 
-              ? activeGroup.groupId._id 
-              : activeGroup.groupId;
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Error fetching dealer groupId:', error);
-    }
-
-    if (!dealerGroupId) {
-      return res.status(404).json({
-        success: false,
-        message: 'Dealer group not found'
-      });
-    }
-
+    // Check if subdealer exists and was created by this dealer
     const subDealer = await SubDealer.findOne({
       _id: subDealerId,
-      groupId: dealerGroupId,
+      createdBy: dealerId,
       companyId: companyId,
       isActive: true
     })
@@ -465,34 +396,6 @@ export const updateSubDealer = async (req, res) => {
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
     const updateData = req.body;
 
-    // Get dealer's groupId
-    let dealerGroupId = null;
-    try {
-      const dealer = await Ledger.findById(dealerId).lean();
-      if (dealer && dealer.groupId) {
-        dealerGroupId = dealer.groupId;
-      } else {
-        const dealerUser = await User.findById(dealerId).lean();
-        if (dealerUser && dealerUser.groups && dealerUser.groups.length > 0) {
-          const activeGroup = dealerUser.groups.find((g) => g.isActive);
-          if (activeGroup && activeGroup.groupId) {
-            dealerGroupId = typeof activeGroup.groupId === 'object' 
-              ? activeGroup.groupId._id 
-              : activeGroup.groupId;
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Error fetching dealer groupId:', error);
-    }
-
-    if (!dealerGroupId) {
-      return res.status(404).json({
-        success: false,
-        message: 'Dealer group not found'
-      });
-    }
-
     // Map frontend fields to SubDealer model fields
     const subDealerUpdateData = {};
     if (updateData.SDName !== undefined) subDealerUpdateData.SDName = updateData.SDName;
@@ -524,10 +427,11 @@ export const updateSubDealer = async (req, res) => {
 
     subDealerUpdateData.updatedBy = dealerId;
 
+    // Only allow updating subdealers created by this dealer
     const subDealer = await SubDealer.findOneAndUpdate(
       {
         _id: subDealerId,
-        groupId: dealerGroupId,
+        createdBy: dealerId,
         companyId: companyId,
         isActive: true
       },
@@ -590,38 +494,11 @@ export const deactivateSubDealer = async (req, res) => {
     const dealerId = req.user.userId;
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
 
-    // Get dealer's groupId
-    let dealerGroupId = null;
-    try {
-      const dealer = await Ledger.findById(dealerId).lean();
-      if (dealer && dealer.groupId) {
-        dealerGroupId = dealer.groupId;
-      } else {
-        const dealerUser = await User.findById(dealerId).lean();
-        if (dealerUser && dealerUser.groups && dealerUser.groups.length > 0) {
-          const activeGroup = dealerUser.groups.find((g) => g.isActive);
-          if (activeGroup && activeGroup.groupId) {
-            dealerGroupId = typeof activeGroup.groupId === 'object' 
-              ? activeGroup.groupId._id 
-              : activeGroup.groupId;
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Error fetching dealer groupId:', error);
-    }
-
-    if (!dealerGroupId) {
-      return res.status(404).json({
-        success: false,
-        message: 'Dealer group not found'
-      });
-    }
-
+    // Only allow deactivating subdealers created by this dealer
     const subDealer = await SubDealer.findOneAndUpdate(
       {
         _id: subDealerId,
-        groupId: dealerGroupId,
+        createdBy: dealerId,
         companyId: companyId,
         isActive: true
       },

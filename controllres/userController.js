@@ -1,5 +1,6 @@
 import User from '../models/user/userModel.js'
 import Company from '../models/company/companyModel.js'
+import SubDealer from '../models/subdealer/subdealerModel.js'
 
 /**
  * @swagger
@@ -756,3 +757,105 @@ export const deleteUser = async (req, res) => {
     })
   }
 }
+
+/**
+ * @swagger
+ * /api/v1/user/subdealers/by-dealer/{dealerId}:
+ *   get:
+ *     summary: Get subdealers created by a specific dealer
+ *     description: Returns all active subdealers that were created by the specified dealer. This endpoint is used in order creation/editing to show subdealers when a dealer is selected.
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: dealerId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Dealer ID (can be from Ledger or User model)
+ *     responses:
+ *       200:
+ *         description: Subdealers retrieved successfully
+ *       400:
+ *         description: Missing dealer ID
+ *       403:
+ *         description: Access denied
+ *       500:
+ *         description: Server error
+ */
+export const getSubDealersByDealer = async (req, res) => {
+  try {
+    const { dealerId } = req.params;
+    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+
+    if (!dealerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Dealer ID is required'
+      });
+    }
+
+    console.log('getSubDealersByDealer - Dealer ID:', dealerId);
+    console.log('getSubDealersByDealer - Company ID:', companyId);
+
+    // Get subdealers created by this dealer
+    const subDealers = await SubDealer.find({
+      createdBy: dealerId,
+      companyId: companyId,
+      isActive: true
+    })
+      .select('_id SDName SDType SDAddress1 SDAddress2 SDAddress3 SDState SDCountry SDPincode SDContactPerson SDMobileNo SDEmail SDGSTNType SDGSTNNumber groupId isActive createdAt')
+      .populate('groupId', 'GroupName GroupGUID')
+      .sort({ SDName: 1 })
+      .lean();
+
+    // Format subdealers for frontend compatibility
+    const formattedSubDealers = subDealers.map(subdealer => ({
+      _id: subdealer._id.toString(),
+      SDName: subdealer.SDName,
+      name: subdealer.SDName, // For backward compatibility
+      SDType: subdealer.SDType,
+      SDAddress1: subdealer.SDAddress1 || '',
+      SDAddress2: subdealer.SDAddress2 || '',
+      SDAddress3: subdealer.SDAddress3 || '',
+      SDState: subdealer.SDState || '',
+      SDCountry: subdealer.SDCountry || 'India',
+      SDPincode: subdealer.SDPincode || '',
+      SDContactPerson: subdealer.SDContactPerson || '',
+      SDMobileNo: subdealer.SDMobileNo || '',
+      mobile: subdealer.SDMobileNo || '', // For backward compatibility
+      SDEmail: subdealer.SDEmail || '',
+      email: subdealer.SDEmail || '', // For backward compatibility
+      SDGSTNType: subdealer.SDGSTNType || '',
+      SDGSTNNumber: subdealer.SDGSTNNumber || '',
+      address: {
+        street: subdealer.SDAddress1 || '',
+        city: subdealer.SDAddress2 || '',
+        state: subdealer.SDState || '',
+        pincode: subdealer.SDPincode || '',
+        country: subdealer.SDCountry || 'India',
+      },
+      groupId: subdealer.groupId,
+      isActive: subdealer.isActive,
+      createdAt: subdealer.createdAt
+    }));
+
+    console.log('getSubDealersByDealer - Found subdealers:', formattedSubDealers.length);
+
+    return res.json({
+      success: true,
+      data: {
+        subdealers: formattedSubDealers,
+        totalSubDealers: formattedSubDealers.length
+      }
+    });
+  } catch (error) {
+    console.error('Error getting subdealers by dealer:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get subdealers',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};

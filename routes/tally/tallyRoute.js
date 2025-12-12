@@ -1776,14 +1776,24 @@ tallyRoute.delete('/companies/:guid/users', deleteUsersFromTally);
  * @swagger
  * /api/v1/tally/groups:
  *   post:
- *     summary: Sync groups from Tally
+ *     summary: Sync groups from Tally with hierarchy support
  *     description: >
  *       Accepts group information pushed from Tally ERP (JSON or XML payload). Can accept a single group object or an array
  *       of multiple groups for batch processing. All groups are upserted (created or updated) into Royal Software.
  *       Groups are identified by GroupGUID and cmpcode combination.
  *       
- *       **Important:** `companyGuid` is required. The `cmpcode` will be automatically assigned from the company based on the `companyGuid`.
- *       You do not need to provide `cmpcode` - it will be derived from the company's `companyCode`.
+ *       **Important:** 
+ *       - `companyGuid` is required. The `cmpcode` will be automatically assigned from the company based on the `companyGuid`.
+ *       - You do not need to provide `cmpcode` - it will be derived from the company's `companyCode`.
+ *       - **First Group for a Company:** When creating the first group for a company, do not provide `GroupParent` or `parentGroupGUID`.
+ *         The first group will be created as a root group with `GroupParent = null`. This is the base group for the company.
+ *       - **Group Hierarchy:** For subsequent groups, you can create group hierarchy by providing `GroupParent` or `parentGroupGUID` field.
+ *         The system will:
+ *         1. Validate that the company GUID exists
+ *         2. Validate that the parent group GUID exists in the same company (if parentGroupGUID is provided)
+ *         3. Create the group with the parent relationship established, creating a group hierarchy
+ *       - A group cannot be its own parent (circular reference prevention)
+ *       - Parent group must exist in the same company (same cmpcode)
  *     tags: [Tally Groups]
  *     requestBody:
  *       required: true
@@ -1810,6 +1820,16 @@ tallyRoute.delete('/companies/:guid/users', deleteUsersFromTally);
  *                     type: string
  *                     description: Company GUID (required) - cmpcode will be auto-assigned from company
  *                     example: "COM-001"
+ *                   GroupParent:
+ *                     type: string
+ *                     nullable: true
+ *                     description: Parent Group GUID (optional) - Creates group hierarchy. Must be an existing group GUID in the same company. If provided, the system will validate that the parent group exists before creating this group. For the first group in a company, omit this field or set to null to create a root group.
+ *                     example: "GRP-PARENT-001"
+ *                   parentGroupGUID:
+ *                     type: string
+ *                     nullable: true
+ *                     description: Alternative field name for parent Group GUID (optional) - Same as GroupParent. For the first group in a company, omit this field or set to null to create a root group.
+ *                     example: "GRP-PARENT-001"
  *                   Remarks:
  *                     type: string
  *                     description: Additional remarks or notes
@@ -1842,6 +1862,16 @@ tallyRoute.delete('/companies/:guid/users', deleteUsersFromTally);
  *                     companyGuid:
  *                       type: string
  *                       description: Company GUID (required) - cmpcode will be auto-assigned from company
+ *                     GroupParent:
+ *                       type: string
+ *                       nullable: true
+ *                       description: Parent Group GUID (optional) - Creates group hierarchy. Must be an existing group GUID in the same company. For the first group in a company, omit this field or set to null to create a root group.
+ *                       example: "GRP-PARENT-001"
+ *                     parentGroupGUID:
+ *                       type: string
+ *                       nullable: true
+ *                       description: Alternative field name for parent Group GUID (optional) - Same as GroupParent. For the first group in a company, omit this field or set to null to create a root group.
+ *                       example: "GRP-PARENT-001"
  *                     Remarks:
  *                       type: string
  *                     Other1:
@@ -1909,13 +1939,18 @@ tallyRoute.post('/groups', upsertGroupFromTally);
  * @swagger
  * /api/v1/tally/groups:
  *   patch:
- *     summary: Update groups from Tally
+ *     summary: Update groups from Tally (supports hierarchy updates)
  *     description: >
  *       Accepts one or more group payloads. Each payload must include the GroupGUID and companyGuid.
  *       Only provided fields are updated; other fields remain unchanged.
  *       
- *       **Important:** `companyGuid` is required to identify the group. The `cmpcode` will be automatically 
- *       assigned from the company based on the `companyGuid`. You do not need to provide `cmpcode`.
+ *       **Important:** 
+ *       - `companyGuid` is required to identify the group. The `cmpcode` will be automatically 
+ *         assigned from the company based on the `companyGuid`. You do not need to provide `cmpcode`.
+ *       - **Group Hierarchy:** You can update group hierarchy by providing `GroupParent` or `parentGroupGUID` field.
+ *         The system will validate that the parent group GUID exists in the same company before updating.
+ *       - A group cannot be its own parent (circular reference prevention)
+ *       - Set `GroupParent` to `null` or empty string to remove parent relationship
  *     tags: [Tally Groups]
  *     requestBody:
  *       required: true
@@ -1960,6 +1995,16 @@ tallyRoute.post('/groups', upsertGroupFromTally);
  *                     companyGuid:
  *                       type: string
  *                       description: Company GUID (required) - cmpcode will be auto-assigned from company
+ *                     GroupParent:
+ *                       type: string
+ *                       nullable: true
+ *                       description: Parent Group GUID (optional) - Updates group hierarchy. Must be an existing group GUID in the same company.
+ *                       example: "GRP-PARENT-001"
+ *                     parentGroupGUID:
+ *                       type: string
+ *                       nullable: true
+ *                       description: Alternative field name for parent Group GUID (optional) - Same as GroupParent
+ *                       example: "GRP-PARENT-001"
  *                     GroupName:
  *                       type: string
  *                     Remarks:
@@ -2699,7 +2744,7 @@ tallyRoute.delete('/dealers/delete', deleteDealerFromTally);
  * @swagger
  * /api/v1/tally/subdealers:
  *   post:
- *     summary: Sync subdealers from Tally ERP
+ *     summary: Sync subdealers from Tally ERP with dealer connection support
  *     description: >
  *       Accepts subdealer information pushed from Tally ERP (JSON or XML payload) and creates or updates
  *       the corresponding subdealers inside Royal Software.
@@ -2707,6 +2752,16 @@ tallyRoute.delete('/dealers/delete', deleteDealerFromTally);
  *       **Supports both single subdealer object and array of multiple subdealers for batch processing.**
  *       - Single subdealer: Send a single JSON object
  *       - Multiple subdealers: Send an array of subdealer objects
+ *       
+ *       **Important:** 
+ *       - `companyGuid` is required. The system will validate that the company exists.
+ *       - **Dealer Connection:** You can connect a subdealer to a dealer/ledger by providing `ledgerGUID` or `LedgerGUID`.
+ *         The system will:
+ *         1. Validate that the company GUID exists
+ *         2. Validate that the ledger GUID exists in the same company (if ledgerGUID is provided)
+ *         3. Connect the subdealer to the dealer by setting `createdBy` to the ledger's ID
+ *         4. Automatically assign the subdealer to the dealer's group (if dealer has a group and no groupGUID is explicitly provided)
+ *       - If `ledgerGUID` is not provided, the subdealer will be created without a dealer connection (createdBy will be set to first admin user)
  *       
  *       Each subdealer is processed independently - success/failure of one doesn't affect others.
  *       Returns a results array with status for each subdealer processed.
@@ -2760,9 +2815,17 @@ tallyRoute.delete('/dealers/delete', deleteDealerFromTally);
  *                     type: string
  *                   SDGSTNNumber:
  *                     type: string
+ *                   ledgerGUID:
+ *                     type: string
+ *                     description: Optional - Ledger GUID of the dealer to connect this subdealer with. If provided, the system will validate that the ledger exists in the same company and connect the subdealer to the dealer. The subdealer will be assigned to the dealer's group automatically if no groupGUID is provided.
+ *                     example: "LEDGER-001"
+ *                   LedgerGUID:
+ *                     type: string
+ *                     description: Alternative field name for ledger GUID (optional) - Same as ledgerGUID
+ *                     example: "LEDGER-001"
  *                   groupGUID:
  *                     type: string
- *                     description: Group GUID to assign the subdealer to
+ *                     description: Optional - Group GUID to assign the subdealer to. If not provided and ledgerGUID is provided, the subdealer will be assigned to the dealer's group automatically.
  *                   isActive:
  *                     type: boolean
  *                     default: true
@@ -2790,8 +2853,17 @@ tallyRoute.delete('/dealers/delete', deleteDealerFromTally);
  *                       type: string
  *                     SDEmail:
  *                       type: string
+ *                     ledgerGUID:
+ *                       type: string
+ *                       description: Optional - Ledger GUID of the dealer to connect this subdealer with
+ *                       example: "LEDGER-001"
+ *                     LedgerGUID:
+ *                       type: string
+ *                       description: Alternative field name for ledger GUID (optional) - Same as ledgerGUID
+ *                       example: "LEDGER-001"
  *                     groupGUID:
  *                       type: string
+ *                       description: Optional - Group GUID to assign the subdealer to
  *                     isActive:
  *                       type: boolean
  *     responses:

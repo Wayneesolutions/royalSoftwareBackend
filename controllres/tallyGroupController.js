@@ -317,7 +317,49 @@ export const upsertGroupFromTally = async (req, res) => {
       companyId = company._id;
       cmpcode = company.companyCode; // Auto-assign cmpcode from company
 
-      const groupParent = normalizeString(item.GroupParent || item.groupParent || item.group_parent) || null;
+      // Get parent group GUID (can be provided as GroupParent, parentGroupGUID, or parentGroupGuid)
+      const parentGroupGuidSource = item.GroupParent || item.parentGroupGUID || item.parentGroupGuid || item.groupParent || item.group_parent;
+      const parentGroupGuid = normalizeGuid(parentGroupGuidSource);
+      
+      // Validate parent group GUID if provided
+      // Note: For the first group in a company, parentGroupGUID should not be provided (or be null)
+      // The first group will be created as a root group with GroupParent = null
+      let parentGroup = null;
+      if (parentGroupGuid) {
+        // Find parent group by GroupGUID and cmpcode (must be in same company)
+        const parentGroupResult = await findGroupByGuid(parentGroupGuid, cmpcode);
+        if (!parentGroupResult.group) {
+          results.push({
+            GroupGUID: groupGuid,
+            GroupName: groupName,
+            companyGuid: companyGuid,
+            parentGroupGUID: parentGroupGuid,
+            success: false,
+            message: `Parent group not found for GroupGUID: ${parentGroupGuid} with cmpcode: ${cmpcode}. Please ensure the parent group exists in the same company before creating this group.`,
+            error: 'PARENT_GROUP_NOT_FOUND',
+          });
+          continue;
+        }
+        parentGroup = parentGroupResult.group;
+        
+        // Prevent circular reference - check if parent is trying to be its own child
+        if (parentGroupGuid === groupGuid) {
+          results.push({
+            GroupGUID: groupGuid,
+            GroupName: groupName,
+            companyGuid: companyGuid,
+            parentGroupGUID: parentGroupGuid,
+            success: false,
+            message: 'A group cannot be its own parent. GroupParent cannot be the same as GroupGUID.',
+            error: 'CIRCULAR_REFERENCE',
+          });
+          continue;
+        }
+      }
+      
+      // Set GroupParent to parent group GUID (or null if not provided)
+      // If parentGroupGuid is null/undefined, this will be the first/root group for the company
+      const groupParent = parentGroupGuid || null;
       const remarks = item.Remarks !== undefined || item.remarks !== undefined ? normalizeString(item.Remarks || item.remarks) : undefined;
       // Handle Other1-Other4: save them if provided, even if empty string
       const other1 = item.Other1 !== undefined || item.other1 !== undefined ? normalizeString(item.Other1 || item.other1) : undefined;
@@ -339,7 +381,8 @@ export const upsertGroupFromTally = async (req, res) => {
         if (groupName && groupName !== existingGroup.GroupName) {
           updates.GroupName = groupName;
         }
-        if (groupParent !== undefined) {
+        // Update GroupParent if provided (validated above)
+        if (parentGroupGuid !== undefined) {
           updates.GroupParent = groupParent;
         }
         updates.tallySyncStatus = 'synced';
@@ -390,10 +433,17 @@ export const upsertGroupFromTally = async (req, res) => {
       } else {
         // Create new group
         try {
+          // Check if this is the first group for the company (helpful for messaging)
+          const existingGroupsCount = await Group.countDocuments({
+            cmpcode: cmpcode,
+            isActive: true
+          });
+          const isFirstGroup = existingGroupsCount === 0;
+          
           const newGroupData = {
             GroupGUID: groupGuid,
             GroupName: groupName,
-            GroupParent: groupParent,
+            GroupParent: groupParent, // Will be null for first/root groups
             cmpcode: cmpcode,
             companyId: companyId,
             tallySyncStatus: 'synced',
@@ -419,10 +469,22 @@ export const upsertGroupFromTally = async (req, res) => {
           
           const newGroup = await Group.create(newGroupData);
 
+          // Provide helpful message for first group or hierarchy creation
+          let successMessage = 'Group created successfully';
+          if (isFirstGroup && !groupParent) {
+            successMessage = 'First group created successfully as root group (no parent)';
+          } else if (groupParent) {
+            successMessage = `Group created successfully with parent group: ${parentGroupGuid}`;
+          } else if (isFirstGroup) {
+            successMessage = 'First group created successfully as root group';
+          }
+
           results.push({
             success: true,
             group: newGroup.toObject(),
-            message: 'Group created successfully',
+            message: successMessage,
+            isFirstGroup: isFirstGroup,
+            hasParent: !!groupParent
           });
         } catch (createError) {
           // Handle duplicate key error (race condition - group was created between check and create)
@@ -606,7 +668,47 @@ export const updateGroupFromTally = async (req, res) => {
       if (!isBlank(item.GroupName || item.groupName)) {
         updates.GroupName = normalizeString(item.GroupName || item.groupName);
       }
-      // GroupParent is not included in the update payload - removed per requirements
+      
+      // Handle GroupParent update with validation
+      const parentGroupGuidSource = item.GroupParent || item.parentGroupGUID || item.parentGroupGuid || item.groupParent || item.group_parent;
+      const parentGroupGuid = normalizeGuid(parentGroupGuidSource);
+      
+      if (parentGroupGuid !== undefined && parentGroupGuid !== null) {
+        // Validate parent group exists if provided
+        if (parentGroupGuid) {
+          // Find parent group by GroupGUID and cmpcode (must be in same company)
+          const parentGroupResult = await findGroupByGuid(parentGroupGuid, cmpcode);
+          if (!parentGroupResult.group) {
+            results.push({
+              GroupGUID: groupGuid,
+              companyGuid: companyGuid,
+              parentGroupGUID: parentGroupGuid,
+              success: false,
+              message: `Parent group not found for GroupGUID: ${parentGroupGuid} with cmpcode: ${cmpcode}. Please ensure the parent group exists in the same company.`,
+              error: 'PARENT_GROUP_NOT_FOUND',
+            });
+            continue;
+          }
+          
+          // Prevent circular reference - check if parent is trying to be its own child
+          if (parentGroupGuid === groupGuid) {
+            results.push({
+              GroupGUID: groupGuid,
+              companyGuid: companyGuid,
+              parentGroupGUID: parentGroupGuid,
+              success: false,
+              message: 'A group cannot be its own parent. GroupParent cannot be the same as GroupGUID.',
+              error: 'CIRCULAR_REFERENCE',
+            });
+            continue;
+          }
+          
+          updates.GroupParent = parentGroupGuid;
+        } else {
+          // Setting to null/empty - remove parent relationship
+          updates.GroupParent = null;
+        }
+      }
       
       // Note: cmpcode is auto-assigned from company, so it should not be changed directly
       // If companyGuid changes in the update request, we need to find the new company and update cmpcode accordingly

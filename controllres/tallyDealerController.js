@@ -499,6 +499,35 @@ export const upsertSubDealerFromTally = async (req, res) => {
         continue;
       }
 
+      // Handle ledger GUID connection (optional but recommended)
+      // If ledgerGUID is provided, validate it exists and connect subdealer to dealer
+      let ledger = null;
+      let ledgerId = null;
+      const ledgerGuidSource = item.ledgerGUID || item.LedgerGUID || item.ledgerGuid || item.ledger_guid;
+      const ledgerGuid = normalizeGuid(ledgerGuidSource);
+      
+      if (ledgerGuid) {
+        // Validate ledger exists in the same company
+        ledger = await Ledger.findOne({
+          LedgerGUID: ledgerGuid,
+          cmpcode: company.companyCode,
+          companyId: company._id,
+          isActive: true
+        });
+
+        if (!ledger) {
+          results.push({
+            SDName: sdName,
+            ledgerGUID: ledgerGuid,
+            success: false,
+            message: `Ledger not found for LedgerGUID: ${ledgerGuid} with cmpcode: ${company.companyCode}. Please ensure the ledger exists in the same company before creating this subdealer.`,
+            error: 'LEDGER_NOT_FOUND',
+          });
+          continue;
+        }
+        ledgerId = ledger._id;
+      }
+
       // Check if subdealer already exists (by name and company)
       const existingSubDealer = await SubDealer.findOne({
         SDName: sdName,
@@ -542,6 +571,7 @@ export const upsertSubDealerFromTally = async (req, res) => {
       };
 
       // Handle group assignment
+      // Priority: 1) Explicitly provided groupGUID, 2) Ledger's groupId, 3) None
       if (item.groupGUID || item.groupGuid || item.GroupGUID) {
         const { group } = await findGroupByGuid(
           item.groupGUID || item.groupGuid || item.GroupGUID,
@@ -550,10 +580,17 @@ export const upsertSubDealerFromTally = async (req, res) => {
         if (group) {
           subDealerData.groupId = group._id;
         }
+      } else if (ledger && ledger.groupId) {
+        // If no groupGUID provided but ledger has a group, use ledger's group
+        subDealerData.groupId = ledger.groupId;
       }
 
-      // Set createdBy to first admin user of the company if not provided
-      if (!subDealerData.createdBy) {
+      // Set createdBy: Priority: 1) Ledger ID (if ledgerGUID provided), 2) First admin user of the company
+      if (ledgerId) {
+        // Connect subdealer to the dealer/ledger
+        subDealerData.createdBy = ledgerId;
+      } else if (!subDealerData.createdBy) {
+        // Fallback to first admin user if no ledger connection
         const adminUser = await User.findOne({
           'companies.companyId': company._id,
           role: { $in: ['admin', 'superadmin'] },
@@ -578,11 +615,39 @@ export const upsertSubDealerFromTally = async (req, res) => {
 
       // Populate references for response
       await subDealer.populate('groupId', 'GroupGUID GroupName GroupParent');
+      
+      // Handle createdBy population - it could be a User or Ledger
+      // If it's a Ledger (ledgerId exists), populate from Ledger model
+      // Otherwise, try to populate from User model
+      if (ledgerId) {
+        // createdBy is a Ledger ID, populate from Ledger model
+        await subDealer.populate({
+          path: 'createdBy',
+          model: 'Ledger',
+          select: 'LedgerGUID LedgerName LedgerMobile Email LedgerContact'
+        });
+      } else {
+        // createdBy is a User ID, populate from User model
+        await subDealer.populate({
+          path: 'createdBy',
+          model: 'User',
+          select: 'name email mobile role'
+        });
+      }
+
+      // Provide helpful message for ledger connection
+      let successMessage = 'Subdealer created successfully';
+      if (ledgerId) {
+        successMessage = `Subdealer created successfully and connected to dealer: ${ledger.LedgerName} (${ledgerGuid})`;
+      }
 
       results.push({
         success: true,
         SDName: sdName,
         subdealer: subDealer.toObject(),
+        message: successMessage,
+        connectedToDealer: !!ledgerId,
+        ledgerGUID: ledgerGuid || null
       });
     }
 
