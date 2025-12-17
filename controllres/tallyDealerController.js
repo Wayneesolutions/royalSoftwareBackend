@@ -391,44 +391,38 @@ export const upsertDealerFromTally = async (req, res) => {
         }
       }
 
-      // Set createdBy to first admin user of the company if not provided
-      // This is REQUIRED for Ledger model validation
-      if (!dealerData.createdBy) {
+      // Handle createdBy if provided in payload (optional)
+      // If provided, try to resolve it from user ID, email, or mobile
+      if (item.createdBy || item.createdByEmail || item.createdByMobile) {
         try {
-          const adminUser = await User.findOne({
-            'companies.companyId': company._id,
-            role: { $in: ['admin', 'superadmin'] },
-            isActive: true,
-          });
-          if (adminUser) {
-            dealerData.createdBy = adminUser._id;
-          } else {
-            // Fallback: try to find any active user in the company
-            const anyUser = await User.findOne({
-              'companies.companyId': company._id,
-              isActive: true,
-            });
-            if (anyUser) {
-              dealerData.createdBy = anyUser._id;
-            } else {
-              // If still no user found, this is a critical error
-              results.push({
-                LedgerGUID: ledgerGuid,
-                success: false,
-                message: 'No active user found in company to assign as creator. Please ensure at least one user exists in the company.',
-                error: 'NO_CREATOR_USER_FOUND',
-              });
-              continue;
+          let creatorUser = null;
+
+          if (item.createdBy) {
+            // Try as ObjectId first
+            if (mongoose.Types.ObjectId.isValid(item.createdBy)) {
+              creatorUser = await User.findById(item.createdBy);
             }
           }
+          if (!creatorUser && item.createdByEmail) {
+            creatorUser = await User.findOne({ 
+              email: normalizeString(item.createdByEmail).toLowerCase(),
+              isActive: true 
+            });
+          }
+          if (!creatorUser && item.createdByMobile) {
+            creatorUser = await User.findOne({ 
+              mobile: normalizeString(item.createdByMobile),
+              isActive: true 
+            });
+          }
+
+          if (creatorUser) {
+            dealerData.createdBy = creatorUser._id;
+          }
+          // If not found, silently skip - createdBy is optional
         } catch (userError) {
-          results.push({
-            LedgerGUID: ledgerGuid,
-            success: false,
-            message: `Failed to find creator user: ${userError.message}`,
-            error: 'CREATOR_USER_LOOKUP_FAILED',
-          });
-          continue;
+          // Log but don't fail - createdBy is optional
+          console.warn(`Failed to resolve createdBy user: ${userError.message}`);
         }
       }
 
@@ -437,7 +431,10 @@ export const upsertDealerFromTally = async (req, res) => {
         if (existingDealer) {
           // Update existing dealer
           Object.assign(existingDealer, dealerData);
-          existingDealer.updatedBy = dealerData.createdBy;
+          // Only set updatedBy if createdBy was provided
+          if (dealerData.createdBy) {
+            existingDealer.updatedBy = dealerData.createdBy;
+          }
           await existingDealer.save();
           dealer = existingDealer;
         } else {
