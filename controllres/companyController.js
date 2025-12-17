@@ -453,11 +453,47 @@ export const getCompanyById = async (req, res) => {
 // Update Company
 export const updateCompany = async (req, res) => {
     try {
-        const company = await Company.findByIdAndUpdate(req.params.id, req.body, { new: true });
-        if (!company) return res.json({ success: false, message: "Company not found" });
-        res.json({ success: true, data:company });
+        const { id } = req.params;
+        const updateData = { ...req.body };
+
+        // If guid is being set to null or empty, remove it from update to preserve existing value
+        if (updateData.guid === null || updateData.guid === '' || updateData.guid === undefined) {
+            delete updateData.guid;
+        }
+
+        // If guid is provided as a number (from frontend), convert to string
+        if (updateData.guid !== undefined && typeof updateData.guid === 'number') {
+            updateData.guid = String(updateData.guid);
+        }
+
+        const company = await Company.findByIdAndUpdate(id, updateData, { 
+            new: true,
+            runValidators: true 
+        });
+        
+        if (!company) {
+            return res.json({ success: false, message: "Company not found" });
+        }
+        
+        res.json({ success: true, data: company });
     } catch (error) {
-        res.json({ success: false, message: error.message });
+        // Handle duplicate key errors
+        if (error.code === 11000 || (error.name === 'MongoServerError' && error.code === 11000)) {
+            const field = error.keyPattern ? Object.keys(error.keyPattern)[0] : 'field';
+            return res.status(400).json({ 
+                success: false, 
+                message: `Duplicate ${field}: A company with this ${field} already exists`,
+                error: 'DUPLICATE_ENTRY',
+                field
+            });
+        }
+        
+        console.error('Error updating company:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: error.message || 'Failed to update company',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
     }
 };
 

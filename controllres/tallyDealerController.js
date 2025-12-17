@@ -305,43 +305,75 @@ export const upsertDealerFromTally = async (req, res) => {
         continue;
       }
 
-      // Check if dealer already exists - use multiple query strategies for robustness
-      let existingDealer = await Ledger.findOne({
+      // Simple check: if dealer exists with this LedgerGUID for this company, return error
+      console.log('Checking for existing dealer:', {
         LedgerGUID: ledgerGuid,
+        companyId: company._id,
         cmpcode: company.companyCode,
+        companyGuid: company.guid
       });
 
-      // If not found, try case-insensitive search and also check by companyId
-      if (!existingDealer) {
-        existingDealer = await Ledger.findOne({
-          LedgerGUID: { $regex: new RegExp(`^${ledgerGuid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
-          $or: [
-            { cmpcode: company.companyCode },
-            { cmpcode: { $regex: new RegExp(`^${company.companyCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } },
-            { companyId: company._id }
-          ]
-        });
+      const existingDealer = await Ledger.findOne({
+        LedgerGUID: ledgerGuid,
+        $or: [
+          { companyId: company._id },
+          { cmpcode: company.companyCode }
+        ]
+      });
+
+      console.log('Existing dealer found:', existingDealer ? {
+        _id: existingDealer._id,
+        LedgerGUID: existingDealer.LedgerGUID,
+        LedgerName: existingDealer.LedgerName,
+        companyId: existingDealer.companyId,
+        cmpcode: existingDealer.cmpcode,
+        isActive: existingDealer.isActive
+      } : null);
+
+      // Also check all dealers with this LedgerGUID (for debugging)
+      const allDealersWithGuid = await Ledger.find({ LedgerGUID: ledgerGuid });
+      console.log(`Total dealers found with LedgerGUID "${ledgerGuid}":`, allDealersWithGuid.length);
+      if (allDealersWithGuid.length > 0) {
+        console.log('All dealers with this GUID:', allDealersWithGuid.map(d => ({
+          _id: d._id,
+          LedgerGUID: d.LedgerGUID,
+          companyId: d.companyId,
+          cmpcode: d.cmpcode,
+          isActive: d.isActive
+        })));
       }
 
-      // Only check limit if creating a new dealer (not updating existing)
-      if (!existingDealer) {
-        try {
-          const { checkCompanyMemberLimit } = await import('./adminController.js');
-          const limitCheck = await checkCompanyMemberLimit(company._id, 1);
-          if (!limitCheck.allowed) {
-            results.push({
-              LedgerGUID: ledgerGuid,
-              success: false,
-              message: limitCheck.message,
-              error: 'MEMBER_LIMIT_EXCEEDED',
-            });
-            continue;
-          }
-        } catch (limitError) {
-          // If limit check fails, log but allow creation to proceed
-          // This prevents the entire batch from failing due to limit check issues
-          console.warn(`Failed to check company member limit for company ${company._id}:`, limitError.message);
+      if (existingDealer) {
+        results.push({
+          LedgerGUID: ledgerGuid,
+          success: false,
+          message: `Dealer with LedgerGUID "${ledgerGuid}" already exists for this company`,
+          error: 'DEALER_ALREADY_EXISTS',
+        });
+        continue;
+      }
+
+      // Check member limit before creating
+      try {
+        const { checkCompanyMemberLimit } = await import('./adminController.js');
+        const limitCheck = await checkCompanyMemberLimit(company._id, 1);
+        if (!limitCheck.allowed) {
+          results.push({
+            LedgerGUID: ledgerGuid,
+            success: false,
+            message: limitCheck.message,
+            error: 'MEMBER_LIMIT_EXCEEDED',
+          });
+          continue;
         }
+      } catch (limitError) {
+        results.push({
+          LedgerGUID: ledgerGuid,
+          success: false,
+          message: `Failed to check company member limit: ${limitError.message}`,
+          error: 'LIMIT_CHECK_FAILED',
+        });
+        continue;
       }
 
       // Prepare dealer data - simplified fields only
@@ -387,19 +419,31 @@ export const upsertDealerFromTally = async (req, res) => {
         dealerData.password = await bcrypt.hash(dealerData.password, 10);
       }
 
-      // Handle group assignment
+      // Handle group assignment - if groupGUID provided, group must exist
       if (item.groupGUID || item.groupGuid || item.GroupGUID) {
         try {
-          const { group } = await findGroupByGuid(
+          const { group, error: groupError, message: groupMessage } = await findGroupByGuid(
             item.groupGUID || item.groupGuid || item.GroupGUID,
             company.companyCode
           );
-          if (group) {
-            dealerData.groupId = group._id;
+          if (!group) {
+            results.push({
+              LedgerGUID: ledgerGuid,
+              success: false,
+              message: groupMessage || `Group not found for GUID: ${item.groupGUID || item.groupGuid || item.GroupGUID}`,
+              error: groupError || 'GROUP_NOT_FOUND',
+            });
+            continue;
           }
+          dealerData.groupId = group._id;
         } catch (groupError) {
-          // Log but don't fail - group assignment is optional
-          console.warn(`Failed to find group for GUID: ${item.groupGUID || item.groupGuid || item.GroupGUID}`, groupError.message);
+          results.push({
+            LedgerGUID: ledgerGuid,
+            success: false,
+            message: `Failed to find group: ${groupError.message}`,
+            error: 'GROUP_LOOKUP_FAILED',
+          });
+          continue;
         }
       }
 
@@ -438,51 +482,24 @@ export const upsertDealerFromTally = async (req, res) => {
         }
       }
 
+      // Create new dealer (only if not exists)
+      console.log('Attempting to create dealer with data:', {
+        LedgerGUID: dealerData.LedgerGUID,
+        LedgerName: dealerData.LedgerName,
+        companyId: dealerData.companyId,
+        cmpcode: dealerData.cmpcode,
+        groupId: dealerData.groupId
+      });
+
       let dealer;
       try {
-        if (existingDealer) {
-          // Update existing dealer
-          Object.assign(existingDealer, dealerData);
-          // Only set updatedBy if createdBy was provided
-          if (dealerData.createdBy) {
-            existingDealer.updatedBy = dealerData.createdBy;
-          }
-          await existingDealer.save();
-          dealer = existingDealer;
-        } else {
-          // Try to create new dealer, but handle duplicate entry as update
-          try {
-            dealer = await Ledger.create(dealerData);
-          } catch (createError) {
-            // If duplicate entry error, treat it as an update scenario
-            if (createError.code === 11000 || createError.name === 'MongoServerError' && createError.code === 11000) {
-              // Duplicate detected - find and update the existing dealer
-              existingDealer = await Ledger.findOne({
-                LedgerGUID: ledgerGuid,
-                $or: [
-                  { cmpcode: company.companyCode },
-                  { companyId: company._id }
-                ]
-              });
-
-              if (existingDealer) {
-                // Update existing dealer
-                Object.assign(existingDealer, dealerData);
-                if (dealerData.createdBy) {
-                  existingDealer.updatedBy = dealerData.createdBy;
-                }
-                await existingDealer.save();
-                dealer = existingDealer;
-              } else {
-                // If still can't find, throw the original error
-                throw createError;
-              }
-            } else {
-              // Re-throw if it's not a duplicate error
-              throw createError;
-            }
-          }
-        }
+        dealer = await Ledger.create(dealerData);
+        console.log('Dealer created successfully:', {
+          _id: dealer._id,
+          LedgerGUID: dealer.LedgerGUID,
+          companyId: dealer.companyId,
+          cmpcode: dealer.cmpcode
+        });
 
         // Populate references for response
         try {
@@ -505,69 +522,92 @@ export const upsertDealerFromTally = async (req, res) => {
         });
       } catch (dbError) {
         // Handle database validation errors
-        let errorMessage = 'Failed to save dealer';
+        let errorMessage = 'Failed to create dealer';
         let errorCode = 'DATABASE_ERROR';
-        let handledAsUpdate = false;
+        let handledSuccessfully = false;
 
         if (dbError.name === 'ValidationError') {
           errorMessage = `Validation error: ${Object.values(dbError.errors).map(e => e.message).join(', ')}`;
           errorCode = 'VALIDATION_ERROR';
         } else if (dbError.code === 11000 || (dbError.name === 'MongoServerError' && dbError.code === 11000)) {
-          // Duplicate entry - try one more time to find and update
-          try {
-            const duplicateDealer = await Ledger.findOne({
-              LedgerGUID: ledgerGuid,
-              $or: [
-                { cmpcode: company.companyCode },
-                { companyId: company._id }
-              ]
-            });
+          // Duplicate entry - check which index caused the error
+          console.error('Duplicate key error caught:', {
+            LedgerGUID: ledgerGuid,
+            cmpcode: company.companyCode,
+            companyId: company._id,
+            error: dbError.message,
+            keyPattern: dbError.keyPattern,
+            keyValue: dbError.keyValue
+          });
 
-            if (duplicateDealer) {
-              // Update the duplicate dealer
-              Object.assign(duplicateDealer, dealerData);
-              if (dealerData.createdBy) {
-                duplicateDealer.updatedBy = dealerData.createdBy;
-              }
-              await duplicateDealer.save();
+          // Check if it's the old ledgerId index issue
+          if (dbError.keyPattern && dbError.keyPattern.ledgerId !== undefined) {
+            // This is the old ledgerId index issue - try to drop it automatically
+            console.warn('Attempting to drop old ledgerId_1 index...');
+            try {
+              const collection = Ledger.collection;
+              await collection.dropIndex('ledgerId_1');
+              console.log('✅ Successfully dropped old ledgerId_1 index');
               
-              // Populate and return success
+              // Retry creating the dealer after dropping the index
               try {
-                await duplicateDealer.populate([
-                  { path: 'SalesMan', select: 'name email mobile role' },
-                  { path: 'ASM', select: 'name email mobile role' },
-                  { path: 'RSM', select: 'name email mobile role' },
-                  { path: 'ZSM', select: 'name email mobile role' },
-                  { path: 'groupId', select: 'GroupGUID GroupName GroupParent' },
-                ]);
-              } catch (populateError) {
-                console.warn('Failed to populate dealer references:', populateError.message);
+                dealer = await Ledger.create(dealerData);
+                console.log('Dealer created successfully after dropping index:', {
+                  _id: dealer._id,
+                  LedgerGUID: dealer.LedgerGUID
+                });
+
+                // Populate and return success
+                try {
+                  await dealer.populate([
+                    { path: 'SalesMan', select: 'name email mobile role' },
+                    { path: 'ASM', select: 'name email mobile role' },
+                    { path: 'RSM', select: 'name email mobile role' },
+                    { path: 'ZSM', select: 'name email mobile role' },
+                    { path: 'groupId', select: 'GroupGUID GroupName GroupParent' },
+                  ]);
+                } catch (populateError) {
+                  console.warn('Failed to populate dealer references:', populateError.message);
+                }
+
+                results.push({
+                  success: true,
+                  LedgerGUID: ledgerGuid,
+                  dealer: dealer.toObject(),
+                });
+                handledSuccessfully = true; // Mark as handled - don't push error
+              } catch (retryError) {
+                errorMessage = `Failed to create dealer after dropping index: ${retryError.message}`;
+                errorCode = 'CREATE_FAILED_AFTER_INDEX_DROP';
               }
-
-              results.push({
-                success: true,
-                LedgerGUID: ledgerGuid,
-                dealer: duplicateDealer.toObject(),
-              });
-              handledAsUpdate = true;
+            } catch (dropError) {
+              // If we can't drop the index, provide helpful error message
+              errorMessage = `Database index error: Old 'ledgerId' index exists in database but field is not in schema. Failed to drop index automatically: ${dropError.message}. Please run the script manually: node backend/scripts/drop-old-ledger-index.js`;
+              errorCode = 'INDEX_ERROR';
             }
-          } catch (retryError) {
-            // If retry also fails, return the duplicate error
-            errorMessage = `Duplicate entry: Dealer with LedgerGUID "${ledgerGuid}" already exists for this company. Update failed: ${retryError.message}`;
-            errorCode = 'DUPLICATE_ENTRY';
-          }
+          } else {
+            // Real duplicate on LedgerGUID + cmpcode
+            const duplicateCheck = await Ledger.findOne({
+              LedgerGUID: ledgerGuid,
+              cmpcode: company.companyCode
+            });
+            console.log('Duplicate dealer found after error:', duplicateCheck ? {
+              _id: duplicateCheck._id,
+              LedgerGUID: duplicateCheck.LedgerGUID,
+              cmpcode: duplicateCheck.cmpcode,
+              companyId: duplicateCheck.companyId,
+              isActive: duplicateCheck.isActive
+            } : 'NOT FOUND');
 
-          // If we reach here and haven't handled it, the duplicate couldn't be updated
-          if (!handledAsUpdate && errorCode === 'DATABASE_ERROR') {
-            errorMessage = `Duplicate entry: Dealer with LedgerGUID "${ledgerGuid}" already exists for this company`;
+            errorMessage = `Dealer with LedgerGUID "${ledgerGuid}" already exists for this company`;
             errorCode = 'DUPLICATE_ENTRY';
           }
         } else if (dbError.message) {
           errorMessage = dbError.message;
         }
 
-        // Only push error if we haven't already handled it as a successful update
-        if (!handledAsUpdate) {
+        // Only push error if we didn't successfully handle it
+        if (!handledSuccessfully) {
           results.push({
             LedgerGUID: ledgerGuid,
             success: false,

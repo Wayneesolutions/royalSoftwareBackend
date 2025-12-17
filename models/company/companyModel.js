@@ -48,8 +48,9 @@ const companySchema = new mongoose.Schema({
     },
     guid: { 
         type: String, 
-        required: true, 
+        required: false, // Made optional to allow null values
         unique: true,
+        sparse: true, // Allow multiple null values without violating uniqueness
         trim: true
     },
     tallySerialId: {
