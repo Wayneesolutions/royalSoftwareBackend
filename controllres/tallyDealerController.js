@@ -313,16 +313,22 @@ export const upsertDealerFromTally = async (req, res) => {
 
       // Only check limit if creating a new dealer (not updating existing)
       if (!existingDealer) {
-        const { checkCompanyMemberLimit } = await import('./adminController.js');
-        const limitCheck = await checkCompanyMemberLimit(company._id, 1);
-        if (!limitCheck.allowed) {
-          results.push({
-            LedgerGUID: ledgerGuid,
-            success: false,
-            message: limitCheck.message,
-            error: 'MEMBER_LIMIT_EXCEEDED',
-          });
-          continue;
+        try {
+          const { checkCompanyMemberLimit } = await import('./adminController.js');
+          const limitCheck = await checkCompanyMemberLimit(company._id, 1);
+          if (!limitCheck.allowed) {
+            results.push({
+              LedgerGUID: ledgerGuid,
+              success: false,
+              message: limitCheck.message,
+              error: 'MEMBER_LIMIT_EXCEEDED',
+            });
+            continue;
+          }
+        } catch (limitError) {
+          // If limit check fails, log but allow creation to proceed
+          // This prevents the entire batch from failing due to limit check issues
+          console.warn(`Failed to check company member limit for company ${company._id}:`, limitError.message);
         }
       }
 
@@ -371,53 +377,115 @@ export const upsertDealerFromTally = async (req, res) => {
 
       // Handle group assignment
       if (item.groupGUID || item.groupGuid || item.GroupGUID) {
-        const { group } = await findGroupByGuid(
-          item.groupGUID || item.groupGuid || item.GroupGUID,
-          company.companyCode
-        );
-        if (group) {
-          dealerData.groupId = group._id;
+        try {
+          const { group } = await findGroupByGuid(
+            item.groupGUID || item.groupGuid || item.GroupGUID,
+            company.companyCode
+          );
+          if (group) {
+            dealerData.groupId = group._id;
+          }
+        } catch (groupError) {
+          // Log but don't fail - group assignment is optional
+          console.warn(`Failed to find group for GUID: ${item.groupGUID || item.groupGuid || item.GroupGUID}`, groupError.message);
         }
       }
 
       // Set createdBy to first admin user of the company if not provided
+      // This is REQUIRED for Ledger model validation
       if (!dealerData.createdBy) {
-        const adminUser = await User.findOne({
-          'companies.companyId': company._id,
-          role: { $in: ['admin', 'superadmin'] },
-          isActive: true,
-        });
-        if (adminUser) {
-          dealerData.createdBy = adminUser._id;
+        try {
+          const adminUser = await User.findOne({
+            'companies.companyId': company._id,
+            role: { $in: ['admin', 'superadmin'] },
+            isActive: true,
+          });
+          if (adminUser) {
+            dealerData.createdBy = adminUser._id;
+          } else {
+            // Fallback: try to find any active user in the company
+            const anyUser = await User.findOne({
+              'companies.companyId': company._id,
+              isActive: true,
+            });
+            if (anyUser) {
+              dealerData.createdBy = anyUser._id;
+            } else {
+              // If still no user found, this is a critical error
+              results.push({
+                LedgerGUID: ledgerGuid,
+                success: false,
+                message: 'No active user found in company to assign as creator. Please ensure at least one user exists in the company.',
+                error: 'NO_CREATOR_USER_FOUND',
+              });
+              continue;
+            }
+          }
+        } catch (userError) {
+          results.push({
+            LedgerGUID: ledgerGuid,
+            success: false,
+            message: `Failed to find creator user: ${userError.message}`,
+            error: 'CREATOR_USER_LOOKUP_FAILED',
+          });
+          continue;
         }
       }
 
       let dealer;
-      if (existingDealer) {
-        // Update existing dealer
-        Object.assign(existingDealer, dealerData);
-        existingDealer.updatedBy = dealerData.createdBy;
-        await existingDealer.save();
-        dealer = existingDealer;
-      } else {
-        // Create new dealer
-        dealer = await Ledger.create(dealerData);
+      try {
+        if (existingDealer) {
+          // Update existing dealer
+          Object.assign(existingDealer, dealerData);
+          existingDealer.updatedBy = dealerData.createdBy;
+          await existingDealer.save();
+          dealer = existingDealer;
+        } else {
+          // Create new dealer
+          dealer = await Ledger.create(dealerData);
+        }
+
+        // Populate references for response
+        try {
+          await dealer.populate([
+            { path: 'SalesMan', select: 'name email mobile role' },
+            { path: 'ASM', select: 'name email mobile role' },
+            { path: 'RSM', select: 'name email mobile role' },
+            { path: 'ZSM', select: 'name email mobile role' },
+            { path: 'groupId', select: 'GroupGUID GroupName GroupParent' },
+          ]);
+        } catch (populateError) {
+          // Log but don't fail - population is for response only
+          console.warn('Failed to populate dealer references:', populateError.message);
+        }
+
+        results.push({
+          success: true,
+          LedgerGUID: ledgerGuid,
+          dealer: dealer.toObject(),
+        });
+      } catch (dbError) {
+        // Handle database validation errors
+        let errorMessage = 'Failed to save dealer';
+        let errorCode = 'DATABASE_ERROR';
+
+        if (dbError.name === 'ValidationError') {
+          errorMessage = `Validation error: ${Object.values(dbError.errors).map(e => e.message).join(', ')}`;
+          errorCode = 'VALIDATION_ERROR';
+        } else if (dbError.code === 11000) {
+          errorMessage = `Duplicate entry: Dealer with LedgerGUID "${ledgerGuid}" already exists for this company`;
+          errorCode = 'DUPLICATE_ENTRY';
+        } else if (dbError.message) {
+          errorMessage = dbError.message;
+        }
+
+        results.push({
+          LedgerGUID: ledgerGuid,
+          success: false,
+          message: errorMessage,
+          error: errorCode,
+        });
       }
-
-      // Populate references for response
-      await dealer.populate([
-        { path: 'SalesMan', select: 'name email mobile role' },
-        { path: 'ASM', select: 'name email mobile role' },
-        { path: 'RSM', select: 'name email mobile role' },
-        { path: 'ZSM', select: 'name email mobile role' },
-        { path: 'groupId', select: 'GroupGUID GroupName GroupParent' },
-      ]);
-
-      results.push({
-        success: true,
-        LedgerGUID: ledgerGuid,
-        dealer: dealer.toObject(),
-      });
     }
 
     const failures = results.filter((item) => !item.success);
@@ -436,12 +504,33 @@ export const upsertDealerFromTally = async (req, res) => {
       });
     }
 
-    console.error('Error in upsertDealerFromTally:', error);
-    return res.status(500).json({
+    // Enhanced error logging
+    console.error('Error in upsertDealerFromTally:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name,
+      code: error.code,
+    });
+
+    // Provide more helpful error information even in production
+    const errorResponse = {
       success: false,
       message: 'Server error while processing dealers',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+      error: error.name || 'UNKNOWN_ERROR',
+    };
+
+    // Include error details in production for better debugging
+    if (error.name === 'ValidationError') {
+      errorResponse.message = 'Validation error occurred while processing dealers';
+      errorResponse.details = Object.values(error.errors || {}).map(e => e.message);
+    } else if (error.code === 11000) {
+      errorResponse.message = 'Duplicate entry detected';
+    } else if (error.message) {
+      // Include error message in production for critical errors
+      errorResponse.message = `Server error: ${error.message}`;
+    }
+
+    return res.status(500).json(errorResponse);
   }
 };
 
