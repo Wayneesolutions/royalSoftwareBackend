@@ -305,11 +305,23 @@ export const upsertDealerFromTally = async (req, res) => {
         continue;
       }
 
-      // Check if dealer already exists
-      const existingDealer = await Ledger.findOne({
+      // Check if dealer already exists - use multiple query strategies for robustness
+      let existingDealer = await Ledger.findOne({
         LedgerGUID: ledgerGuid,
         cmpcode: company.companyCode,
       });
+
+      // If not found, try case-insensitive search and also check by companyId
+      if (!existingDealer) {
+        existingDealer = await Ledger.findOne({
+          LedgerGUID: { $regex: new RegExp(`^${ledgerGuid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+          $or: [
+            { cmpcode: company.companyCode },
+            { cmpcode: { $regex: new RegExp(`^${company.companyCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } },
+            { companyId: company._id }
+          ]
+        });
+      }
 
       // Only check limit if creating a new dealer (not updating existing)
       if (!existingDealer) {
@@ -438,8 +450,38 @@ export const upsertDealerFromTally = async (req, res) => {
           await existingDealer.save();
           dealer = existingDealer;
         } else {
-          // Create new dealer
-          dealer = await Ledger.create(dealerData);
+          // Try to create new dealer, but handle duplicate entry as update
+          try {
+            dealer = await Ledger.create(dealerData);
+          } catch (createError) {
+            // If duplicate entry error, treat it as an update scenario
+            if (createError.code === 11000 || createError.name === 'MongoServerError' && createError.code === 11000) {
+              // Duplicate detected - find and update the existing dealer
+              existingDealer = await Ledger.findOne({
+                LedgerGUID: ledgerGuid,
+                $or: [
+                  { cmpcode: company.companyCode },
+                  { companyId: company._id }
+                ]
+              });
+
+              if (existingDealer) {
+                // Update existing dealer
+                Object.assign(existingDealer, dealerData);
+                if (dealerData.createdBy) {
+                  existingDealer.updatedBy = dealerData.createdBy;
+                }
+                await existingDealer.save();
+                dealer = existingDealer;
+              } else {
+                // If still can't find, throw the original error
+                throw createError;
+              }
+            } else {
+              // Re-throw if it's not a duplicate error
+              throw createError;
+            }
+          }
         }
 
         // Populate references for response
@@ -465,23 +507,74 @@ export const upsertDealerFromTally = async (req, res) => {
         // Handle database validation errors
         let errorMessage = 'Failed to save dealer';
         let errorCode = 'DATABASE_ERROR';
+        let handledAsUpdate = false;
 
         if (dbError.name === 'ValidationError') {
           errorMessage = `Validation error: ${Object.values(dbError.errors).map(e => e.message).join(', ')}`;
           errorCode = 'VALIDATION_ERROR';
-        } else if (dbError.code === 11000) {
-          errorMessage = `Duplicate entry: Dealer with LedgerGUID "${ledgerGuid}" already exists for this company`;
-          errorCode = 'DUPLICATE_ENTRY';
+        } else if (dbError.code === 11000 || (dbError.name === 'MongoServerError' && dbError.code === 11000)) {
+          // Duplicate entry - try one more time to find and update
+          try {
+            const duplicateDealer = await Ledger.findOne({
+              LedgerGUID: ledgerGuid,
+              $or: [
+                { cmpcode: company.companyCode },
+                { companyId: company._id }
+              ]
+            });
+
+            if (duplicateDealer) {
+              // Update the duplicate dealer
+              Object.assign(duplicateDealer, dealerData);
+              if (dealerData.createdBy) {
+                duplicateDealer.updatedBy = dealerData.createdBy;
+              }
+              await duplicateDealer.save();
+              
+              // Populate and return success
+              try {
+                await duplicateDealer.populate([
+                  { path: 'SalesMan', select: 'name email mobile role' },
+                  { path: 'ASM', select: 'name email mobile role' },
+                  { path: 'RSM', select: 'name email mobile role' },
+                  { path: 'ZSM', select: 'name email mobile role' },
+                  { path: 'groupId', select: 'GroupGUID GroupName GroupParent' },
+                ]);
+              } catch (populateError) {
+                console.warn('Failed to populate dealer references:', populateError.message);
+              }
+
+              results.push({
+                success: true,
+                LedgerGUID: ledgerGuid,
+                dealer: duplicateDealer.toObject(),
+              });
+              handledAsUpdate = true;
+            }
+          } catch (retryError) {
+            // If retry also fails, return the duplicate error
+            errorMessage = `Duplicate entry: Dealer with LedgerGUID "${ledgerGuid}" already exists for this company. Update failed: ${retryError.message}`;
+            errorCode = 'DUPLICATE_ENTRY';
+          }
+
+          // If we reach here and haven't handled it, the duplicate couldn't be updated
+          if (!handledAsUpdate && errorCode === 'DATABASE_ERROR') {
+            errorMessage = `Duplicate entry: Dealer with LedgerGUID "${ledgerGuid}" already exists for this company`;
+            errorCode = 'DUPLICATE_ENTRY';
+          }
         } else if (dbError.message) {
           errorMessage = dbError.message;
         }
 
-        results.push({
-          LedgerGUID: ledgerGuid,
-          success: false,
-          message: errorMessage,
-          error: errorCode,
-        });
+        // Only push error if we haven't already handled it as a successful update
+        if (!handledAsUpdate) {
+          results.push({
+            LedgerGUID: ledgerGuid,
+            success: false,
+            message: errorMessage,
+            error: errorCode,
+          });
+        }
       }
     }
 
