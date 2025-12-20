@@ -839,6 +839,8 @@ export const createUser = async (req, res) => {
       subdealerDetails, 
       groupId: reqGroupId, 
       groupGUID: reqGroupGUID,
+      dealerId: reqDealerId, // Legacy single dealer (for backward compatibility)
+      dealerIds: reqDealerIds, // New field for multiple dealer assignment
       // Group fields from request
       GroupGUID: reqGroupGUIDField,
       GroupName: reqGroupName,
@@ -966,9 +968,145 @@ export const createUser = async (req, res) => {
         );
 
         if (companyAssignment && companyAssignment.isActive) {
-          return res.status(400).json({
-            success: false,
-            message: "User is already assigned to this company"
+          // User already exists and is assigned to company - allow updating groups/dealers
+          // This allows admins to update user's dealer/group assignments
+          console.log('User already assigned to company - updating groups/dealers instead of creating new user');
+          
+          // Process dealer assignments if provided
+          const dealerGroups = [];
+          const dealerIdsToProcess = Array.isArray(reqDealerIds) && reqDealerIds.length > 0 
+            ? reqDealerIds 
+            : (reqDealerId && mongoose.Types.ObjectId.isValid(reqDealerId) ? [reqDealerId] : []);
+
+          if (dealerIdsToProcess.length > 0 && !reqGroupId && !reqGroupGUID && !reqGroupGUIDField) {
+            // Process each dealer
+            for (const dealerId of dealerIdsToProcess) {
+              if (!mongoose.Types.ObjectId.isValid(dealerId)) {
+                continue;
+              }
+
+              const dealer = await Ledger.findById(dealerId);
+              if (!dealer) continue;
+
+              // Verify dealer belongs to company
+              if (dealer.companyId?.toString() !== companyId.toString() && dealer.cmpcode !== company.companyCode) {
+                continue;
+              }
+
+              let dealerGroup = null;
+
+              if (dealer.groupId) {
+                dealerGroup = await Group.findById(dealer.groupId);
+              } else {
+                // Create group for dealer
+                try {
+                  const generatedGroupGUID = await generateGroupGUID(company.companyCode);
+                  const generatedGroupName = `Group for ${dealer.LedgerName}`;
+                  
+                  const newGroupData = {
+                    GroupGUID: generatedGroupGUID,
+                    GroupName: generatedGroupName,
+                    GroupParent: null,
+                    cmpcode: company.companyCode,
+                    Remarks: `Group for dealer ${dealer.LedgerName}`,
+                    other1: dealer.Email || '',
+                    other2: dealer.LedgerMobile || '',
+                    other3: 'dealer',
+                    other4: dealer.LedgerName || '',
+                    companyId: companyId,
+                    isActive: true,
+                    tallySyncStatus: 'pending',
+                    tallySyncAt: new Date()
+                  };
+                  
+                  dealerGroup = await Group.create(newGroupData);
+                  dealer.groupId = dealerGroup._id;
+                  await dealer.save();
+                } catch (createError) {
+                  console.error('Error creating group for dealer:', createError);
+                  continue;
+                }
+              }
+
+              if (dealerGroup) {
+                // Check if user already has this group
+                const hasGroup = existingUser.groups.some(g => 
+                  g.groupId && g.groupId.toString() === dealerGroup._id.toString()
+                );
+                
+                if (!hasGroup) {
+                  dealerGroups.push({
+                    groupId: dealerGroup._id,
+                    groupGUID: dealerGroup.GroupGUID,
+                    groupName: dealerGroup.GroupName,
+                    groupParentUser: dealerGroup.GroupParent || null,
+                    cmpcode: dealerGroup.cmpcode,
+                    remarks: dealerGroup.Remarks || `Group for dealer ${dealer.LedgerName}`,
+                    other1: dealerGroup.other1 || dealer.Email || '',
+                    other2: dealerGroup.other2 || dealer.LedgerMobile || '',
+                    other3: dealerGroup.other3 || 'dealer',
+                    other4: dealerGroup.other4 || dealer.LedgerName || '',
+                    assignedBy: adminId,
+                    isActive: true,
+                    assignedAt: new Date()
+                  });
+                }
+              }
+            }
+          }
+
+          // Update user's groups with new dealer groups
+          if (dealerGroups.length > 0) {
+            existingUser.groups.push(...dealerGroups);
+          }
+
+          // Store directly assigned dealer IDs
+          if (dealerIdsToProcess.length > 0) {
+            const validDealerIds = dealerIdsToProcess
+              .filter(id => mongoose.Types.ObjectId.isValid(id))
+              .map(id => new mongoose.Types.ObjectId(id));
+            
+            // Add new dealer IDs to assignedDealerIds array (avoid duplicates)
+            if (!existingUser.assignedDealerIds) {
+              existingUser.assignedDealerIds = [];
+            }
+            validDealerIds.forEach(dealerId => {
+              const dealerIdStr = dealerId.toString();
+              if (!existingUser.assignedDealerIds.some(id => id.toString() === dealerIdStr)) {
+                existingUser.assignedDealerIds.push(dealerId);
+              }
+            });
+          }
+
+          // Update other fields if provided
+          if (name) existingUser.name = name;
+          if (email) existingUser.email = email;
+          if (password) {
+            existingUser.password = await bcrypt.hash(password, 10);
+          }
+          if (address) {
+            existingUser.address = {
+              street: address.street || existingUser.address?.street || '',
+              city: address.city || existingUser.address?.city || '',
+              state: address.state || existingUser.address?.state || '',
+              pincode: address.pincode || existingUser.address?.pincode || '',
+              country: address.country || existingUser.address?.country || 'India'
+            };
+          }
+
+          await existingUser.save();
+
+          // Return updated user
+          const updatedUser = await User.findById(existingUser._id)
+            .select('-password')
+            .populate('hierarchy.parentUserId', 'name email role mobile')
+            .populate('companies.companyId', 'companyName companyCode')
+            .lean();
+
+          return res.status(200).json({
+            success: true,
+            message: "User assignments updated successfully",
+            user: updatedUser
           });
         } else {
           // Reactivate the assignment
@@ -1197,7 +1335,7 @@ export const createUser = async (req, res) => {
       parentUserIdString = finalParentUserId.toString();
     }
 
-    // Initialize group variables
+    // Initialize group variables for single group assignment
     let foundGroupId = null;
     let foundGroupGUID = null;
     let foundGroupName = null;
@@ -1210,7 +1348,104 @@ export const createUser = async (req, res) => {
     let foundOther4 = null;
     let foundGroup = null;
 
-    // Priority 1: If groupId is provided, find by ID
+    // Array to store multiple groups from multiple dealers
+    const dealerGroups = [];
+
+    // Priority 0: If dealerIds array is provided (and groupId is not), process multiple dealers
+    const dealerIdsToProcess = Array.isArray(reqDealerIds) && reqDealerIds.length > 0 
+      ? reqDealerIds 
+      : (reqDealerId && mongoose.Types.ObjectId.isValid(reqDealerId) ? [reqDealerId] : []);
+
+    if (dealerIdsToProcess.length > 0 && !reqGroupId && !reqGroupGUID && !reqGroupGUIDField) {
+      // Process each dealer
+      for (const dealerId of dealerIdsToProcess) {
+        if (!mongoose.Types.ObjectId.isValid(dealerId)) {
+          continue; // Skip invalid IDs
+        }
+
+        const dealer = await Ledger.findById(dealerId);
+        
+        if (!dealer) {
+          continue; // Skip if dealer not found
+        }
+
+        // Verify dealer belongs to company
+        if (dealer.companyId?.toString() !== companyId.toString() && dealer.cmpcode !== company.companyCode) {
+          continue; // Skip if dealer doesn't belong to company
+        }
+
+        let dealerGroup = null;
+
+        if (dealer.groupId) {
+          // Dealer has a group - use it
+          dealerGroup = await Group.findById(dealer.groupId);
+        } else {
+          // Dealer doesn't have a group - create one for the dealer
+          try {
+            const generatedGroupGUID = await generateGroupGUID(company.companyCode);
+            const generatedGroupName = `Group for ${dealer.LedgerName}`;
+            
+            const newGroupData = {
+              GroupGUID: generatedGroupGUID,
+              GroupName: generatedGroupName,
+              GroupParent: null, // Dealer groups don't have parent users
+              cmpcode: company.companyCode,
+              Remarks: `Group for dealer ${dealer.LedgerName}`,
+              other1: dealer.Email || '',
+              other2: dealer.LedgerMobile || '',
+              other3: 'dealer',
+              other4: dealer.LedgerName || '',
+              companyId: companyId,
+              isActive: true,
+              tallySyncStatus: 'pending',
+              tallySyncAt: new Date()
+            };
+            
+            dealerGroup = await Group.create(newGroupData);
+            
+            // Update dealer with the new group
+            dealer.groupId = dealerGroup._id;
+            await dealer.save();
+          } catch (createError) {
+            console.error('Error creating group for dealer:', createError);
+            continue; // Skip this dealer if group creation fails
+          }
+        }
+
+        if (dealerGroup) {
+          // Add group to array
+          dealerGroups.push({
+            groupId: dealerGroup._id,
+            groupGUID: dealerGroup.GroupGUID,
+            groupName: dealerGroup.GroupName,
+            groupParentUser: dealerGroup.GroupParent || null,
+            cmpcode: dealerGroup.cmpcode,
+            remarks: dealerGroup.Remarks || `Group for dealer ${dealer.LedgerName}`,
+            other1: dealerGroup.other1 || dealer.Email || '',
+            other2: dealerGroup.other2 || dealer.LedgerMobile || '',
+            other3: dealerGroup.other3 || 'dealer',
+            other4: dealerGroup.other4 || dealer.LedgerName || '',
+          });
+
+          // For backward compatibility, set first group as foundGroup
+          if (!foundGroup) {
+            foundGroup = dealerGroup;
+            foundGroupId = dealerGroup._id;
+            foundGroupGUID = dealerGroup.GroupGUID;
+            foundGroupName = dealerGroup.GroupName;
+            foundGroupParent = dealerGroup.GroupParent || null;
+            foundGroupRemarks = dealerGroup.Remarks || `Group for dealer ${dealer.LedgerName}`;
+            foundCmpcode = dealerGroup.cmpcode;
+            foundOther1 = dealerGroup.other1 || dealer.Email || '';
+            foundOther2 = dealerGroup.other2 || dealer.LedgerMobile || '';
+            foundOther3 = dealerGroup.other3 || '';
+            foundOther4 = dealerGroup.other4 || dealer.LedgerName || '';
+          }
+        }
+      }
+    }
+
+    // Priority 1: If groupId is provided, find by ID (only if dealerId was not provided)
     if (reqGroupId && mongoose.Types.ObjectId.isValid(reqGroupId)) {
       const group = await Group.findById(reqGroupId);
       if (group && group.cmpcode === company.companyCode) {
@@ -1388,25 +1623,37 @@ export const createUser = async (req, res) => {
         assignedBy: adminId,
         assignedAt: new Date()
       }],
-      groups: foundGroupId ? [{
-        groupId: foundGroupId,
-        groupGUID: foundGroupGUID,
-        groupName: foundGroupName,
-        groupParentUser: foundGroupParent || parentUserIdString, // GroupParent = parent user ID
-        cmpcode: foundCmpcode,
-        remarks: foundGroupRemarks || `Group for ${name} (${finalRole})`,
-        other1: foundOther1 || email || '',
-        other2: foundOther2 || mobile || '',
-        other3: foundOther3 || finalRole || '',
-        other4: foundOther4 || parentUserForGroup?.name || '',
-        assignedBy: adminId,
-        isActive: true,
-        assignedAt: new Date()
-      }] : [],
+      groups: dealerGroups.length > 0 
+        ? dealerGroups.map(g => ({
+            ...g,
+            assignedBy: adminId,
+            isActive: true,
+            assignedAt: new Date()
+          }))
+        : (foundGroupId ? [{
+            groupId: foundGroupId,
+            groupGUID: foundGroupGUID,
+            groupName: foundGroupName,
+            groupParentUser: foundGroupParent || parentUserIdString, // GroupParent = parent user ID
+            cmpcode: foundCmpcode,
+            remarks: foundGroupRemarks || `Group for ${name} (${finalRole})`,
+            other1: foundOther1 || email || '',
+            other2: foundOther2 || mobile || '',
+            other3: foundOther3 || finalRole || '',
+            other4: foundOther4 || parentUserForGroup?.name || '',
+            assignedBy: adminId,
+            isActive: true,
+            assignedAt: new Date()
+          }] : []),
       hierarchy: {
         ...(finalParentUserId ? { parentUserId: finalParentUserId } : {}),
         level: getRoleLevel(finalRole)
       },
+      assignedDealerIds: dealerIdsToProcess.length > 0 
+        ? dealerIdsToProcess
+            .filter(id => mongoose.Types.ObjectId.isValid(id))
+            .map(id => new mongoose.Types.ObjectId(id))
+        : [],
       createdBy: adminId
     };
 
@@ -1952,24 +2199,25 @@ export const getGroupsForSelection = async (req, res) => {
  */
 export const getAllGroups = async (req, res) => {
   try {
-    const adminId = req.user.userId;
+    const userId = req.user.userId;
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+    const userRole = req.user.userDetails.role || '';
     const { includeInactive } = req.query;
 
-    // Check if admin has access to the company
-    const admin = await User.findById(adminId).populate('defaultCompany');
-    if (!admin || !admin.defaultCompany) {
+    // Check if user has access to the company
+    const user = await User.findById(userId).populate('defaultCompany').select('role groups');
+    if (!user || !user.defaultCompany) {
       return res.status(403).json({
         success: false,
-        message: "No company assigned to this admin"
+        message: "No company assigned to this user"
       });
     }
 
     // Convert companyId to string for comparison
-    const adminCompanyId = admin.defaultCompany._id.toString();
+    const userCompanyId = user.defaultCompany._id.toString();
     const targetCompanyId = companyId.toString();
 
-    if (adminCompanyId !== targetCompanyId) {
+    if (userCompanyId !== targetCompanyId) {
       return res.status(403).json({
         success: false,
         message: "Access denied to this company"
@@ -1986,7 +2234,7 @@ export const getAllGroups = async (req, res) => {
     }
 
     // Build query - include inactive groups if requested
-    const query = {
+    let query = {
       cmpcode: company.companyCode
     };
 
@@ -1994,7 +2242,37 @@ export const getAllGroups = async (req, res) => {
       query.isActive = true;
     }
 
-    // Get all groups for this company
+    // For group users, only show groups they are assigned to
+    const isGroupUser = userRole === 'groupuser' || !userRole || userRole === '';
+    if (isGroupUser && user.groups && user.groups.length > 0) {
+      // Get group IDs from user's groups array
+      const userGroupIds = user.groups
+        .filter(g => (g.isActive === true || g.isActive === undefined) && g.groupId)
+        .map(g => {
+          if (typeof g.groupId === 'object' && g.groupId !== null && g.groupId._id) {
+            return g.groupId._id;
+          } else if (g.groupId && mongoose.Types.ObjectId.isValid(g.groupId)) {
+            return typeof g.groupId === 'string' ? new mongoose.Types.ObjectId(g.groupId) : g.groupId;
+          }
+          return null;
+        })
+        .filter(id => id !== null);
+      
+      if (userGroupIds.length > 0) {
+        query._id = { $in: userGroupIds };
+      } else {
+        // User has no active groups, return empty list
+        return res.json({
+          success: true,
+          data: {
+            groups: [],
+            totalGroups: 0
+          }
+        });
+      }
+    }
+
+    // Get all groups for this company (filtered for group users)
     const groups = await Group.find(query)
       .select('_id GroupGUID GroupName GroupParent cmpcode Remarks isActive createdAt')
       .sort({ GroupName: 1 })
@@ -4904,6 +5182,141 @@ export const editUser = async (req, res) => {
 };
 
 // Delete User
+// Assign user to another company
+export const assignUserToCompany = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { companyId: targetCompanyId } = req.body;
+    const adminId = req.user.userId;
+    const currentCompanyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+
+    if (!targetCompanyId) {
+      return res.status(400).json({
+        success: false,
+        message: "Target company ID is required"
+      });
+    }
+
+    // Get admin with all companies
+    const admin = await User.findById(adminId).populate('companies.companyId');
+    if (!admin || !admin.defaultCompany) {
+      return res.status(403).json({
+        success: false,
+        message: "Admin not found or no company assigned"
+      });
+    }
+
+    // Check if admin has access to the target company
+    const adminCompanyIds = admin.companies
+      .filter(c => c.isActive)
+      .map(c => c.companyId._id.toString());
+    
+    const adminDefaultCompanyId = admin.defaultCompany._id.toString();
+    const allAdminCompanyIds = [...new Set([...adminCompanyIds, adminDefaultCompanyId])];
+    
+    if (!allAdminCompanyIds.includes(targetCompanyId.toString())) {
+      return res.status(403).json({
+        success: false,
+        message: "You don't have access to assign users to this company"
+      });
+    }
+
+    // Get target company
+    const targetCompany = await Company.findById(targetCompanyId);
+    if (!targetCompany) {
+      return res.status(404).json({
+        success: false,
+        message: "Target company not found"
+      });
+    }
+
+    // Get user to assign
+    const userToAssign = await User.findById(userId);
+    if (!userToAssign) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found"
+      });
+    }
+
+    // Check if user already exists in target company
+    const existingCompanyAssignment = userToAssign.companies.find(
+      comp => comp.companyId.toString() === targetCompanyId.toString()
+    );
+
+    if (existingCompanyAssignment) {
+      // If assignment exists but is inactive, reactivate it
+      if (!existingCompanyAssignment.isActive) {
+        existingCompanyAssignment.isActive = true;
+        existingCompanyAssignment.assignedBy = adminId;
+        existingCompanyAssignment.assignedAt = new Date();
+        await userToAssign.save();
+
+        // Update company user count
+        await Company.findByIdAndUpdate(targetCompanyId, {
+          $inc: { currentUsers: 1 }
+        });
+
+        const updatedUser = await User.findById(userId)
+          .select('-password')
+          .populate('defaultCompany', 'companyName companyCode')
+          .populate('companies.companyId', 'companyName companyCode');
+
+        return res.json({
+          success: true,
+          message: "User company assignment reactivated",
+          user: updatedUser
+        });
+      } else {
+        return res.status(400).json({
+          success: false,
+          message: "User is already assigned to this company"
+        });
+      }
+    }
+
+    // Add company to user's companies array
+    userToAssign.companies.push({
+      companyId: targetCompanyId,
+      role: userToAssign.role || 'groupuser',
+      isActive: true,
+      assignedBy: adminId,
+      assignedAt: new Date()
+    });
+
+    // Set as default company if user doesn't have one
+    if (!userToAssign.defaultCompany) {
+      userToAssign.defaultCompany = targetCompanyId;
+    }
+
+    await userToAssign.save();
+
+    // Update company's user count
+    await Company.findByIdAndUpdate(targetCompanyId, {
+      $inc: { currentUsers: 1 }
+    });
+
+    const updatedUser = await User.findById(userId)
+      .select('-password')
+      .populate('defaultCompany', 'companyName companyCode')
+      .populate('companies.companyId', 'companyName companyCode');
+
+    return res.json({
+      success: true,
+      message: "User assigned to company successfully",
+      user: updatedUser
+    });
+
+  } catch (error) {
+    console.error("Assign user to company error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
 export const deleteUser = async (req, res) => {
   try {
     const { userId } = req.params;
@@ -5449,8 +5862,9 @@ export const createDealer = async (req, res) => {
       isActive = true
     } = req.body;
 
-    const adminId = req.user.userId;
+    const userId = req.user.userId;
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+    const userRole = req.user.userDetails.role || '';
 
     // Validate required fields
     if (!LedgerName || !LedgerName.trim()) {
@@ -5460,20 +5874,33 @@ export const createDealer = async (req, res) => {
       });
     }
 
-    // Check if admin has access to the company
-    const admin = await User.findById(adminId).populate('defaultCompany');
-    if (!admin || !admin.defaultCompany) {
+    // Check if user has access to the company
+    const user = await User.findById(userId).populate('defaultCompany');
+    if (!user || !user.defaultCompany) {
       return res.status(403).json({
         success: false,
-        message: "No company assigned to this admin"
+        message: "No company assigned to this user"
       });
     }
 
+    // For group users, automatically assign dealer to their first active group if no groupId provided
+    let finalGroupId = groupId;
+    if ((userRole === 'groupuser' || !userRole || userRole === '') && !groupId && user.groups && user.groups.length > 0) {
+      // Find first active group
+      const activeGroup = user.groups.find(g => (g.isActive === true || g.isActive === undefined) && g.groupId);
+      if (activeGroup) {
+        finalGroupId = typeof activeGroup.groupId === 'object' && activeGroup.groupId !== null && activeGroup.groupId._id
+          ? activeGroup.groupId._id
+          : activeGroup.groupId;
+        console.log('🔍 Auto-assigning dealer to group user\'s group:', finalGroupId);
+      }
+    }
+
     // Convert companyId to string for comparison
-    const adminCompanyId = admin.defaultCompany._id.toString();
+    const userCompanyId = user.defaultCompany._id.toString();
     const targetCompanyId = companyId.toString();
 
-    if (adminCompanyId !== targetCompanyId) {
+    if (userCompanyId !== targetCompanyId) {
       return res.status(403).json({
         success: false,
         message: "Access denied to this company"
@@ -5534,11 +5961,11 @@ export const createDealer = async (req, res) => {
       }
     }
 
-    // Validate and assign group if provided
-    let finalGroupId = null;
-    if (groupId) {
+    // Validate and assign group if provided (or use auto-assigned group for group users)
+    // Note: finalGroupId is already declared above for group user auto-assignment
+    if (finalGroupId) {
       const group = await Group.findOne({ 
-        _id: groupId, 
+        _id: finalGroupId, 
         companyId: companyId,
         isActive: true 
       });
@@ -5549,6 +5976,8 @@ export const createDealer = async (req, res) => {
         });
       }
       finalGroupId = group._id;
+    } else {
+      finalGroupId = null;
     }
 
     // Validate hierarchy users if provided
@@ -5632,7 +6061,7 @@ export const createDealer = async (req, res) => {
       isActive: isActive !== false,
       companyId: companyId,
       ...hierarchyUsers,
-      createdBy: adminId
+      createdBy: userId // Track who created the dealer (admin or group user)
     });
 
     // Populate group if assigned
@@ -5757,12 +6186,21 @@ export const getAllDealers = async (req, res) => {
     const { includeInactive } = req.query;
 
     // Check if user has access to the company
-    const user = await User.findById(userId).populate('defaultCompany');
+    // Select groups field explicitly to ensure it's included
+    const user = await User.findById(userId)
+      .select('role groups assignedDealerIds defaultCompany companies')
+      .populate('defaultCompany');
     if (!user || !user.defaultCompany) {
       return res.status(403).json({
         success: false,
         message: "No company assigned to this user"
       });
+    }
+    
+    console.log('🔍 getAllDealers - User role:', user.role);
+    console.log('🔍 getAllDealers - User groups count:', user.groups?.length || 0);
+    if (user.groups && user.groups.length > 0) {
+      console.log('🔍 getAllDealers - User groups sample:', JSON.stringify(user.groups.slice(0, 1), null, 2));
     }
 
     // Convert companyId to string for comparison
@@ -5785,35 +6223,243 @@ export const getAllDealers = async (req, res) => {
       });
     }
 
-    // Build query
-    const query = {
+    // Build base query
+    const baseQuery = {
       cmpcode: company.companyCode
     };
 
     if (includeInactive !== 'true') {
-      query.isActive = true;
+      baseQuery.isActive = true;
     }
 
-    // For group users, filter by their assigned group(s)
-    // Superadmin and admin can see all dealers, but group users should only see dealers in their group
-    if (user.role === 'groupuser' && user.groups && user.groups.length > 0) {
-      // Get active group IDs from user's groups array
-      const activeGroupIds = user.groups
-        .filter(g => g.isActive && g.groupId)
-        .map(g => {
-          // Handle both populated and non-populated groupId
-          return typeof g.groupId === 'object' && g.groupId._id 
-            ? g.groupId._id 
-            : (g.groupId || null);
-        })
-        .filter(id => id !== null);
-
-      if (activeGroupIds.length > 0) {
-        // Filter dealers by groupId - only show dealers in the user's group(s)
-        query.groupId = { $in: activeGroupIds };
-        console.log('🔍 Group user filtering dealers by groupIds:', activeGroupIds);
+    // For group users, filter by their assigned group(s) OR dealers they created
+    // PLUS dealers from child users in the hierarchy
+    // Superadmin and admin can see all dealers, but group users should only see:
+    // 1. Dealers in their assigned groups (assigned by admin)
+    // 2. Dealers they created themselves
+    // 3. Dealers in groups assigned to child users (hierarchy-based)
+    // 4. Dealers created by child users (hierarchy-based)
+    let query = baseQuery;
+    
+    // Check role (case-insensitive comparison)
+    const userRole = (user.role || '').toLowerCase().trim();
+    console.log('🔍 User role check:', userRole, '===', 'groupuser', '?', userRole === 'groupuser');
+    
+    if (userRole === 'groupuser') {
+      console.log('🔍 Group user detected, filtering dealers with hierarchy...');
+      console.log('🔍 User ID:', userId);
+      console.log('🔍 User groups array:', user.groups);
+      console.log('🔍 User groups length:', user.groups?.length || 0);
+      
+      // Helper function to get all child user IDs recursively (including nested children)
+      const getAllChildUserIdsRecursive = async (parentUserId, companyId) => {
+        const childUserIds = [];
+        
+        // Convert parentUserId to ObjectId if needed
+        const parentId = mongoose.Types.ObjectId.isValid(parentUserId) 
+          ? (typeof parentUserId === 'string' ? new mongoose.Types.ObjectId(parentUserId) : parentUserId)
+          : parentUserId;
+        
+        // Get direct children - check both parentUserId field name variations
+        // Note: Model uses 'hierarchy.parentUserId', but some code may use 'hierarchy.parentUser'
+        const directChildren = await User.find({
+          $and: [
+            {
+              $or: [
+                { 'hierarchy.parentUserId': parentId },
+                { 'hierarchy.parentUser': parentId }
+              ]
+            },
+            {
+              $or: [
+                { 'companies.companyId': companyId },
+                { 'defaultCompany': companyId }
+              ]
+            },
+            { isActive: true }
+          ]
+        }).select('_id groups');
+        
+        const directChildIds = directChildren.map(child => child._id.toString());
+        childUserIds.push(...directChildIds);
+        
+        console.log(`🔍 Found ${directChildIds.length} direct children for user ${parentUserId}:`, directChildIds);
+        
+        // Recursively get children of children
+        for (const childId of directChildIds) {
+          const nestedChildren = await getAllChildUserIdsRecursive(childId, companyId);
+          childUserIds.push(...nestedChildren);
+        }
+        
+        return childUserIds;
+      };
+      
+      const orConditions = [];
+      
+      // PRIORITY: If user has directly assigned dealers, show ONLY those dealers (plus dealers they created)
+      if (user.assignedDealerIds && Array.isArray(user.assignedDealerIds) && user.assignedDealerIds.length > 0) {
+        console.log('🔍 User has directly assigned dealers:', user.assignedDealerIds.length);
+        
+        // Convert assigned dealer IDs to ObjectIds
+        const assignedDealerObjectIds = user.assignedDealerIds
+          .map(id => {
+            if (typeof id === 'object' && id !== null && id._id) {
+              return id._id;
+            } else if (mongoose.Types.ObjectId.isValid(id)) {
+              return typeof id === 'string' ? new mongoose.Types.ObjectId(id) : id;
+            }
+            return null;
+          })
+          .filter(id => id !== null);
+        
+        console.log('🔍 Valid assigned dealer IDs:', assignedDealerObjectIds.length, assignedDealerObjectIds);
+        
+        // Add condition: ONLY directly assigned dealers
+        orConditions.push({
+          ...baseQuery,
+          _id: { $in: assignedDealerObjectIds }
+        });
+        console.log('✅ Added condition: directly assigned dealers only:', assignedDealerObjectIds);
+        
+        // Also add dealers created by this user
+        const userIdObjectId = mongoose.Types.ObjectId.isValid(userId) 
+          ? (typeof userId === 'string' ? new mongoose.Types.ObjectId(userId) : userId)
+          : userId;
+        
+        orConditions.push({ 
+          ...baseQuery,
+          createdBy: userIdObjectId 
+        });
+        console.log('✅ Added condition: dealers created by user:', userIdObjectId);
+        
+        // Use $or to include only assigned dealers and user-created dealers
+        query = { $or: orConditions };
+        console.log('🔍 Final query for group user (directly assigned dealers):', JSON.stringify(query, null, 2));
       } else {
-        // If user has no active groups, return empty list
+        // No directly assigned dealers - use group-based filtering
+        console.log('🔍 No directly assigned dealers, using group-based filtering');
+      
+      // Get active group IDs from user's own groups array
+      let userGroupIds = [];
+      if (user.groups && Array.isArray(user.groups) && user.groups.length > 0) {
+        console.log('🔍 Processing user groups...');
+        userGroupIds = user.groups
+          .filter(g => {
+            const isActive = g.isActive === true || g.isActive === undefined; // Default to true if not specified
+            const hasGroupId = g.groupId !== null && g.groupId !== undefined;
+            console.log('🔍 Group item:', { isActive, hasGroupId, groupId: g.groupId });
+            return isActive && hasGroupId;
+          })
+          .map(g => {
+            // Handle both populated and non-populated groupId
+            if (typeof g.groupId === 'object' && g.groupId !== null && g.groupId._id) {
+              return g.groupId._id;
+            } else if (g.groupId) {
+              // Convert to ObjectId if it's a string
+              if (mongoose.Types.ObjectId.isValid(g.groupId)) {
+                return typeof g.groupId === 'string' ? new mongoose.Types.ObjectId(g.groupId) : g.groupId;
+              }
+            }
+            return null;
+          })
+          .filter(id => id !== null);
+
+        console.log('🔍 Active group IDs extracted from user:', userGroupIds.length, userGroupIds);
+
+        if (userGroupIds.length > 0) {
+          // Add condition: dealers in user's assigned groups (with base conditions)
+          orConditions.push({ 
+            ...baseQuery,
+            groupId: { $in: userGroupIds } 
+          });
+          console.log('✅ Added condition: dealers in user\'s assigned groups:', userGroupIds);
+        }
+      } else {
+        console.log('⚠️ User has no groups or groups array is empty');
+      }
+      
+      // Add condition: dealers created by this user (with base conditions)
+      // Convert userId to ObjectId for proper comparison
+      const userIdObjectId = mongoose.Types.ObjectId.isValid(userId) 
+        ? (typeof userId === 'string' ? new mongoose.Types.ObjectId(userId) : userId)
+        : userId;
+      
+      orConditions.push({ 
+        ...baseQuery,
+        createdBy: userIdObjectId 
+      });
+      console.log('✅ Added condition: dealers created by user:', userIdObjectId);
+      
+      // HIERARCHY-BASED FILTERING: Get dealers from child users
+      try {
+        // Get all child user IDs recursively
+        const childUserIds = await getAllChildUserIdsRecursive(userId, companyId);
+        console.log('🔍 Total child users found in hierarchy:', childUserIds.length, childUserIds);
+        
+        if (childUserIds.length > 0) {
+          // Convert child user IDs to ObjectIds
+          const childUserObjectIds = childUserIds
+            .map(id => mongoose.Types.ObjectId.isValid(id) ? (typeof id === 'string' ? new mongoose.Types.ObjectId(id) : id) : null)
+            .filter(id => id !== null);
+          
+          // Get groups assigned to child users
+          const childUsers = await User.find({
+            _id: { $in: childUserObjectIds },
+            isActive: true
+          }).select('groups');
+          
+          let childGroupIds = [];
+          for (const childUser of childUsers) {
+            if (childUser.groups && Array.isArray(childUser.groups) && childUser.groups.length > 0) {
+              const childGroups = childUser.groups
+                .filter(g => (g.isActive === true || g.isActive === undefined) && g.groupId)
+                .map(g => {
+                  if (typeof g.groupId === 'object' && g.groupId !== null && g.groupId._id) {
+                    return g.groupId._id;
+                  } else if (g.groupId && mongoose.Types.ObjectId.isValid(g.groupId)) {
+                    return typeof g.groupId === 'string' ? new mongoose.Types.ObjectId(g.groupId) : g.groupId;
+                  }
+                  return null;
+                })
+                .filter(id => id !== null);
+              childGroupIds.push(...childGroups);
+            }
+          }
+          
+          // Remove duplicates
+          childGroupIds = [...new Set(childGroupIds.map(id => id.toString()))]
+            .map(id => new mongoose.Types.ObjectId(id));
+          
+          console.log('🔍 Groups from child users:', childGroupIds.length, childGroupIds);
+          
+          if (childGroupIds.length > 0) {
+            // Add condition: dealers in groups assigned to child users
+            orConditions.push({ 
+              ...baseQuery,
+              groupId: { $in: childGroupIds } 
+            });
+            console.log('✅ Added condition: dealers in child users\' groups:', childGroupIds);
+          }
+          
+          // Add condition: dealers created by child users
+          orConditions.push({ 
+            ...baseQuery,
+            createdBy: { $in: childUserObjectIds } 
+          });
+          console.log('✅ Added condition: dealers created by child users:', childUserObjectIds);
+        }
+      } catch (hierarchyError) {
+        console.error('❌ Error processing hierarchy:', hierarchyError);
+        // Continue with existing conditions even if hierarchy processing fails
+      }
+      
+      if (orConditions.length > 0) {
+        // Use $or to include all conditions
+        query = { $or: orConditions };
+        console.log('🔍 Final query for group user (with hierarchy):', JSON.stringify(query, null, 2));
+      } else {
+        // If user has no active groups and no created dealers, return empty list
+        console.log('⚠️ No conditions found, returning empty list');
         return res.json({
           success: true,
           data: {
@@ -5822,9 +6468,14 @@ export const getAllDealers = async (req, res) => {
           }
         });
       }
+      } // End of else block for group-based filtering
+    } else {
+      console.log('🔍 Admin/Superadmin user - showing all dealers');
+      console.log('🔍 Query for admin:', JSON.stringify(query, null, 2));
     }
 
     // Get all dealers for this company (exclude password field)
+    console.log('🔍 Executing query:', JSON.stringify(query, null, 2));
     const dealers = await Ledger.find(query)
       .select('-password')
       .populate('SalesMan', 'name email role')
@@ -5834,6 +6485,16 @@ export const getAllDealers = async (req, res) => {
       .populate('groupId', 'GroupGUID GroupName GroupParent cmpcode')
       .sort({ LedgerName: 1 })
       .lean();
+
+    console.log('🔍 Found dealers:', dealers.length);
+    if (dealers.length > 0 && dealers.length <= 5) {
+      console.log('🔍 Sample dealers:', dealers.map(d => ({ 
+        _id: d._id, 
+        LedgerName: d.LedgerName, 
+        groupId: d.groupId?._id || d.groupId,
+        createdBy: d.createdBy 
+      })));
+    }
 
     res.json({
       success: true,
@@ -5975,8 +6636,9 @@ export const updateDealer = async (req, res) => {
       isActive
     } = req.body;
 
-    const adminId = req.user.userId;
+    const userId = req.user.userId;
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+    const userRole = req.user.userDetails.role || '';
 
     if (!dealerId) {
       return res.status(400).json({
@@ -5985,20 +6647,20 @@ export const updateDealer = async (req, res) => {
       });
     }
 
-    // Check if admin has access to the company
-    const admin = await User.findById(adminId).populate('defaultCompany');
-    if (!admin || !admin.defaultCompany) {
+    // Check if user has access to the company
+    const user = await User.findById(userId).populate('defaultCompany');
+    if (!user || !user.defaultCompany) {
       return res.status(403).json({
         success: false,
-        message: "No company assigned to this admin"
+        message: "No company assigned to this user"
       });
     }
 
     // Convert companyId to string for comparison
-    const adminCompanyId = admin.defaultCompany._id.toString();
+    const userCompanyId = user.defaultCompany._id.toString();
     const targetCompanyId = companyId.toString();
 
-    if (adminCompanyId !== targetCompanyId) {
+    if (userCompanyId !== targetCompanyId) {
       return res.status(403).json({
         success: false,
         message: "Access denied to this company"
@@ -6025,6 +6687,18 @@ export const updateDealer = async (req, res) => {
         success: false,
         message: "Dealer not found"
       });
+    }
+
+    // For group users, only allow editing dealers they created
+    if ((userRole === 'groupuser' || !userRole || userRole === '') && dealer.createdBy) {
+      const dealerCreatedBy = dealer.createdBy.toString();
+      const currentUserId = userId.toString();
+      if (dealerCreatedBy !== currentUserId) {
+        return res.status(403).json({
+          success: false,
+          message: "You can only edit dealers you created"
+        });
+      }
     }
 
     // Validate and update LedgerGUID if provided and different from current
@@ -6206,7 +6880,7 @@ export const updateDealer = async (req, res) => {
       dealer.isActive = isActive;
     }
 
-    dealer.updatedBy = adminId;
+    dealer.updatedBy = userId;
 
     // Save the updated dealer
     await dealer.save();
@@ -6361,6 +7035,18 @@ export const deleteDealer = async (req, res) => {
       });
     }
 
+    // For group users, only allow deleting dealers they created
+    if ((userRole === 'groupuser' || !userRole || userRole === '') && dealer.createdBy) {
+      const dealerCreatedBy = dealer.createdBy.toString();
+      const currentUserId = userId.toString();
+      if (dealerCreatedBy !== currentUserId) {
+        return res.status(403).json({
+          success: false,
+          message: "You can only delete dealers you created"
+        });
+      }
+    }
+
     if (hardDelete === 'true') {
       // Hard delete
       await Ledger.findByIdAndDelete(dealerId);
@@ -6371,7 +7057,7 @@ export const deleteDealer = async (req, res) => {
     } else {
       // Soft delete
       dealer.isActive = false;
-      dealer.updatedBy = adminId;
+      dealer.updatedBy = userId;
       await dealer.save();
       return res.json({
         success: true,

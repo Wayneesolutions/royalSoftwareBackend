@@ -184,6 +184,12 @@ const userSchema = new mongoose.Schema({
             default: 0 // 0 = superadmin, 1 = admin, etc.
         }
     },
+    // Directly assigned dealer IDs (when admin assigns specific dealers to user)
+    assignedDealerIds: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Ledger',
+        index: true
+    }],
     // Tally Group assignment (single group reference)
     tallyGroup: {
         groupId: {

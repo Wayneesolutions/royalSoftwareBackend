@@ -12,6 +12,7 @@ import {
   getUsersByGroup,
   updateUserStatus,
   editUser,
+  assignUserToCompany,
   deleteUser,
   autoAssignGroups,
   createGroup,
@@ -53,7 +54,7 @@ adminRoute.post('/switch-company', requireAuth, authorizeRoles(['admin']), switc
 adminRoute.get('/users-by-company', requireAuth, authorizeRoles(['admin']), getUsersByCompany)
 adminRoute.get('/users-for-parent', requireAuth, authorizeRoles(['admin']), getUsersForParentSelection)
 adminRoute.get('/groups-for-selection', requireAuth, authorizeRoles(['admin']), getGroupsForSelection)
-adminRoute.get('/groups', requireAuth, authorizeRoles(['admin']), getAllGroups)
+adminRoute.get('/groups', requireAuth, authorizeRoles(['admin', 'groupuser']), getAllGroups)
 adminRoute.post('/groups', requireAuth, authorizeRoles(['admin']), createGroup)
 adminRoute.put('/groups/:groupId', requireAuth, authorizeRoles(['admin']), updateGroup)
 adminRoute.delete('/groups/:groupId', requireAuth, authorizeRoles(['admin']), deleteGroup)
@@ -63,6 +64,7 @@ adminRoute.get('/get-user/:id', requireAuth, authorizeRoles(['admin']), getUserB
 adminRoute.post('/create-user', requireAuth, authorizeRoles(['admin']), createUser)
 adminRoute.put('/user/:userId/status', requireAuth, authorizeRoles(['admin']), updateUserStatus)
 adminRoute.put('/edit-user/:userId', requireAuth, authorizeRoles(['admin']), editUser)
+adminRoute.post('/assign-user-to-company/:userId', requireAuth, authorizeRoles(['admin']), assignUserToCompany)
 adminRoute.delete('/user/:userId', requireAuth, authorizeRoles(['admin']), deleteUser)
 
 // Helper API for group assignment
@@ -70,9 +72,9 @@ adminRoute.post('/auto-assign-groups', requireAuth, authorizeRoles(['admin']), a
 
 // Dealer (Ledger) management routes
 adminRoute.get('/dealers', requireAuth, authorizeRoles(['admin', 'groupuser']), getAllDealers)
-adminRoute.post('/dealers', requireAuth, authorizeRoles(['admin']), createDealer)
-adminRoute.put('/dealers/:dealerId', requireAuth, authorizeRoles(['admin']), updateDealer)
-adminRoute.delete('/dealers/:dealerId', requireAuth, authorizeRoles(['admin']), deleteDealer)
+adminRoute.post('/dealers', requireAuth, authorizeRoles(['admin', 'groupuser']), createDealer)
+adminRoute.put('/dealers/:dealerId', requireAuth, authorizeRoles(['admin', 'groupuser']), updateDealer)
+adminRoute.delete('/dealers/:dealerId', requireAuth, authorizeRoles(['admin', 'groupuser']), deleteDealer)
 
 // SubDealer management routes
 adminRoute.get('/subdealers', requireAuth, authorizeRoles(['admin', 'groupuser']), getAllSubDealers)
