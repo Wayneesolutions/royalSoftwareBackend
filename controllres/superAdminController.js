@@ -135,13 +135,18 @@ export const loginSuperAdmin = async (req, res) => {
  */
 export const createAdmin = async (req, res) => {
   try {
-    const { email, password, name, mobile, companyId } = req.body;
+    const { email, password, name, mobile, companyId, companyIds } = req.body;
+
+    // Support both single companyId (backward compatibility) and companyIds array
+    const finalCompanyIds = companyIds && Array.isArray(companyIds) && companyIds.length > 0 
+      ? companyIds 
+      : (companyId ? [companyId] : []);
 
     // Validate required fields
-    if (!email || !password || !name || !mobile || !companyId) {
+    if (!email || !password || !name || !mobile || finalCompanyIds.length === 0) {
       return res.status(400).json({ 
         success: false, 
-        message: 'All fields are required: email, password, name, mobile, companyId' 
+        message: 'All fields are required: email, password, name, mobile, and at least one companyId' 
       });
     }
 
@@ -156,16 +161,28 @@ export const createAdmin = async (req, res) => {
       });
     }
 
-    // Verify company exists
-    const company = await Company.findById(companyId);
-    if (!company) {
+    // Verify all companies exist
+    const companies = await Company.find({ _id: { $in: finalCompanyIds } });
+    if (companies.length !== finalCompanyIds.length) {
       return res.status(400).json({ 
         success: false, 
-        message: 'Company not found' 
+        message: 'One or more companies not found' 
       });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Use first company as default
+    const defaultCompanyId = finalCompanyIds[0];
+
+    // Create companies array
+    const companiesArray = finalCompanyIds.map(compId => ({
+      companyId: compId,
+      role: 'admin',
+      isActive: true,
+      assignedBy: req.user.userId,
+      assignedAt: new Date()
+    }));
 
     const admin = await User.create({
       email,
@@ -173,28 +190,26 @@ export const createAdmin = async (req, res) => {
       name,
       mobile,
       role: 'admin',
-      defaultCompany: companyId,
-      companies: [{
-        companyId: companyId,
-        role: 'admin',
-        isActive: true,
-        assignedBy: req.user.userId
-      }],
+      defaultCompany: defaultCompanyId,
+      companies: companiesArray,
       hierarchy: {
         level: 1
       },
       createdBy: req.user.userId
     });
 
-    // Update company with admin assignment
-    await Company.findByIdAndUpdate(companyId, {
-      $push: {
-        assignedAdmins: {
-          adminId: admin._id,
-          isActive: true
+    // Update all companies with admin assignment
+    await Company.updateMany(
+      { _id: { $in: finalCompanyIds } },
+      {
+        $push: {
+          assignedAdmins: {
+            adminId: admin._id,
+            isActive: true
+          }
         }
       }
-    });
+    );
 
     // Return admin without password
     const adminResponse = await User.findById(admin._id)
@@ -331,7 +346,7 @@ export const listAdmins = async (req, res) => {
 export const updateAdmin = async (req, res) => {
   try {
     const { id } = req.params;
-    const { email, name, password, mobile, companyId } = req.body;
+    const { email, name, password, mobile, companyId, companyIds, defaultCompanyId } = req.body;
 
     // Validate required fields
     if (!email || !name || !mobile) {
@@ -369,6 +384,15 @@ export const updateAdmin = async (req, res) => {
       });
     }
 
+    // Get current admin to preserve existing companies if not updating
+    const currentAdmin = await User.findById(id);
+    if (!currentAdmin) {
+      return res.status(404).json({
+        success: false,
+        message: 'Admin not found'
+      });
+    }
+
     // Build update object
     const update = {
       email,
@@ -381,27 +405,83 @@ export const updateAdmin = async (req, res) => {
       update.password = await bcrypt.hash(password, 10);
     }
 
-    // Update company assignment if provided
-    if (companyId) {
-      // Verify company exists
-      const company = await Company.findById(companyId);
-      if (!company) {
+    // Update company assignments if provided
+    // Support both single companyId (backward compatibility) and companyIds array
+    const finalCompanyIds = companyIds && Array.isArray(companyIds) && companyIds.length > 0 
+      ? companyIds 
+      : (companyId ? [companyId] : null);
+
+    if (finalCompanyIds && finalCompanyIds.length > 0) {
+      // Verify all companies exist
+      const companies = await Company.find({ _id: { $in: finalCompanyIds } });
+      if (companies.length !== finalCompanyIds.length) {
         return res.status(400).json({
           success: false,
-          message: 'Company not found'
+          message: 'One or more companies not found'
         });
       }
 
-      // Update default company
-      update.defaultCompany = companyId;
+      // Determine default company (use provided defaultCompanyId or first in array)
+      const newDefaultCompanyId = defaultCompanyId || finalCompanyIds[0];
+      
+      // Verify default company is in the list
+      if (!finalCompanyIds.includes(newDefaultCompanyId)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Default company must be one of the assigned companies'
+        });
+      }
 
-      // Update companies array
-      update.companies = [{
-        companyId: companyId,
+      update.defaultCompany = newDefaultCompanyId;
+
+      // Create companies array
+      update.companies = finalCompanyIds.map(compId => ({
+        companyId: compId,
         role: 'admin',
         isActive: true,
-        assignedBy: req.user.userId
-      }];
+        assignedBy: req.user.userId,
+        assignedAt: new Date()
+      }));
+
+      // Get old company IDs to remove admin assignment
+      const oldCompanyIds = (currentAdmin.companies || [])
+        .map((c) => c.companyId?.toString() || c.companyId)
+        .filter((cid) => cid);
+
+      // Remove admin from old companies that are no longer assigned
+      const companiesToRemove = oldCompanyIds.filter((oldId) => 
+        !finalCompanyIds.some((newId) => newId.toString() === oldId)
+      );
+
+      if (companiesToRemove.length > 0) {
+        await Company.updateMany(
+          { _id: { $in: companiesToRemove } },
+          {
+            $pull: {
+              assignedAdmins: { adminId: id }
+            }
+          }
+        );
+      }
+
+      // Add admin to new companies
+      const companiesToAdd = finalCompanyIds.filter((newId) => 
+        !oldCompanyIds.some((oldId) => oldId === newId.toString())
+      );
+
+      if (companiesToAdd.length > 0) {
+        await Company.updateMany(
+          { _id: { $in: companiesToAdd } },
+          {
+            $push: {
+              assignedAdmins: {
+                adminId: id,
+                isActive: true
+              }
+            }
+          }
+        );
+      }
     }
 
     const updated = await User.findOneAndUpdate(
@@ -417,18 +497,6 @@ export const updateAdmin = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'Admin not found'
-      });
-    }
-
-    // Update company with admin assignment if company was changed
-    if (companyId) {
-      await Company.findByIdAndUpdate(companyId, {
-        $push: {
-          assignedAdmins: {
-            adminId: id,
-            isActive: true
-          }
-        }
       });
     }
 

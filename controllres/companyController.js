@@ -212,7 +212,7 @@ export const getCompanies = async (req, res) => {
 
         const companies = await Company.find(searchQuery)
             .populate('createdBy', 'name email')
-            .populate('assignedAdmins.adminId', 'name email')
+            .populate('assignedAdmins.adminId', 'name email mobile')
             .sort({ createdAt: -1 })
             .skip(skip)
             .limit(limit);
@@ -265,11 +265,30 @@ export const getCompanies = async (req, res) => {
                     }
                 ]);
 
-                // Get assigned admin information
+                // Get assigned admin information (for backward compatibility - default admin)
                 const assignedAdmin = await User.findOne({ 
                     defaultCompany: companyId, 
                     role: 'admin' 
                 }).select('name email mobile');
+
+                // Get all assigned admins from company.assignedAdmins (already populated)
+                const allAssignedAdmins = company.assignedAdmins && Array.isArray(company.assignedAdmins)
+                    ? company.assignedAdmins
+                        .filter((a) => a.isActive)
+                        .map((a) => {
+                            const admin = a.adminId;
+                            if (typeof admin === 'object' && admin) {
+                                return {
+                                    _id: admin._id || admin.toString(),
+                                    name: admin.name || '',
+                                    email: admin.email || '',
+                                    mobile: admin.mobile || ''
+                                };
+                            }
+                            return null;
+                        })
+                        .filter(Boolean)
+                    : [];
 
                 return {
                     ...company.toObject(),
@@ -286,7 +305,8 @@ export const getCompanies = async (req, res) => {
                         name: assignedAdmin.name,
                         email: assignedAdmin.email,
                         mobile: assignedAdmin.mobile
-                    } : null
+                    } : null,
+                    assignedAdmins: allAssignedAdmins
                 };
             })
         );
@@ -331,7 +351,7 @@ export const getCompanyById = async (req, res) => {
 
         const company = await Company.findById(companyId)
             .populate('createdBy', 'name email')
-            .populate('assignedAdmins.adminId', 'name email');
+            .populate('assignedAdmins.adminId', 'name email mobile');
 
         if (!company) {
             return res.status(404).json({
@@ -415,6 +435,25 @@ export const getCompanyById = async (req, res) => {
             .select('name email role isActive lastLogin createdAt')
             .sort({ createdAt: -1 });
 
+        // Get all assigned admins from company.assignedAdmins (already populated)
+        const allAssignedAdmins = company.assignedAdmins && Array.isArray(company.assignedAdmins)
+            ? company.assignedAdmins
+                .filter((a) => a.isActive)
+                .map((a) => {
+                    const admin = a.adminId;
+                    if (typeof admin === 'object' && admin && admin._id) {
+                        return {
+                            _id: admin._id.toString(),
+                            name: admin.name || '',
+                            email: admin.email || '',
+                            mobile: admin.mobile || ''
+                        };
+                    }
+                    return null;
+                })
+                .filter(Boolean)
+            : [];
+
         const companyWithDetails = {
             ...company.toObject(),
             stats: {
@@ -432,6 +471,7 @@ export const getCompanyById = async (req, res) => {
                 mobile: assignedAdmin.mobile,
                 lastLogin: assignedAdmin.lastLogin
             } : null,
+            assignedAdmins: allAssignedAdmins,
             recentOrders: recentOrders,
             allUsers: allUsers
         };

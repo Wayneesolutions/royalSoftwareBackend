@@ -516,36 +516,85 @@ export const getUsersByRole = async (req, res) => {
  */
 export const getUserProfile = async (req, res) => {
   try {
-    const userId = req.user.userId
+    console.log('=== getUserProfile called ===');
+    console.log('Request user:', req.user);
+    
+    const userId = req.user?.userId;
+    console.log('User ID:', userId);
 
+    if (!userId) {
+      console.error('No userId found in req.user');
+      return res.status(400).json({
+        success: false,
+        message: 'User ID is required'
+      });
+    }
+
+    console.log('Fetching user from database...');
     const user = await User.findById(userId)
       .select('-password')
       .populate('defaultCompany', 'companyName companyCode companyEmail companyMobile contactDetails')
       .populate('companies.companyId', 'companyName companyCode companyEmail companyMobile contactDetails')
-      .populate('hierarchy.parentUser', 'name email role')
-      .populate('createdBy', 'name email')
+      .populate('hierarchy.parentUserId', 'name email role')
+      .populate('createdBy', 'name email');
 
+    console.log('User found:', user ? 'Yes' : 'No');
+    
     if (!user) {
+      console.error('User not found for ID:', userId);
       return res.status(404).json({
         success: false,
         message: 'User not found'
-      })
+      });
     }
 
+    // Get profile image - return as-is for now
+    // Signed URL generation can be added later once AWS SDK is properly configured
+    const profileImageUrl = user.profileImage || null;
+    console.log('Profile image URL:', profileImageUrl ? 'Present' : 'Not set');
+
+    // Convert user to plain object safely
+    console.log('Converting user to object...');
+    let userObject;
+    try {
+      userObject = user.toObject ? user.toObject() : user;
+      console.log('User object converted successfully');
+    } catch (convertError) {
+      console.error('Error converting user to object:', convertError);
+      console.error('Convert error stack:', convertError.stack);
+      throw convertError;
+    }
+    
+    console.log('Sending response...');
     res.json({
       success: true,
       message: 'User profile retrieved successfully',
       data: {
-        user
+        user: {
+          ...userObject,
+          profileImage: profileImageUrl
+        }
       }
-    })
+    });
+    console.log('Response sent successfully');
 
   } catch (error) {
-    console.error('Error fetching user profile:', error)
+    console.error('========== ERROR IN getUserProfile ==========');
+    console.error('Error message:', error.message);
+    console.error('Error name:', error.name);
+    console.error('Error stack:', error.stack);
+    console.error('Full error object:', JSON.stringify(error, Object.getOwnPropertyNames(error)));
+    console.error('=============================================');
+    
     res.status(500).json({
       success: false,
-      message: 'Server error while fetching user profile'
-    })
+      message: 'Server error while fetching user profile',
+      error: process.env.NODE_ENV === 'development' ? {
+        message: error.message,
+        name: error.name,
+        stack: error.stack
+      } : undefined
+    });
   }
 }
 
@@ -577,7 +626,7 @@ export const getUserProfile = async (req, res) => {
 export const updateUserProfile = async (req, res) => {
   try {
     const userId = req.user.userId
-    const { name, email, mobile } = req.body
+    const { name, email, mobile, profileImage } = req.body
 
     // Check if email or mobile already exists for other users
     if (email) {
@@ -611,6 +660,7 @@ export const updateUserProfile = async (req, res) => {
     if (name) updateData.name = name
     if (email) updateData.email = email
     if (mobile) updateData.mobile = mobile
+    if (profileImage !== undefined) updateData.profileImage = profileImage
 
     const updatedUser = await User.findByIdAndUpdate(
       userId,

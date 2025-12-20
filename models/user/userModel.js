@@ -242,6 +242,11 @@ const userSchema = new mongoose.Schema({
             default: Date.now
         }
     },
+    profileImage: {
+        type: String,
+        trim: true,
+        default: ''
+    },
     isActive: {
         type: Boolean,
         default: true

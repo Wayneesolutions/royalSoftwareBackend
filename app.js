@@ -16,6 +16,7 @@ import zonalRoute from './routes/zonalRoute.js'
 import rsmRoute from './routes/rsmRoute.js'
 import asmRoute from './routes/asmRoute.js'
 import dealerTeamRoute from './routes/dealerTeamRoute.js'
+import uploadRoute from './routes/uploadRoute.js'
 import path from 'path'
 import { fileURLToPath } from 'url';
 import { superAdminRoute } from './routes/superAdminRoute.js'
@@ -93,6 +94,7 @@ app.use('/api/v1/rsm', rsmRoute)
 app.use('/api/v1/asm', asmRoute)
 app.use('/api/v1/dealer', dealerTeamRoute)
 app.use('/api/v1/tally', tallyRoute)
+app.use('/api/v1/upload', uploadRoute)
   app.use('/api/v1/superadmin', superAdminRoute)
   //404 handler for unmatched routes
   app.use((req, res) => {
