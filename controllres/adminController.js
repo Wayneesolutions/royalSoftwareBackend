@@ -3773,10 +3773,11 @@ export const getUsersByCompany = async (req, res) => {
     });
     
     const users = await User.find(query)
-      .select('name email mobile role userName isActive address companies defaultCompany lastLogin createdAt groups hierarchy subdealerDetails')
+      .select('name email mobile role userName isActive address companies defaultCompany lastLogin createdAt groups hierarchy subdealerDetails assignedDealerIds')
       .populate('hierarchy.parentUserId', 'name email role mobile')
       .populate('companies.companyId', 'companyName companyCode')
       .populate('defaultCompany', 'companyName companyCode')
+      .populate('assignedDealerIds', 'LedgerName LedgerGUID LedgerMobile Email')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit))
@@ -4111,6 +4112,7 @@ export const getUsersByCompany = async (req, res) => {
           level: userObj.hierarchy?.level || null
         },
         companies: formattedCompanies,
+        assignedDealerIds: userObj.assignedDealerIds || [], // Include assigned dealer IDs
         createdAt: userObj.createdAt
       };
     }));
