@@ -849,13 +849,19 @@ export const getSubDealersByDealer = async (req, res) => {
     console.log('getSubDealersByDealer - Dealer ID:', dealerId);
     console.log('getSubDealersByDealer - Company ID:', companyId);
 
-    // Get subdealers created by this dealer
+    // Get subdealers that are:
+    // 1. Assigned to this dealer (via dealerId field) OR
+    // 2. Created by this dealer (via createdBy field) - for backward compatibility
     const subDealers = await SubDealer.find({
-      createdBy: dealerId,
+      $or: [
+        { dealerId: dealerId },      // Assigned to this dealer
+        { createdBy: dealerId }       // Created by this dealer (backward compatibility)
+      ],
       companyId: companyId,
       isActive: true
     })
-      .select('_id SDName SDType SDAddress1 SDAddress2 SDAddress3 SDState SDCountry SDPincode SDContactPerson SDMobileNo SDEmail SDGSTNType SDGSTNNumber groupId isActive createdAt')
+      .select('_id SDName SDType SDAddress1 SDAddress2 SDAddress3 SDState SDCountry SDPincode SDContactPerson SDMobileNo SDEmail SDGSTNType SDGSTNNumber dealerId groupId isActive createdAt')
+      .populate('dealerId', 'LedgerGUID LedgerName LedgerMobile Email')
       .populate('groupId', 'GroupName GroupGUID')
       .sort({ SDName: 1 })
       .lean();
@@ -886,6 +892,7 @@ export const getSubDealersByDealer = async (req, res) => {
         pincode: subdealer.SDPincode || '',
         country: subdealer.SDCountry || 'India',
       },
+      dealerId: subdealer.dealerId,      // Include dealer assignment
       groupId: subdealer.groupId,
       isActive: subdealer.isActive,
       createdAt: subdealer.createdAt

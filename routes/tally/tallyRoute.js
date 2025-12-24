@@ -21,6 +21,7 @@ import {
   listProductsByCompanyGuid,
   listUsersByCompanyGuid,
   listApprovedOrdersByCompanyGuid,
+  listUnapprovedOrdersByCompanyGuid,
 } from '../../controllres/tallyQueryController.js';
 import {
   upsertGroupFromTally,
@@ -1092,6 +1093,31 @@ tallyRoute.get('/companies/:guid/users', listUsersByCompanyGuid);
  *     responses:
  *       200:
  *         description: Orders returned successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 company:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                     name:
+ *                       type: string
+ *                     code:
+ *                       type: string
+ *                     guid:
+ *                       type: string
+ *                 totalOrders:
+ *                   type: integer
+ *                 orders:
+ *                   type: array
+ *                   items:
+ *                     type: object
  *       400:
  *         description: Missing or invalid GUID
  *       404:
@@ -1100,6 +1126,104 @@ tallyRoute.get('/companies/:guid/users', listUsersByCompanyGuid);
  *         description: Server error while fetching orders
  */
 tallyRoute.get('/companies/:guid/orders/approved', listApprovedOrdersByCompanyGuid);
+
+/**
+ * @swagger
+ * /api/v1/tally/companies/{guid}/orders/unapproved:
+ *   get:
+ *     summary: Fetch unapproved/draft orders for a company by GUID
+ *     description: Returns all draft and pending approval orders associated with the specified company.
+ *     tags: [Tally Orders]
+ *     parameters:
+ *       - in: path
+ *         name: guid
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Company GUID as provided by Tally (alphanumeric string)
+ *     responses:
+ *       200:
+ *         description: Unapproved orders returned successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 company:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                     name:
+ *                       type: string
+ *                     code:
+ *                       type: string
+ *                     guid:
+ *                       type: string
+ *                 totalOrders:
+ *                   type: integer
+ *                 orders:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       orderNumber:
+ *                         type: string
+ *                       status:
+ *                         type: string
+ *                         enum: [draft, pending_approval]
+ *                       customerName:
+ *                         type: string
+ *                       customerEmail:
+ *                         type: string
+ *                       customerMobile:
+ *                         type: string
+ *                       dealerName:
+ *                         type: string
+ *                       subDealerName:
+ *                         type: string
+ *                       totalAmount:
+ *                         type: number
+ *                       finalAmount:
+ *                         type: number
+ *                       taxAmount:
+ *                         type: number
+ *                       taxableValueTotal:
+ *                         type: number
+ *                       cgstTotal:
+ *                         type: number
+ *                       sgstTotal:
+ *                         type: number
+ *                       igstTotal:
+ *                         type: number
+ *                       createdBy:
+ *                         type: object
+ *                         properties:
+ *                           name:
+ *                             type: string
+ *                           email:
+ *                             type: string
+ *                           userName:
+ *                             type: string
+ *                           role:
+ *                             type: string
+ *                       createdAt:
+ *                         type: string
+ *                         format: date-time
+ *                       updatedAt:
+ *                         type: string
+ *                         format: date-time
+ *       400:
+ *         description: Missing or invalid GUID
+ *       404:
+ *         description: Company not found
+ *       500:
+ *         description: Server error while fetching orders
+ */
+tallyRoute.get('/companies/:guid/orders/unapproved', listUnapprovedOrdersByCompanyGuid);
 
 /**
  * @swagger

@@ -7083,7 +7083,12 @@ export const deleteDealer = async (req, res) => {
  * @swagger
  * /api/v1/admin/subdealers:
  *   post:
- *     summary: Create a new subdealer
+ *     summary: Create a new subdealer with dealer assignment
+ *     description: |
+ *       Creates a new subdealer and links it to a dealer. Admin's current company is automatically assigned.
+ *       - dealerId: Select a dealer from the dropdown to link with the subdealer
+ *       - groupId: Optional - if not provided, the dealer's group will be auto-assigned if available
+ *       - Company is auto-assigned from admin's current company
  *     tags: [Admin]
  *     security:
  *       - bearerAuth: []
@@ -7099,9 +7104,14 @@ export const deleteDealer = async (req, res) => {
  *             properties:
  *               SDName:
  *                 type: string
+ *                 description: Subdealer name
  *               SDType:
  *                 type: string
  *                 enum: [Sub Dealer, TSO]
+ *                 description: Subdealer type
+ *               dealerId:
+ *                 type: string
+ *                 description: Dealer ID to link with this subdealer (optional but recommended)
  *               SDAddress1:
  *                 type: string
  *               SDAddress2:
@@ -7112,6 +7122,7 @@ export const deleteDealer = async (req, res) => {
  *                 type: string
  *               SDCountry:
  *                 type: string
+ *                 default: India
  *               SDPincode:
  *                 type: string
  *               SDContactPerson:
@@ -7126,6 +7137,10 @@ export const deleteDealer = async (req, res) => {
  *                 type: string
  *               groupId:
  *                 type: string
+ *                 description: Group ID (optional - dealer's group will be used if not provided)
+ *               isActive:
+ *                 type: boolean
+ *                 default: true
  *     responses:
  *       201:
  *         description: Subdealer created successfully
@@ -7152,7 +7167,8 @@ export const createSubDealer = async (req, res) => {
       SDEmail,
       SDGSTNType,
       SDGSTNNumber,
-      groupId,
+      dealerId,  // New: dealer selection
+      groupId,   // Optional: group is no longer required
       isActive = true
     } = req.body;
 
@@ -7212,8 +7228,35 @@ export const createSubDealer = async (req, res) => {
       });
     }
 
-    // Validate and assign group if provided
-    let finalGroupId = null;
+    // Validate and get dealer if provided
+    let finalDealerId = null;
+    let dealerGroupId = null;
+    
+    if (dealerId) {
+      const dealer = await Ledger.findOne({
+        _id: dealerId,
+        companyId: companyId,
+        isActive: true
+      });
+      
+      if (!dealer) {
+        return res.status(400).json({
+          success: false,
+          message: "Dealer not found or not active for this company"
+        });
+      }
+      
+      finalDealerId = dealer._id;
+      
+      // Auto-assign dealer's group to subdealer if dealer has a group
+      if (dealer.groupId) {
+        dealerGroupId = dealer.groupId;
+      }
+    }
+
+    // Validate and assign group if provided (optional, can override dealer's group)
+    let finalGroupId = dealerGroupId; // Start with dealer's group
+    
     if (groupId) {
       const group = await Group.findOne({ 
         _id: groupId, 
@@ -7226,7 +7269,7 @@ export const createSubDealer = async (req, res) => {
           message: "Group not found or not active for this company"
         });
       }
-      finalGroupId = group._id;
+      finalGroupId = group._id; // Override with explicitly provided group
     }
 
     // Create the subdealer
@@ -7244,15 +7287,19 @@ export const createSubDealer = async (req, res) => {
       SDEmail: SDEmail || '',
       SDGSTNType: SDGSTNType || '',
       SDGSTNNumber: SDGSTNNumber ? SDGSTNNumber.trim().toUpperCase() : '',
-      groupId: finalGroupId,
-      companyId: companyId,
+      dealerId: finalDealerId,    // Link to dealer
+      groupId: finalGroupId,      // Optional group assignment
+      companyId: companyId,       // Auto-assigned from admin's company
       cmpcode: company.companyCode,
       Cmpguid: company.guid || company.companyCode,
       isActive: isActive !== false,
       createdBy: adminId
     });
 
-    // Populate group if assigned
+    // Populate dealer and group if assigned
+    if (finalDealerId) {
+      await newSubDealer.populate('dealerId', 'LedgerGUID LedgerName LedgerMobile Email');
+    }
     if (finalGroupId) {
       await newSubDealer.populate('groupId', 'GroupGUID GroupName GroupParent cmpcode');
     }
@@ -7275,6 +7322,12 @@ export const createSubDealer = async (req, res) => {
         SDEmail: newSubDealer.SDEmail,
         SDGSTNType: newSubDealer.SDGSTNType,
         SDGSTNNumber: newSubDealer.SDGSTNNumber,
+        dealerId: newSubDealer.dealerId,
+        dealer: newSubDealer.dealerId ? {
+          _id: newSubDealer.dealerId._id,
+          LedgerGUID: newSubDealer.dealerId.LedgerGUID,
+          LedgerName: newSubDealer.dealerId.LedgerName
+        } : null,
         groupId: newSubDealer.groupId,
         group: newSubDealer.groupId ? {
           _id: newSubDealer.groupId._id,
@@ -7406,7 +7459,8 @@ export const getAllSubDealers = async (req, res) => {
 
     // Get all subdealers for this company
     const subdealers = await SubDealer.find(query)
-      .select('_id SDName SDType SDAddress1 SDAddress2 SDAddress3 SDState SDCountry SDPincode SDContactPerson SDMobileNo SDEmail SDGSTNType SDGSTNNumber groupId cmpcode Cmpguid isActive createdAt')
+      .select('_id SDName SDType SDAddress1 SDAddress2 SDAddress3 SDState SDCountry SDPincode SDContactPerson SDMobileNo SDEmail SDGSTNType SDGSTNNumber dealerId groupId cmpcode Cmpguid isActive createdAt')
+      .populate('dealerId', 'LedgerGUID LedgerName LedgerMobile Email')
       .populate('groupId', 'GroupGUID GroupName GroupParent cmpcode')
       .sort({ SDName: 1 })
       .lean();
@@ -7434,6 +7488,7 @@ export const getAllSubDealers = async (req, res) => {
  * /api/v1/admin/subdealers/{subdealerId}:
  *   put:
  *     summary: Update an existing subdealer
+ *     description: Update subdealer information including dealer assignment
  *     tags: [Admin]
  *     security:
  *       - bearerAuth: []
@@ -7456,6 +7511,9 @@ export const getAllSubDealers = async (req, res) => {
  *               SDType:
  *                 type: string
  *                 enum: [Sub Dealer, TSO]
+ *               dealerId:
+ *                 type: string
+ *                 description: Dealer ID to link with this subdealer
  *               SDAddress1:
  *                 type: string
  *               SDAddress2:
@@ -7480,6 +7538,7 @@ export const getAllSubDealers = async (req, res) => {
  *                 type: string
  *               groupId:
  *                 type: string
+ *                 description: Group ID (optional)
  *               isActive:
  *                 type: boolean
  *     responses:
@@ -7511,6 +7570,7 @@ export const updateSubDealer = async (req, res) => {
       SDEmail,
       SDGSTNType,
       SDGSTNNumber,
+      dealerId,   // New: dealer assignment update
       groupId,
       isActive
     } = req.body;
@@ -7565,6 +7625,27 @@ export const updateSubDealer = async (req, res) => {
         success: false,
         message: "Subdealer not found"
       });
+    }
+
+    // Validate and update dealer if provided
+    if (dealerId !== undefined) {
+      if (dealerId === null || dealerId === '') {
+        subdealer.dealerId = null;
+      } else {
+        const dealer = await Ledger.findOne({
+          _id: dealerId,
+          companyId: companyId,
+          isActive: true
+        });
+        
+        if (!dealer) {
+          return res.status(400).json({
+            success: false,
+            message: "Dealer not found or not active for this company"
+          });
+        }
+        subdealer.dealerId = dealer._id;
+      }
     }
 
     // Validate and update group if provided
@@ -7627,7 +7708,8 @@ export const updateSubDealer = async (req, res) => {
     // Save the updated subdealer
     await subdealer.save();
 
-    // Populate group for response
+    // Populate dealer and group for response
+    await subdealer.populate('dealerId', 'LedgerGUID LedgerName LedgerMobile Email');
     await subdealer.populate('groupId', 'GroupGUID GroupName GroupParent cmpcode');
 
     res.json({
@@ -7648,6 +7730,12 @@ export const updateSubDealer = async (req, res) => {
         SDEmail: subdealer.SDEmail,
         SDGSTNType: subdealer.SDGSTNType,
         SDGSTNNumber: subdealer.SDGSTNNumber,
+        dealerId: subdealer.dealerId,
+        dealer: subdealer.dealerId ? {
+          _id: subdealer.dealerId._id,
+          LedgerGUID: subdealer.dealerId.LedgerGUID,
+          LedgerName: subdealer.dealerId.LedgerName
+        } : null,
         groupId: subdealer.groupId,
         group: subdealer.groupId ? {
           _id: subdealer.groupId._id,

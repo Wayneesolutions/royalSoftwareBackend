@@ -67,10 +67,17 @@ const subdealerSchema = new mongoose.Schema({
     uppercase: true,
   },
   
-  // Group Assignment
+  // Group Assignment (optional)
   groupId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Group',
+    index: true,
+  },
+  
+  // Dealer Assignment (link to dealer/ledger)
+  dealerId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Ledger',
     index: true,
   },
   
@@ -115,6 +122,8 @@ subdealerSchema.index({ SDType: 1 });
 subdealerSchema.index({ companyId: 1, isActive: 1 });
 subdealerSchema.index({ cmpcode: 1, isActive: 1 });
 subdealerSchema.index({ groupId: 1 });
+subdealerSchema.index({ dealerId: 1 });
+subdealerSchema.index({ dealerId: 1, companyId: 1, isActive: 1 });
 subdealerSchema.index({ SDMobileNo: 1 });
 subdealerSchema.index({ SDEmail: 1 });
 

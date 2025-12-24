@@ -663,6 +663,244 @@ GET /api/v1/tally/company/68f4d554e863e90829877a60/sales-report?groupBy=monthly&
 
 ---
 
+## 🔍 **GUID-Based Query Endpoints**
+
+These endpoints allow Tally CA to fetch data using Company GUID for easy integration.
+
+### GET Companies List
+**Endpoint:** `GET /companies`
+
+**Description:** Fetch all companies available in Royal App
+
+**Example Request:**
+```bash
+GET /api/v1/tally/companies
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "totalCompanies": 2,
+  "companies": [
+    {
+      "_id": "68f4d554e863e90829877a60",
+      "companyName": "Royal Industries",
+      "companyCode": "ROYAL",
+      "companyEmail": "info@royal.com",
+      "companyMobile": "9876543210",
+      "companyState": "Tamil Nadu",
+      "companyCountry": "India",
+      "guid": "abc123xyz",
+      "maxUser": 50,
+      "isActive": true,
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-12-24T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+### GET Company Products by GUID
+**Endpoint:** `GET /companies/{guid}/products`
+
+**Description:** Fetch all products for a company using Company GUID
+
+**Path Parameters:**
+- `guid` (required): Company GUID as provided by Tally
+
+**Example Request:**
+```bash
+GET /api/v1/tally/companies/abc123xyz/products
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "company": {
+    "id": "68f4d554e863e90829877a60",
+    "name": "Royal Industries",
+    "code": "ROYAL",
+    "guid": "abc123xyz"
+  },
+  "totalProducts": 10,
+  "products": [
+    {
+      "_id": "68f8cd55d473fa8d4af0b818",
+      "productCode": "PROD-001",
+      "productName": "Sample Product",
+      "description": "Product description",
+      "category": "Electronics",
+      "subCategory": "Mobile",
+      "brand": "Samsung",
+      "price": 15000,
+      "stock": 100,
+      "gstRate": 18,
+      "isActive": true,
+      "createdAt": "2024-01-15T10:30:00.000Z",
+      "updatedAt": "2024-12-24T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+### GET Company Users by GUID
+**Endpoint:** `GET /companies/{guid}/users`
+
+**Description:** Fetch all users associated with a company using Company GUID
+
+**Path Parameters:**
+- `guid` (required): Company GUID as provided by Tally
+
+**Example Request:**
+```bash
+GET /api/v1/tally/companies/abc123xyz/users
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "company": {
+    "id": "68f4d554e863e90829877a60",
+    "name": "Royal Industries",
+    "code": "ROYAL",
+    "guid": "abc123xyz"
+  },
+  "totalUsers": 5,
+  "users": [
+    {
+      "id": "66ff3d6bd7d7bf3f288c0bef",
+      "name": "John Doe",
+      "email": "john@royal.com",
+      "mobile": "9876543210",
+      "userName": "JOHN-001",
+      "role": "dealers",
+      "isActive": true,
+      "address": {
+        "street": "12 Market Road",
+        "city": "Chennai",
+        "state": "Tamil Nadu",
+        "pincode": "600001",
+        "country": "India"
+      },
+      "defaultCompany": true,
+      "assignedAt": "2024-01-01T00:00:00.000Z",
+      "assignmentRole": "dealers",
+      "lastUpdated": "2024-12-24T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+### GET Approved Orders by Company GUID
+**Endpoint:** `GET /companies/{guid}/orders/approved`
+
+**Description:** Fetch all approved orders (approved, sent_to_tally, dispatched, delivered) for a company using Company GUID
+
+**Path Parameters:**
+- `guid` (required): Company GUID as provided by Tally
+
+**Example Request:**
+```bash
+GET /api/v1/tally/companies/abc123xyz/orders/approved
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "company": {
+    "id": "68f4d554e863e90829877a60",
+    "name": "Royal Industries",
+    "code": "ROYAL",
+    "guid": "abc123xyz"
+  },
+  "totalOrders": 15,
+  "orders": [
+    {
+      "_id": "68f8cd55d473fa8d4af0b817",
+      "orderNumber": "ROYAL-ORD-20241224-0001",
+      "status": "approved",
+      "customerName": "Customer Name",
+      "customerEmail": "customer@example.com",
+      "customerMobile": "9876543210",
+      "totalAmount": 10000,
+      "finalAmount": 11800,
+      "taxAmount": 1800,
+      "taxableValueTotal": 10000,
+      "cgstTotal": 900,
+      "sgstTotal": 900,
+      "igstTotal": 0,
+      "createdAt": "2024-12-24T10:30:00.000Z",
+      "updatedAt": "2024-12-24T11:00:00.000Z"
+    }
+  ]
+}
+```
+
+### GET Unapproved/Draft Orders by Company GUID
+**Endpoint:** `GET /companies/{guid}/orders/unapproved`
+
+**Description:** Fetch all unapproved orders (draft, pending_approval) for a company using Company GUID. This is useful for Tally CA to view orders that are still in draft state or awaiting approval.
+
+**Path Parameters:**
+- `guid` (required): Company GUID as provided by Tally
+
+**Example Request:**
+```bash
+GET /api/v1/tally/companies/abc123xyz/orders/unapproved
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "company": {
+    "id": "68f4d554e863e90829877a60",
+    "name": "Royal Industries",
+    "code": "ROYAL",
+    "guid": "abc123xyz"
+  },
+  "totalOrders": 8,
+  "orders": [
+    {
+      "_id": "68f8cd55d473fa8d4af0b820",
+      "orderNumber": "ROYAL-ORD-20241224-0005",
+      "status": "draft",
+      "customerName": "Test Customer",
+      "customerEmail": "test@example.com",
+      "customerMobile": "9876543211",
+      "dealerName": "Royal Traders",
+      "subDealerName": "Sub Dealer 1",
+      "totalAmount": 5000,
+      "finalAmount": 5900,
+      "taxAmount": 900,
+      "taxableValueTotal": 5000,
+      "cgstTotal": 450,
+      "sgstTotal": 450,
+      "igstTotal": 0,
+      "createdBy": {
+        "_id": "66ff3d6bd7d7bf3f288c0bef",
+        "name": "Dealer Name",
+        "email": "dealer@royal.com",
+        "userName": "DEALER-001",
+        "role": "dealers"
+      },
+      "createdAt": "2024-12-24T09:30:00.000Z",
+      "updatedAt": "2024-12-24T09:45:00.000Z"
+    }
+  ]
+}
+```
+
+**Note:** Unapproved orders include:
+- `draft`: Orders that are saved but not yet submitted for approval
+- `pending_approval`: Orders that are submitted and awaiting admin approval
+
+---
+
 ## 🚨 **Error Handling**
 
 All endpoints return consistent error responses:

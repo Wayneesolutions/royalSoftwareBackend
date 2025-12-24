@@ -23,14 +23,47 @@ const findCompanyByGuid = async (rawGuid) => {
     return null;
   }
 
-  // Try exact match first
-  let company = await Company.findOne({ guid: normalizedGuid }).lean();
+  const escapedGuid = normalizedGuid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const numericGuid = Number(normalizedGuid);
+  const isNumeric = !Number.isNaN(numericGuid) && Number.isFinite(numericGuid);
 
-  // If not found, try case-insensitive search
+  // Build query conditions to handle both string and numeric GUIDs
+  const queryConditions = [
+    { guid: normalizedGuid },                    // Exact string match
+    { guid: { $regex: new RegExp(`^${escapedGuid}$`, 'i') } }  // Case-insensitive string match
+  ];
+
+  // If GUID looks numeric, also try numeric match
+  if (isNumeric) {
+    queryConditions.push({ guid: numericGuid }); // Numeric match
+    queryConditions.push({ guid: String(numericGuid) }); // String version of number
+  }
+
+  // Try each condition sequentially
+  let company = null;
+  for (const condition of queryConditions) {
+    company = await Company.findOne(condition).lean();
+    if (company) break;
+  }
+
+  // If still not found, try $or query
   if (!company) {
-    company = await Company.findOne({ 
-      guid: { $regex: new RegExp(`^${normalizedGuid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } 
-    }).lean();
+    company = await Company.findOne({ $or: queryConditions }).lean();
+  }
+
+  // If still not found and GUID is numeric, try querying collection directly
+  // This bypasses Mongoose's type checking for the String-typed guid field
+  // which is necessary because some GUIDs are stored as numbers in the database
+  if (!company && isNumeric) {
+    try {
+      const collection = Company.collection;
+      const rawDoc = await collection.findOne({ guid: numericGuid });
+      if (rawDoc) {
+        company = await Company.findById(rawDoc._id).lean();
+      }
+    } catch (error) {
+      console.error('[findCompanyByGuid] Error in direct collection query:', error);
+    }
   }
 
   return company;
@@ -212,6 +245,49 @@ export const listApprovedOrdersByCompanyGuid = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Failed to fetch approved orders for company',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
+};
+
+export const listUnapprovedOrdersByCompanyGuid = async (req, res) => {
+  try {
+    const rawGuid = req.params.guid || req.query.guid;
+    const company = await findCompanyByGuid(rawGuid);
+
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: 'Company not found for provided guid',
+      });
+    }
+
+    const orders = await Order.find({
+      companyId: company._id,
+      status: { $in: ['draft', 'pending_approval'] },
+    })
+      .select(
+        'orderNumber status customerName customerEmail customerMobile dealerName subDealerName totalAmount finalAmount taxAmount taxableValueTotal cgstTotal sgstTotal igstTotal createdAt updatedAt'
+      )
+      .populate('createdBy', 'name email userName role')
+      .lean();
+
+    return res.json({
+      success: true,
+      company: {
+        id: company._id,
+        name: company.companyName,
+        code: company.companyCode,
+        guid: company.guid,
+      },
+      totalOrders: orders.length,
+      orders,
+    });
+  } catch (error) {
+    console.error('Error fetching unapproved orders for Tally:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch unapproved orders for company',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
   }
