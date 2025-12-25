@@ -5,6 +5,87 @@ import User from "../models/user/userModel.js";
 import Company from "../models/company/companyModel.js";
 import Group from "../models/group/groupModel.js";
 import Ledger from "../models/ledger/ledgerModel.js";
+
+/**
+ * Helper function to recursively find all child groups
+ * Based on the user hierarchy:
+ * - Group B is a child of Group A if Group B's GroupParent equals the ID of a user in Group A
+ * 
+ * @param {string} groupGUID - The parent group GUID
+ * @param {string} cmpcode - The company code
+ * @param {mongoose.Types.ObjectId} companyId - The company ID
+ * @param {Set} visited - Set of already visited group GUIDs to prevent infinite loops
+ * @returns {Promise<Array>} - Array of child group objects with _id, GUID, and Name
+ */
+const findAllChildGroups = async (groupGUID, cmpcode, companyId, visited = new Set()) => {
+  const childGroups = [];
+  
+  // ✅ Prevent infinite loops by checking if we've already visited this group
+  if (visited.has(groupGUID)) {
+    console.log(`⚠️ findAllChildGroups - Already visited group GUID: ${groupGUID}, skipping to prevent infinite loop`);
+    return childGroups;
+  }
+  
+  // ✅ Mark this group as visited
+  visited.add(groupGUID);
+  
+  // Step 1: Find the group document to get its _id
+  const parentGroup = await Group.findOne({
+    GroupGUID: groupGUID,
+    cmpcode: cmpcode,
+    isActive: true
+  }).select('_id GroupGUID GroupName');
+  
+  if (!parentGroup) {
+    return childGroups;
+  }
+  
+  // Step 2: Find all users who belong to this parent group
+  const usersInParentGroup = await User.find({
+    'groups.groupId': parentGroup._id,
+    'groups.isActive': true,
+    'companies.companyId': companyId,
+    'companies.isActive': true,
+    isActive: true
+  }).select('_id name').lean();
+  
+  // Step 3: Get user IDs
+  const userIds = usersInParentGroup.map(u => u._id.toString());
+  
+  // Step 4: Find all groups where GroupParent equals any of these user IDs OR the parent group's GUID
+  // This handles both cases:
+  // - Correct case: GroupParent = user ID
+  // - Fallback case: GroupParent = Group GUID (for groups created before users were assigned)
+  
+  // ⚠️ REMOVED: Excessive logging of all groups in company
+  // Build query to find children with either user IDs OR group GUID as parent
+  const parentSearchCriteria = [groupGUID]; // Always include the Group GUID
+  if (userIds.length > 0) {
+    parentSearchCriteria.push(...userIds); // Also include user IDs if they exist
+  }
+  
+  const directChildren = await Group.find({
+    GroupParent: { $in: parentSearchCriteria },
+    cmpcode: cmpcode,
+    companyId: companyId,
+    isActive: true
+  }).select('_id GroupGUID GroupName');
+  
+  // Add direct children to the list
+  for (const child of directChildren) {
+    childGroups.push({
+      _id: child._id,
+      GroupGUID: child.GroupGUID,
+      GroupName: child.GroupName
+    });
+    
+    // Recursively find children of this child (pass the SAME visited Set)
+    const grandChildren = await findAllChildGroups(child.GroupGUID, cmpcode, companyId, visited);
+    childGroups.push(...grandChildren);
+  }
+  
+  return childGroups;
+};
 import SubDealer from "../models/subdealer/subdealerModel.js";
 
 /**
@@ -1471,6 +1552,7 @@ export const createUser = async (req, res) => {
         isActive: true
       });
       if (group) {
+        console.log(`✅ Found valid group by GUID: ${group.GroupName} (${group.GroupGUID})`);
         foundGroup = group;
         foundGroupId = group._id;
         foundGroupGUID = group.GroupGUID;
@@ -1482,6 +1564,8 @@ export const createUser = async (req, res) => {
         foundOther2 = group.other2 || null;
         foundOther3 = group.other3 || null;
         foundOther4 = group.other4 || null;
+      } else {
+        console.log(`⚠️ Group GUID provided but not found or not active: ${searchGUID}`);
       }
     }
     // Priority 3: Check if a group exists for this parent user (GroupParent = parentUserId)
@@ -1512,24 +1596,46 @@ export const createUser = async (req, res) => {
           // Use provided group fields or generate defaults
           const generatedGroupGUID = reqGroupGUIDField || await generateGroupGUID(company.companyCode);
           
-          // Generate GroupName: "{name} - {Role}" or use provided
-          const roleCapitalized = role === 'rsm' ? 'RSM' 
-            : role === 'asm' ? 'ASM'
-            : role === 'zonal' ? 'Zonal'
-            : role.charAt(0).toUpperCase() + role.slice(1);
-          const generatedGroupName = reqGroupName || `${name} - ${roleCapitalized}`;
+          // IMPORTANT: NEVER use reqGroupName as it could contain stale data like "Ludhiana"
+          // ALWAYS generate group name from current user data
+          const roleCapitalized = finalRole === 'rsm' ? 'RSM' 
+            : finalRole === 'asm' ? 'ASM'
+            : finalRole === 'zonal' ? 'Zonal'
+            : finalRole === 'groupuser' ? 'GroupUser'
+            : (finalRole ? finalRole.charAt(0).toUpperCase() + finalRole.slice(1) : 'User');
+          
+          // ALWAYS generate fresh group name, NEVER use reqGroupName
+          const generatedGroupName = `${name} - ${roleCapitalized}`;
+          
+          // Log warning if reqGroupName was provided
+          if (reqGroupName && reqGroupName !== generatedGroupName) {
+            console.log(`⚠️ Ignoring potentially stale reqGroupName: "${reqGroupName}", using generated: "${generatedGroupName}"`);
+          }
+
+          // IMPORTANT: Log group creation to catch stale data issues
+          console.log('🔍 Auto-creating group for user:', {
+            name,
+            role,
+            groupGUID: generatedGroupGUID,
+            groupName: generatedGroupName,
+            parentUserIdString,
+            companyCode: company.companyCode,
+            reqCmpcode: reqCmpcode,
+            reqRemarks: reqRemarks
+          });
 
           // Create new group with GroupParent = parentUserId (not GroupGUID)
+          // NEVER use request body fields that could contain stale data
           const newGroupData = {
             GroupGUID: generatedGroupGUID,
             GroupName: generatedGroupName,
             GroupParent: parentUserIdString, // ✅ GroupParent = UserId of parent user
-            cmpcode: reqCmpcode || company.companyCode,
-            Remarks: reqRemarks || `Group for ${name} (${role})`,
-            other1: reqOther1 || email || '',
-            other2: reqOther2 || mobile || '',
-            other3: reqOther3 || role || '',
-            other4: reqOther4 || parentUserForGroup?.name || '',
+            cmpcode: company.companyCode, // ✅ ALWAYS use current company code, never reqCmpcode
+            Remarks: `Group for ${name} (${finalRole})`, // ✅ Always generate fresh remarks
+            other1: email || '', // ✅ Use current email
+            other2: mobile || '', // ✅ Use current mobile
+            other3: finalRole || '', // ✅ Use current role
+            other4: parentUserForGroup?.name || '', // ✅ Use current parent name
             companyId: companyId,
             isActive: true,
             tallySyncStatus: 'pending',
@@ -1635,12 +1741,12 @@ export const createUser = async (req, res) => {
             groupGUID: foundGroupGUID,
             groupName: foundGroupName,
             groupParentUser: foundGroupParent || parentUserIdString, // GroupParent = parent user ID
-            cmpcode: foundCmpcode,
-            remarks: foundGroupRemarks || `Group for ${name} (${finalRole})`,
-            other1: foundOther1 || email || '',
-            other2: foundOther2 || mobile || '',
-            other3: foundOther3 || finalRole || '',
-            other4: foundOther4 || parentUserForGroup?.name || '',
+            cmpcode: company.companyCode, // ✅ Always use current company code
+            remarks: `Group for ${name} (${finalRole})`, // ✅ Always generate fresh
+            other1: email || '', // ✅ Use current data
+            other2: mobile || '', // ✅ Use current data
+            other3: finalRole || '', // ✅ Use current data
+            other4: parentUserForGroup?.name || '', // ✅ Use current data
             assignedBy: adminId,
             isActive: true,
             assignedAt: new Date()
@@ -2812,11 +2918,13 @@ export const createGroup = async (req, res) => {
       });
     }
 
-    // Validate GroupParent if provided
+    // Validate and convert GroupParent if provided
+    let finalGroupParent = null;
     if (GroupParent && GroupParent.trim()) {
       const parentGroup = await Group.findOne({
         GroupGUID: GroupParent.trim(),
-        cmpcode: company.companyCode
+        cmpcode: company.companyCode,
+        isActive: true
       });
 
       if (!parentGroup) {
@@ -2825,13 +2933,34 @@ export const createGroup = async (req, res) => {
           message: `Parent group with GUID ${GroupParent} not found`
         });
       }
+
+      // ✅ Find a user in the parent group to use as GroupParent
+      const userInParentGroup = await User.findOne({
+        'groups.groupId': parentGroup._id,
+        'groups.isActive': true,
+        'companies.companyId': companyId,
+        'companies.isActive': true,
+        isActive: true
+      }).select('_id name email');
+
+      if (userInParentGroup) {
+        // ✅ Store the user ID as GroupParent
+        finalGroupParent = userInParentGroup._id.toString();
+        console.log(`✅ Group "${GroupName}" will be created with parent user: ${userInParentGroup.name} (${userInParentGroup.email}) from group "${parentGroup.GroupName}"`);
+      } else {
+        // ⚠️ No users in parent group yet - store Group GUID temporarily
+        // This will need to be fixed later when users are assigned to the parent group
+        finalGroupParent = GroupParent.trim();
+        console.log(`⚠️ Group "${GroupName}" created with temporary parent GUID: ${GroupParent} (no users in parent group yet)`);
+        console.log(`   Run the fixGroupHierarchy script after assigning users to parent group "${parentGroup.GroupName}"`);
+      }
     }
 
     // Create the group
     const newGroup = await Group.create({
       GroupGUID: finalGroupGUID,
       GroupName: GroupName.trim(),
-      GroupParent: GroupParent || null,
+      GroupParent: finalGroupParent, // ✅ Now stores user ID, not Group GUID
       cmpcode: company.companyCode,
       Remarks: Remarks || '',
       other1: other1 || '',
@@ -3038,16 +3167,18 @@ export const updateGroup = async (req, res) => {
       });
     }
 
-    // Validate GroupParent if provided and different from current
+    // Validate and convert GroupParent if provided and different from current
     if (GroupParent !== undefined && GroupParent !== group.GroupParent) {
       if (GroupParent === null || GroupParent === '') {
         // Allow removing parent
         group.GroupParent = null;
+        console.log(`✅ Group "${group.GroupName}" parent removed`);
       } else {
         // Validate parent exists
         const parentGroup = await Group.findOne({
           GroupGUID: GroupParent,
-          cmpcode: company.companyCode
+          cmpcode: company.companyCode,
+          isActive: true
         });
 
         if (!parentGroup) {
@@ -3065,7 +3196,25 @@ export const updateGroup = async (req, res) => {
           });
         }
 
-        group.GroupParent = GroupParent;
+        // ✅ Find a user in the parent group to use as GroupParent
+        const userInParentGroup = await User.findOne({
+          'groups.groupId': parentGroup._id,
+          'groups.isActive': true,
+          'companies.companyId': companyId,
+          'companies.isActive': true,
+          isActive: true
+        }).select('_id name email');
+
+        if (userInParentGroup) {
+          // ✅ Store the user ID as GroupParent
+          group.GroupParent = userInParentGroup._id.toString();
+          console.log(`✅ Group "${group.GroupName}" parent updated to user: ${userInParentGroup.name} (${userInParentGroup.email}) from group "${parentGroup.GroupName}"`);
+        } else {
+          // ⚠️ No users in parent group yet - store Group GUID temporarily
+          group.GroupParent = GroupParent;
+          console.log(`⚠️ Group "${group.GroupName}" updated with temporary parent GUID: ${GroupParent} (no users in parent group yet)`);
+          console.log(`   Run the fixGroupHierarchy script after assigning users to parent group "${parentGroup.GroupName}"`);
+        }
       }
     }
 
@@ -3886,8 +4035,19 @@ export const getUsersByCompany = async (req, res) => {
       const parentUserPopulated = userObj.hierarchy?.parentUserId;
       const parentUserName = parentUserPopulated?.name || '';
       
+      // Debug logging for specific users
+      if (userObj.email === 'junior@gmail.com' || userObj.email === 'senior@gmail.com') {
+        console.log(`🔍 User ${userObj.email} has ${userObj.groups?.length || 0} groups:`, 
+          userObj.groups?.map(g => ({
+            groupName: g.groupName || g.GroupName,
+            isActive: g.isActive
+          }))
+        );
+      }
+      
       // Format groups array - ensure groupId is object with GroupName for frontend compatibility
-      const formattedGroups = await Promise.all((userObj.groups || []).map(async (group) => {
+      // Filter out groups that don't exist in the Groups collection
+      const formattedGroups = (await Promise.all((userObj.groups || []).map(async (group) => {
         // Get groupId - handle both ObjectId and string
         const groupIdValue = group.groupId;
         let groupIdString = '';
@@ -3907,16 +4067,27 @@ export const getUsersByCompany = async (req, res) => {
           groupDetails = await Group.findById(groupIdString).lean();
         }
         
-        // Get group name - prioritize from groupDetails, then group object, then fallback
-        const groupName = groupDetails?.GroupName 
-          || group.groupName 
-          || group.GroupName 
-          || `Group for ${userObj.name} (${userObj.role})`;
+        // IMPORTANT: Skip this group if it doesn't exist in the Groups collection
+        if (groupIdString && !groupDetails) {
+          console.log(`⚠️ Skipping orphaned group for ${userObj.email}: groupId ${groupIdString} not found in Groups collection`);
+          return null; // Will be filtered out below
+        }
         
-        const groupGUID = groupDetails?.GroupGUID 
-          || group.groupGUID 
-          || group.GroupGUID 
-          || '';
+        // Log group details for debugging
+        if (userObj.email === 'junior@gmail.com' || userObj.email === 'senior@gmail.com') {
+          console.log(`🔍 Group for ${userObj.email}:`, {
+            groupIdString,
+            groupDetailsName: groupDetails?.GroupName,
+            groupName: group.groupName,
+            GroupName: group.GroupName,
+            isActive: group.isActive
+          });
+        }
+        
+        // Get group name - prioritize from groupDetails (which we know exists now)
+        const groupName = groupDetails?.GroupName || `Group for ${userObj.name} (${userObj.role})`;
+        
+        const groupGUID = groupDetails?.GroupGUID || '';
         
         // Build groupId object for frontend (must have GroupName)
         const groupIdObject = groupIdString ? {
@@ -3993,7 +4164,7 @@ export const getUsersByCompany = async (req, res) => {
           assignedAt: group.assignedAt || null,
           isActive: group.isActive !== undefined ? group.isActive : true
         };
-      }));
+      }))).filter(group => group !== null); // Remove orphaned groups that returned null
       
       // Format companies array
       let formattedCompanies = [];
@@ -4950,7 +5121,8 @@ export const editUser = async (req, res) => {
     const parentUserName = parentUserPopulated?.name || '';
     
     // Format groups array - ensure groupId is object with GroupName for frontend compatibility (same as getUsersByCompany)
-    const formattedGroups = await Promise.all((updatedUser.groups || []).map(async (group) => {
+    // Filter out orphaned groups
+    const formattedGroups = (await Promise.all((updatedUser.groups || []).map(async (group) => {
       // Get groupId - handle both ObjectId and string
       const groupIdValue = group.groupId;
       let groupIdString = '';
@@ -4970,16 +5142,16 @@ export const editUser = async (req, res) => {
         groupDetails = await Group.findById(groupIdString).lean();
       }
       
-      // Get group name - prioritize from groupDetails, then group object, then fallback
-      const groupName = groupDetails?.GroupName 
-        || group.groupName 
-        || group.GroupName 
-        || `Group for ${updatedUser.name} (${updatedUser.role})`;
+      // IMPORTANT: Skip this group if it doesn't exist in the Groups collection
+      if (groupIdString && !groupDetails) {
+        console.log(`⚠️ editUser - Skipping orphaned group for ${updatedUser.email}: groupId ${groupIdString} not found in Groups collection`);
+        return null; // Will be filtered out
+      }
       
-      const groupGUID = groupDetails?.GroupGUID 
-        || group.groupGUID 
-        || group.GroupGUID 
-        || '';
+      // Get group name - prioritize from groupDetails (which we know exists now)
+      const groupName = groupDetails?.GroupName || `Group for ${updatedUser.name} (${updatedUser.role})`;
+      
+      const groupGUID = groupDetails?.GroupGUID || '';
       
       // Build groupId object for frontend (must have GroupName)
       const groupIdObject = groupIdString ? {
@@ -5056,7 +5228,7 @@ export const editUser = async (req, res) => {
         assignedAt: group.assignedAt || new Date(),
         isActive: group.isActive !== undefined ? group.isActive : true
       };
-    }));
+    }))).filter(group => group !== null); // Remove orphaned groups
     
     // Determine primaryGroup (first active group with valid groupId)
     let primaryGroup = null;
@@ -5311,6 +5483,111 @@ export const assignUserToCompany = async (req, res) => {
 
   } catch (error) {
     console.error("Assign user to company error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * Fix group hierarchy - Update groups with incorrect GroupParent (GUID) to use user IDs
+ * This endpoint finds groups where GroupParent is a Group GUID and updates it to the user ID
+ */
+export const fixGroupHierarchy = async (req, res) => {
+  try {
+    const adminId = req.user.userId;
+    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+
+    // Check if admin has access to the company
+    const admin = await User.findById(adminId).populate('defaultCompany');
+    if (!admin || !admin.defaultCompany) {
+      return res.status(403).json({
+        success: false,
+        message: "No company assigned to this admin"
+      });
+    }
+
+    // Get company
+    const company = await Company.findById(companyId);
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: "Company not found"
+      });
+    }
+
+    console.log('🔧 Fixing group hierarchy for company:', company.companyName);
+
+    // Find all groups in this company
+    const allGroups = await Group.find({
+      companyId: companyId,
+      isActive: true
+    }).lean();
+
+    console.log(`Found ${allGroups.length} groups to check`);
+
+    const groupsToFix = [];
+    const fixedGroups = [];
+
+    // Check each group
+    for (const group of allGroups) {
+      if (group.GroupParent) {
+        // Check if GroupParent is a Group GUID (not a user ID)
+        const isGroupGUID = await Group.findOne({
+          GroupGUID: group.GroupParent,
+          companyId: companyId
+        });
+
+        if (isGroupGUID) {
+          // This group has a Group GUID as parent, need to fix it
+          console.log(`❌ Group "${group.GroupName}" has incorrect GroupParent: ${group.GroupParent} (should be user ID)`);
+          
+          // Find users in the parent group
+          const usersInParentGroup = await User.find({
+            'groups.groupGUID': group.GroupParent,
+            'companies.companyId': companyId,
+            isActive: true
+          }).select('_id name').lean();
+
+          if (usersInParentGroup.length > 0) {
+            // Use the first user as the parent
+            const parentUserId = usersInParentGroup[0]._id.toString();
+            console.log(`✅ Updating Group "${group.GroupName}" parent to user: ${usersInParentGroup[0].name} (${parentUserId})`);
+
+            // Update the group
+            await Group.findByIdAndUpdate(group._id, {
+              GroupParent: parentUserId
+            });
+
+            groupsToFix.push({
+              groupName: group.GroupName,
+              oldParent: group.GroupParent,
+              newParent: parentUserId,
+              parentUserName: usersInParentGroup[0].name
+            });
+
+            fixedGroups.push(group.GroupName);
+          } else {
+            console.log(`⚠️ No users found in parent group for "${group.GroupName}"`);
+          }
+        }
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `Fixed ${fixedGroups.length} groups`,
+      data: {
+        totalGroups: allGroups.length,
+        groupsFixed: fixedGroups.length,
+        details: groupsToFix
+      }
+    });
+
+  } catch (error) {
+    console.error("Fix group hierarchy error:", error);
     res.status(500).json({
       success: false,
       message: "Server error",
@@ -5861,6 +6138,7 @@ export const createDealer = async (req, res) => {
       other7,
       other8,
       groupId,
+      groupUserId, // NEW: For admin to directly assign dealer to a group user
       isActive = true
     } = req.body;
 
@@ -5885,9 +6163,87 @@ export const createDealer = async (req, res) => {
       });
     }
 
-    // For group users, automatically assign dealer to their first active group if no groupId provided
+    // Handle group assignment based on user role and provided parameters
     let finalGroupId = groupId;
-    if ((userRole === 'groupuser' || !userRole || userRole === '') && !groupId && user.groups && user.groups.length > 0) {
+    let assignedGroupUserId = userId; // By default, current user is the creator
+    
+    // If admin provides groupUserId, assign dealer to that group user's group
+    if (groupUserId && (userRole === 'admin' || userRole === 'superadmin')) {
+      console.log('🔍 Admin assigning dealer to group user:', groupUserId);
+      const targetGroupUser = await User.findById(groupUserId).populate('groups.groupId').select('groups');
+      if (!targetGroupUser) {
+        return res.status(400).json({
+          success: false,
+          message: "Group user not found"
+        });
+      }
+      
+      console.log('🔍 Target group user groups:', JSON.stringify(targetGroupUser.groups, null, 2));
+      console.log('🔍 Admin current company:', companyId.toString());
+      
+      // Find the group that belongs to the admin's current company
+      if (targetGroupUser.groups && targetGroupUser.groups.length > 0) {
+        // First, try to find a group that matches the current company
+        let activeGroup = null;
+        
+        for (const g of targetGroupUser.groups) {
+          // Skip inactive groups
+          if (g.isActive === false) continue;
+          if (!g.groupId) continue;
+          
+          // Get the group details
+          let groupDetails = null;
+          if (typeof g.groupId === 'object' && g.groupId !== null) {
+            groupDetails = g.groupId; // Already populated
+          } else {
+            // Fetch the group if not populated
+            groupDetails = await Group.findById(g.groupId);
+          }
+          
+          if (groupDetails) {
+            const groupCompanyId = groupDetails.companyId ? groupDetails.companyId.toString() : null;
+            const currentCompanyId = companyId.toString();
+            
+            console.log('🔍 Checking group:', {
+              groupId: groupDetails._id,
+              groupName: groupDetails.GroupName,
+              groupCompanyId,
+              currentCompanyId,
+              matches: groupCompanyId === currentCompanyId
+            });
+            
+            // Check if this group belongs to the current company
+            if (groupCompanyId === currentCompanyId) {
+              activeGroup = g;
+              console.log('✅ Found matching group for current company');
+              break;
+            }
+          }
+        }
+        
+        if (activeGroup) {
+          finalGroupId = typeof activeGroup.groupId === 'object' && activeGroup.groupId !== null && activeGroup.groupId._id
+            ? activeGroup.groupId._id
+            : activeGroup.groupId;
+          assignedGroupUserId = groupUserId; // Set the creator as the group user
+          console.log('🔍 Assigning dealer to group user\'s group:', finalGroupId, 'for user:', groupUserId);
+        } else {
+          console.log('⚠️ No active group found for group user in the current company');
+          return res.status(400).json({
+            success: false,
+            message: "Group user has no active groups in the current company. Please ensure the group user has a group assigned to this company."
+          });
+        }
+      } else {
+        console.log('⚠️ Group user has no groups');
+        return res.status(400).json({
+          success: false,
+          message: "Group user has no groups assigned"
+        });
+      }
+    }
+    // For group users creating dealers themselves, auto-assign to their first active group
+    else if ((userRole === 'groupuser' || !userRole || userRole === '') && !groupId && user.groups && user.groups.length > 0) {
       // Find first active group
       const activeGroup = user.groups.find(g => (g.isActive === true || g.isActive === undefined) && g.groupId);
       if (activeGroup) {
@@ -5966,12 +6322,35 @@ export const createDealer = async (req, res) => {
     // Validate and assign group if provided (or use auto-assigned group for group users)
     // Note: finalGroupId is already declared above for group user auto-assignment
     if (finalGroupId) {
+      console.log('🔍 Validating group:', {
+        finalGroupId,
+        companyId,
+        targetCompanyId
+      });
+      
       const group = await Group.findOne({ 
         _id: finalGroupId, 
         companyId: companyId,
         isActive: true 
       });
+      
+      console.log('🔍 Group validation result:', group ? { 
+        _id: group._id, 
+        GroupName: group.GroupName,
+        companyId: group.companyId,
+        isActive: group.isActive 
+      } : 'NOT FOUND');
+      
       if (!group) {
+        // Try to find the group without company filter to see if it exists at all
+        const groupAnyCompany = await Group.findOne({ _id: finalGroupId });
+        console.log('🔍 Group in any company:', groupAnyCompany ? {
+          _id: groupAnyCompany._id,
+          GroupName: groupAnyCompany.GroupName,
+          companyId: groupAnyCompany.companyId,
+          isActive: groupAnyCompany.isActive
+        } : 'NOT FOUND AT ALL');
+        
         return res.status(400).json({
           success: false,
           message: "Group not found or not active for this company"
@@ -6063,7 +6442,7 @@ export const createDealer = async (req, res) => {
       isActive: isActive !== false,
       companyId: companyId,
       ...hierarchyUsers,
-      createdBy: userId // Track who created the dealer (admin or group user)
+      createdBy: assignedGroupUserId // Track who created/owns the dealer (group user if assigned via groupUserId)
     });
 
     // Populate group if assigned
@@ -6449,6 +6828,63 @@ export const getAllDealers = async (req, res) => {
             createdBy: { $in: childUserObjectIds } 
           });
           console.log('✅ Added condition: dealers created by child users:', childUserObjectIds);
+        }
+        
+        // NEW: GROUP HIERARCHY - Get dealers from child groups based on GroupParent
+        console.log('🔍 Checking for child groups based on GroupParent field...');
+        if (userGroupIds.length > 0) {
+          try {
+            // Get the actual Group documents for user's groups
+            const userGroupDocs = await Group.find({
+              _id: { $in: userGroupIds },
+              isActive: true,
+              cmpcode: company.companyCode
+            }).select('GroupGUID GroupName');
+            
+            console.log('🔍 User group documents:', userGroupDocs.length);
+            
+            // For each user group, find all child groups recursively
+            const allChildGroupIds = [];
+            for (const userGroupDoc of userGroupDocs) {
+              console.log(`🔍 Finding child groups for ${userGroupDoc.GroupName} (${userGroupDoc.GroupGUID})`);
+              
+              // Use the recursive helper function from getUsersByRole
+              const childGroups = await findAllChildGroups(userGroupDoc.GroupGUID, company.companyCode, companyId);
+              console.log(`🔍 Found ${childGroups.length} child groups for ${userGroupDoc.GroupName}`);
+              
+              // Convert child group GUIDs to Group ObjectIds
+              if (childGroups.length > 0) {
+                const childGroupGUIDs = childGroups.map(cg => cg.GroupGUID);
+                const childGroupDocs = await Group.find({
+                  GroupGUID: { $in: childGroupGUIDs },
+                  cmpcode: company.companyCode,
+                  isActive: true
+                }).select('_id GroupName');
+                
+                const childGroupObjectIds = childGroupDocs.map(g => g._id);
+                allChildGroupIds.push(...childGroupObjectIds);
+                console.log(`✅ Added ${childGroupObjectIds.length} child group IDs from ${userGroupDoc.GroupName}`);
+              }
+            }
+            
+            if (allChildGroupIds.length > 0) {
+              // Remove duplicates
+              const uniqueChildGroupIds = [...new Set(allChildGroupIds.map(id => id.toString()))]
+                .map(id => new mongoose.Types.ObjectId(id));
+              
+              console.log('🔍 Total unique child group IDs from GroupParent hierarchy:', uniqueChildGroupIds.length);
+              
+              // Add condition: dealers in child groups (based on GroupParent hierarchy)
+              orConditions.push({
+                ...baseQuery,
+                groupId: { $in: uniqueChildGroupIds }
+              });
+              console.log('✅ Added condition: dealers in child groups (GroupParent hierarchy)');
+            }
+          } catch (groupHierarchyError) {
+            console.error('❌ Error processing group hierarchy:', groupHierarchyError);
+            // Continue even if group hierarchy processing fails
+          }
         }
       } catch (hierarchyError) {
         console.error('❌ Error processing hierarchy:', hierarchyError);

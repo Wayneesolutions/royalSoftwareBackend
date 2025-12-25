@@ -15,6 +15,7 @@ import {
   assignUserToCompany,
   deleteUser,
   autoAssignGroups,
+  fixGroupHierarchy,
   createGroup,
   updateGroup,
   deleteGroup,
@@ -69,6 +70,7 @@ adminRoute.delete('/user/:userId', requireAuth, authorizeRoles(['admin']), delet
 
 // Helper API for group assignment
 adminRoute.post('/auto-assign-groups', requireAuth, authorizeRoles(['admin']), autoAssignGroups)
+adminRoute.post('/fix-group-hierarchy', requireAuth, authorizeRoles(['admin']), fixGroupHierarchy)
 
 // Dealer (Ledger) management routes
 adminRoute.get('/dealers', requireAuth, authorizeRoles(['admin', 'groupuser']), getAllDealers)

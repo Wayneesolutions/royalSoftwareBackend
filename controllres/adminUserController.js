@@ -145,7 +145,7 @@ export const getUsersByRole = async (req, res) => {
     const adminId = req.user.userId;
 
     // Validate the role against unified roles list
-    const allowedRoles = ['zonal', 'rsm', 'asm', 'salesman', 'dealers', 'subdealer', 'distibutors'];
+    const allowedRoles = ['zonal', 'rsm', 'asm', 'salesman', 'dealers', 'subdealer', 'distibutors', 'groupuser'];
     if (!allowedRoles.includes(role)) {
       return res.status(400).json({
         success: false,
@@ -164,20 +164,46 @@ export const getUsersByRole = async (req, res) => {
       });
     }
 
-    // Filter by current default company only, only active users
-    const users = await User.find({
-      role,
+    // Build query based on role
+    let query = {
       'companies.companyId': currentCompanyId,
       'companies.isActive': true,
       isActive: true // Only show active users
-    })
+    };
+
+    // For groupuser role, find users with role 'groupuser' or no role (null/empty) and having groups
+    if (role === 'groupuser') {
+      query = {
+        ...query,
+        $or: [
+          { role: 'groupuser' },
+          { role: { $in: [null, ''] } }
+        ],
+        'groups.0': { $exists: true } // Has at least one group
+      };
+    } else {
+      query.role = role;
+    }
+
+    // Filter by current default company only, only active users
+    const users = await User.find(query)
       .select('-password')
       .populate('companies.companyId', 'companyName companyCode')
-      .populate('hierarchy.parentUser', 'name email role');
+      .populate('groups.groupId', 'GroupGUID GroupName');
+
+    // Log for debugging
+    if (role === 'groupuser' && users.length > 0) {
+      console.log(`Found ${users.length} group users`);
+      users.forEach(u => {
+        console.log(`User: ${u.name}, Groups: ${u.groups?.map(g => 
+          (g.groupId?.GroupName || g.groupName || 'Unknown')
+        ).join(', ')}`);
+      });
+    }
 
     res.json({
       success: true,
-      data: users
+      data: { users }
     });
   } catch (error) {
     console.error('Error getting users by role:', error);

@@ -1,6 +1,90 @@
 import User from '../models/user/userModel.js'
 import Company from '../models/company/companyModel.js'
 import SubDealer from '../models/subdealer/subdealerModel.js'
+import Group from '../models/group/groupModel.js'
+import Ledger from '../models/ledger/ledgerModel.js'
+import mongoose from 'mongoose'
+
+/**
+ * Helper function to recursively find all child groups
+ * Based on the user hierarchy:
+ * - Group B is a child of Group A if Group B's GroupParent equals the ID of a user in Group A
+ * 
+ * @param {string} groupGUID - The parent group GUID
+ * @param {string} cmpcode - The company code
+ * @param {mongoose.Types.ObjectId} companyId - The company ID
+ * @param {Set} visited - Set of already visited group GUIDs to prevent infinite loops
+ * @returns {Promise<Array>} - Array of child group objects with _id, GUID, and Name
+ */
+const findAllChildGroups = async (groupGUID, cmpcode, companyId, visited = new Set()) => {
+  const childGroups = [];
+  
+  // ✅ Prevent infinite loops by checking if we've already visited this group
+  if (visited.has(groupGUID)) {
+    console.log(`⚠️ findAllChildGroups - Already visited group GUID: ${groupGUID}, skipping to prevent infinite loop`);
+    return childGroups;
+  }
+  
+  // ✅ Mark this group as visited
+  visited.add(groupGUID);
+  
+  // Step 1: Find the group document to get its _id
+  const parentGroup = await Group.findOne({
+    GroupGUID: groupGUID,
+    cmpcode: cmpcode,
+    isActive: true
+  }).select('_id GroupGUID GroupName');
+  
+  if (!parentGroup) {
+    return childGroups;
+  }
+  
+  // Step 2: Find all users who belong to this parent group
+  const usersInParentGroup = await User.find({
+    'groups.groupId': parentGroup._id,
+    'groups.isActive': true,
+    'companies.companyId': companyId,
+    'companies.isActive': true,
+    isActive: true
+  }).select('_id name').lean();
+  
+  // Step 3: Get user IDs
+  const userIds = usersInParentGroup.map(u => u._id.toString());
+  
+  // Step 4: Find all groups where GroupParent equals any of these user IDs OR the parent group's GUID
+  // This handles both cases:
+  // - Correct case: GroupParent = user ID
+  // - Fallback case: GroupParent = Group GUID (for groups created before users were assigned)
+  
+  // ⚠️ REMOVED: Excessive logging of all groups in company
+  // Build query to find children with either user IDs OR group GUID as parent
+  const parentSearchCriteria = [groupGUID]; // Always include the Group GUID
+  if (userIds.length > 0) {
+    parentSearchCriteria.push(...userIds); // Also include user IDs if they exist
+  }
+  
+  const directChildren = await Group.find({
+    GroupParent: { $in: parentSearchCriteria },
+    cmpcode: cmpcode,
+    companyId: companyId,
+    isActive: true
+  }).select('_id GroupGUID GroupName');
+  
+  // Add direct children to the list
+  for (const child of directChildren) {
+    childGroups.push({
+      _id: child._id,
+      GroupGUID: child.GroupGUID,
+      GroupName: child.GroupName
+    });
+    
+    // Recursively find children of this child (pass the SAME visited Set)
+    const grandChildren = await findAllChildGroups(child.GroupGUID, cmpcode, companyId, visited);
+    childGroups.push(...grandChildren);
+  }
+  
+  return childGroups;
+};
 
 /**
  * @swagger
@@ -151,11 +235,31 @@ export const switchCompany = async (req, res) => {
       })
     }
 
+    // Filter out inactive companies and companies with deleted/inactive companyId
+    const activeCompanies = updatedUser.companies.filter(company => {
+      // Skip if company assignment itself is inactive
+      if (company.isActive === false) return false;
+      
+      // Skip if the companyId reference doesn't exist (deleted company)
+      if (!company.companyId) return false;
+      
+      // Skip if the company itself is inactive
+      if (company.companyId.isActive === false) return false;
+      
+      return true;
+    });
+
+    // Create a filtered user object
+    const filteredUser = {
+      ...updatedUser.toObject(),
+      companies: activeCompanies // Only return active companies
+    };
+
     return res.json({
       success: true,
       message: 'Company switched successfully',
       data: {
-        user: updatedUser,
+        user: filteredUser,
         activeRole: updatedUser.role
       }
     })
@@ -438,9 +542,14 @@ export const getUsersByRole = async (req, res) => {
       });
     }
 
-    console.log('getUsersByRole - User:', user.name, 'Role:', user.role);
+    console.log('getUsersByRole - User:', user.name, 'Role:', user.role, 'Mobile:', user.mobile);
     console.log('getUsersByRole - Current Company ID:', currentCompanyId);
     console.log('getUsersByRole - Requested role:', role);
+    console.log('getUsersByRole - User groups from token:', user.groups);
+
+    // Fetch full user details with groups to ensure we have complete information
+    const fullUser = await User.findById(userId).select('groups');
+    console.log('getUsersByRole - Full user groups from DB:', fullUser?.groups);
 
     // Build query - filter by current company only, only active users
     const query = {
@@ -474,15 +583,124 @@ export const getUsersByRole = async (req, res) => {
       })));
     }
 
-    // Get users
-    const users = await User.find(query)
+    // Get users from current query (users in same group or accessible groups)
+    let users = await User.find(query)
       .select('-password')
       .populate('companies.companyId', 'companyName companyCode')
       .populate('hierarchy.parentUser', 'name email role')
       .sort({ createdAt: -1 })
 
-    console.log(`getUsersByRole - Found ${users.length} users with role ${role}`);
+    console.log(`getUsersByRole - Found ${users.length} users with role ${role} in base query`);
 
+    // Special handling for dealers: include child group dealers based on group hierarchy
+    // Use fullUser.groups instead of user.groups to ensure we have the latest data
+    const userGroups = fullUser?.groups || user.groups || [];
+    
+    if (role === 'dealers' && userGroups && userGroups.length > 0) {
+      console.log('getUsersByRole - Checking for child group dealers...');
+      console.log('getUsersByRole - User has', userGroups.length, 'groups');
+      
+      // Get user's active groups
+      const userActiveGroups = userGroups.filter(g => g.isActive);
+      console.log('getUsersByRole - User active groups:', userActiveGroups.map(g => ({
+        groupGUID: g.groupGUID,
+        groupName: g.groupName,
+        cmpcode: g.cmpcode
+      })));
+      
+      // Find all child groups for each of user's groups
+      const allChildGroupGUIDs = [];
+      const groupMapping = new Map(); // Map GroupGUID to GroupName
+      
+      for (const userGroup of userActiveGroups) {
+        if (userGroup.groupGUID) {
+          // Add user's own group to mapping
+          groupMapping.set(userGroup.groupGUID, userGroup.groupName);
+          
+          // Find all child groups recursively
+          const childGroups = await findAllChildGroups(userGroup.groupGUID, userGroup.cmpcode, currentCompanyId);
+          console.log(`getUsersByRole - Found ${childGroups.length} child groups for ${userGroup.groupName} (${userGroup.groupGUID})`);
+          
+          for (const childGroup of childGroups) {
+            allChildGroupGUIDs.push(childGroup.GroupGUID);
+            groupMapping.set(childGroup.GroupGUID, childGroup.GroupName);
+          }
+        }
+      }
+      
+      console.log('getUsersByRole - Total child group GUIDs:', allChildGroupGUIDs);
+      
+      if (allChildGroupGUIDs.length > 0) {
+        // Find dealers that belong to child groups
+        const childGroupDealers = await User.find({
+          role: 'dealers',
+          companies: {
+            $elemMatch: {
+              companyId: currentCompanyId,
+              isActive: true
+            }
+          },
+          isActive: true,
+          _id: { $ne: userId },
+          'groups.groupGUID': { $in: allChildGroupGUIDs },
+          'groups.isActive': true
+        })
+          .select('-password')
+          .populate('companies.companyId', 'companyName companyCode')
+          .populate('hierarchy.parentUser', 'name email role')
+          .sort({ createdAt: -1 });
+        
+        console.log(`getUsersByRole - Found ${childGroupDealers.length} dealers from child groups`);
+        
+        // Merge with existing dealers, avoiding duplicates
+        const existingIds = new Set(users.map(u => u._id.toString()));
+        const newDealers = childGroupDealers.filter(d => !existingIds.has(d._id.toString()));
+        
+        users = [...users, ...newDealers];
+        console.log(`getUsersByRole - Total dealers after adding child group dealers: ${users.length}`);
+      }
+      
+      // Add group information to each dealer
+      const usersWithGroupInfo = users.map(dealerUser => {
+        const userObj = dealerUser.toObject ? dealerUser.toObject() : dealerUser;
+        
+        // Get the first active group for display
+        const primaryGroup = userObj.groups?.find(g => g.isActive);
+        
+        if (primaryGroup && primaryGroup.groupGUID) {
+          // Use the group name from groupMapping if available, otherwise use stored name
+          const groupName = groupMapping.get(primaryGroup.groupGUID) || primaryGroup.groupName;
+          
+          return {
+            ...userObj,
+            groupInfo: {
+              groupGUID: primaryGroup.groupGUID,
+              groupName: groupName,
+              groupParentUser: primaryGroup.groupParentUser
+            }
+          };
+        }
+        
+        return {
+          ...userObj,
+          groupInfo: null
+        };
+      });
+      
+      console.log(`getUsersByRole - Returning ${usersWithGroupInfo.length} dealers with group info`);
+      
+      return res.json({
+        success: true,
+        message: `Users with role ${role} retrieved successfully`,
+        data: {
+          users: usersWithGroupInfo,
+          role,
+          count: usersWithGroupInfo.length
+        }
+      });
+    }
+
+    // For non-dealer roles, return users as-is
     res.json({
       success: true,
       message: `Users with role ${role} retrieved successfully`,
@@ -499,6 +717,301 @@ export const getUsersByRole = async (req, res) => {
       success: false,
       message: 'Server error while fetching users by role'
     })
+  }
+}
+
+/**
+ * @swagger
+ * /api/v1/user/group-hierarchy:
+ *   get:
+ *     summary: Get group hierarchy with users and dealers
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Group hierarchy retrieved successfully
+ */
+export const getGroupHierarchy = async (req, res) => {
+  try {
+    const user = req.user.userDetails
+    const userId = req.user.userId
+    const currentCompanyId = user.defaultCompany?._id || user.defaultCompany
+
+    if (!currentCompanyId) {
+      return res.status(400).json({
+        success: false,
+        message: 'No company selected'
+      })
+    }
+
+    console.log('getGroupHierarchy - User:', user.name, 'Role:', user.role)
+
+    // Fetch full user details with groups
+    const fullUser = await User.findById(userId).select('groups')
+    const userGroups = fullUser?.groups || user.groups || []
+
+    if (!userGroups || userGroups.length === 0) {
+      return res.json({
+        success: true,
+        data: {
+          hierarchy: [],
+          totalGroups: 0,
+          totalUsers: 0
+        }
+      })
+    }
+    const company = await Company.findById(currentCompanyId)
+    // Get user's active groups for the current company only
+    const userActiveGroups = userGroups.filter(g => {
+      return g.isActive && g.cmpcode === company.companyCode
+    })
+    console.log('getGroupHierarchy - User active groups for current company:', userActiveGroups.length)
+
+    // Get company for cmpcode
+   
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: 'Company not found'
+      })
+    }
+
+    // Helper function to build hierarchy for a group
+    const buildGroupHierarchy = async (groupGUID, groupName, level = 0, visitedGroups = new Set()) => {
+      // Prevent infinite loops by tracking visited groups
+      if (visitedGroups.has(groupGUID)) {
+        return null
+      }
+      
+      visitedGroups.add(groupGUID)
+      
+      const hierarchy = {
+        groupGUID,
+        groupName,
+        level,
+        users: [],
+        dealers: [],
+        childGroups: []
+      }
+
+      // Find users in this group
+      const usersInGroup = await User.find({
+        'groups.groupGUID': groupGUID,
+        'groups.isActive': true,
+        'companies.companyId': currentCompanyId,
+        'companies.isActive': true,
+        isActive: true,
+        _id: { $ne: userId }
+      }).select('name email mobile role groups').lean()
+
+      hierarchy.users = usersInGroup.map(u => ({
+        _id: u._id,
+        name: u.name,
+        email: u.email,
+        mobile: u.mobile,
+        role: u.role
+      }))
+
+      // Find dealers in this group (both User dealers and Ledger dealers)
+      try {
+        const groupDoc = await Group.findOne({
+          GroupGUID: groupGUID,
+          cmpcode: company.companyCode,
+          isActive: true
+        })
+
+        if (groupDoc) {
+          // Find User dealers with this group
+          const userDealersInGroup = await User.find({
+            role: 'dealers',
+            'groups.groupId': groupDoc._id,
+            'groups.isActive': true,
+            'companies.companyId': currentCompanyId,
+            'companies.isActive': true,
+            isActive: true
+          }).select('name email mobile').lean()
+
+          // Find Ledger dealers with this group
+          const ledgerDealersInGroup = await Ledger.find({
+            groupId: groupDoc._id,
+            companyId: currentCompanyId,
+            isActive: true
+          }).select('LedgerGUID LedgerName Email1 MobileNo').lean()
+
+          // Combine both types of dealers
+          hierarchy.dealers = [
+            ...userDealersInGroup.map(d => ({
+              _id: d._id,
+              name: d.name,
+              email: d.email,
+              mobile: d.mobile,
+              type: 'user'
+            })),
+            ...ledgerDealersInGroup.map(d => ({
+              _id: d._id,
+              name: d.LedgerName,
+              email: d.Email1 || '',
+              mobile: d.MobileNo || '',
+              type: 'ledger',
+              ledgerGUID: d.LedgerGUID
+            }))
+          ]
+          
+          // Dealers fetched successfully
+        } else {
+          console.log(`⚠️ Group "${groupName}" (${groupGUID}): Group document not found in database`)
+          hierarchy.dealers = [] // Ensure it's an array
+        }
+      } catch (error) {
+        console.log('Error fetching dealers for group:', error)
+        hierarchy.dealers = [] // Ensure it's an array even on error
+      }
+
+      // ⚠️ REMOVED redundant findAllChildGroups call here - we do direct query below
+      
+      // Build hierarchy for each direct child
+      // Now use the user-based hierarchy instead of GroupParent GUID matching
+      // Get users in current group (INCLUDING the current logged-in user)
+      const usersInCurrentGroup = usersInGroup.map(u => u._id.toString())
+      
+      // IMPORTANT: Also include the current logged-in user's ID
+      // because they might be the only user in this group
+      const allUsersInGroup = [...usersInCurrentGroup, userId.toString()]
+      
+      // ALSO include the current group's GUID to handle groups created before users were assigned
+      const parentSearchCriteria = [groupGUID, ...allUsersInGroup]
+      
+      // Find the current group's document to get its _id
+      const currentGroupDoc = await Group.findOne({
+        GroupGUID: groupGUID,
+        cmpcode: company.companyCode,
+        isActive: true
+      }).select('_id')
+      
+      // Find groups where GroupParent equals user IDs OR the current group's GUID
+      // IMPORTANT: Exclude the current group itself to prevent infinite loops
+      const directChildren = await Group.find({
+        GroupParent: { $in: parentSearchCriteria }, // ✅ Check user IDs AND Group GUID
+        _id: { $ne: currentGroupDoc?._id }, // Exclude current group
+        cmpcode: company.companyCode,
+        companyId: currentCompanyId,
+        isActive: true
+      }).select('GroupGUID GroupName')
+
+      for (const child of directChildren) {
+        const childHierarchy = await buildGroupHierarchy(
+          child.GroupGUID,
+          child.GroupName,
+          level + 1,
+          visitedGroups // ✅ Pass the SAME Set, not a copy
+        )
+        // Only add if not null (null means already visited)
+        if (childHierarchy) {
+          hierarchy.childGroups.push(childHierarchy)
+        }
+      }
+
+      return hierarchy
+    }
+
+    // Build hierarchy for each user's group
+    const hierarchies = []
+    const processedGroups = new Set()
+
+    for (const userGroup of userActiveGroups) {
+      if (userGroup.groupGUID && !processedGroups.has(userGroup.groupGUID)) {
+        processedGroups.add(userGroup.groupGUID)
+        const groupHierarchy = await buildGroupHierarchy(
+          userGroup.groupGUID,
+          userGroup.groupName
+        )
+        // Only add if not null (could be null if already visited)
+        if (groupHierarchy) {
+          hierarchies.push(groupHierarchy)
+        }
+      }
+    }
+
+    // Count totals
+    const countTotals = (hierarchy) => {
+      let totalUsers = hierarchy.users.length
+      let totalDealers = hierarchy.dealers.length
+      let totalGroups = 1
+
+      for (const child of hierarchy.childGroups) {
+        const childTotals = countTotals(child)
+        totalUsers += childTotals.users
+        totalDealers += childTotals.dealers
+        totalGroups += childTotals.groups
+      }
+
+      return { users: totalUsers, dealers: totalDealers, groups: totalGroups }
+    }
+
+    let totalUsers = 0
+    let totalDealers = 0
+    let totalGroups = 0
+
+    hierarchies.forEach(h => {
+      const totals = countTotals(h)
+      totalUsers += totals.users
+      totalDealers += totals.dealers
+      totalGroups += totals.groups
+    })
+
+    console.log('📤 Returning group hierarchy:', {
+      totalGroups,
+      totalUsers,
+      totalDealers,
+      rootGroups: hierarchies.length,
+      hierarchySummary: hierarchies.map(h => ({
+        name: h.groupName,
+        users: h.users.length,
+        dealers: h.dealers.length,
+        children: h.childGroups.length
+      }))
+    })
+
+    // Prepare response data
+    const responseData = {
+      success: true,
+      data: {
+        hierarchy: hierarchies,
+        totalGroups,
+        totalUsers,
+        totalDealers
+      }
+    }
+    
+    console.log('✅ Sending response to frontend...')
+    
+    try {
+      // Try to send the response
+      res.status(200).json(responseData)
+      console.log('✅ Response sent successfully!')
+    } catch (sendError) {
+      console.error('❌ Error sending response:', sendError)
+      // Try to send a simpler error response
+      if (!res.headersSent) {
+        res.status(500).json({
+          success: false,
+          message: 'Error serializing hierarchy data'
+        })
+      }
+    }
+
+  } catch (error) {
+    console.error('❌ Error fetching group hierarchy:', error)
+    console.error('Error stack:', error.stack)
+    
+    if (!res.headersSent) {
+      res.status(500).json({
+        success: false,
+        message: 'Server error while fetching group hierarchy',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      })
+    }
   }
 }
 

@@ -1,7 +1,8 @@
 import express from 'express'
-import { 
+import {
   getUsersByCompany,
   getUsersByRole,
+  getGroupHierarchy,
   getUserProfile,
   updateUserProfile,
   deleteUser,
@@ -27,6 +28,9 @@ userRoute.get('/users-by-company', requireAuth, getUsersByCompany)
 
 // Get users by role (accessible by all authenticated users)
 userRoute.get('/role/:role', requireAuth, getUsersByRole)
+
+// Get group hierarchy with users and dealers
+userRoute.get('/group-hierarchy', requireAuth, getGroupHierarchy)
 
 // Get user profile (accessible by all authenticated users)
 userRoute.get('/profile', requireAuth, getUserProfile)

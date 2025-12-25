@@ -20,6 +20,7 @@ import { authorizeRoles, requireAuth } from '../middleware/authMiddleware.js'
 import {
   createCompany,
   deleteCompany,
+  toggleCompanyStatus,
   getCompanies,
   getCompanyById,
   updateCompany,
@@ -183,6 +184,12 @@ superAdminRoute.patch(
   requireAuth,
   authorizeRoles(['superadmin']),
   updateCompany
+)
+superAdminRoute.patch(
+  '/toggle-company-status/:id',
+  requireAuth,
+  authorizeRoles(['superadmin']),
+  toggleCompanyStatus
 )
 superAdminRoute.delete(
   '/delete-company/:id',

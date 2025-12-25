@@ -137,6 +137,20 @@ export const universalLogin = async (req, res) => {
       // Get role-specific data
       const roleSpecificData = await getRoleSpecificData(user);
 
+      // Filter out inactive companies and companies with deleted/inactive companyId
+      const activeCompanies = user.companies.filter(company => {
+        // Skip if company assignment itself is inactive
+        if (company.isActive === false) return false;
+        
+        // Skip if the companyId reference doesn't exist (deleted company)
+        if (!company.companyId) return false;
+        
+        // Skip if the company itself is inactive
+        if (company.companyId.isActive === false) return false;
+        
+        return true;
+      });
+
       return res.json({
         success: true,
         message: 'Login successful',
@@ -148,7 +162,8 @@ export const universalLogin = async (req, res) => {
             mobile: user.mobile,
             role: user.role,
             defaultCompany: user.defaultCompany,
-            companies: user.companies,
+            companies: activeCompanies, // Only return active companies
+            groups: user.groups, // Include groups for group users
             hierarchy: user.hierarchy,
             createdBy: user.createdBy,
             lastLogin: user.lastLogin

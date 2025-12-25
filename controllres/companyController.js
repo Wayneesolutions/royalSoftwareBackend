@@ -198,10 +198,13 @@ export const getCompanies = async (req, res) => {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 10;
         const search = req.query.search || '';
+        const statusFilter = req.query.status || 'all'; // 'all', 'active', 'inactive'
         const skip = (page - 1) * limit;
 
-        // Build search query
+        // Build search query with status filter
+        // 'all' shows only active companies, 'inactive' shows only inactive
         const searchQuery = {
+            isActive: statusFilter === 'inactive' ? false : true, // Default to active
             ...(search && {
                 $or: [
                     { companyName: { $regex: search, $options: 'i' } },
@@ -349,14 +352,14 @@ export const getCompanyById = async (req, res) => {
             });
         }
 
-        const company = await Company.findById(companyId)
+        const company = await Company.findOne({ _id: companyId, isActive: true })
             .populate('createdBy', 'name email')
             .populate('assignedAdmins.adminId', 'name email mobile');
 
         if (!company) {
             return res.status(404).json({
                 success: false,
-                message: 'Company not found'
+                message: 'Company not found or has been deleted'
             });
         }
 
@@ -506,6 +509,12 @@ export const updateCompany = async (req, res) => {
             updateData.guid = String(updateData.guid);
         }
 
+        // First check if company exists and is active
+        const existingCompany = await Company.findOne({ _id: id, isActive: true });
+        if (!existingCompany) {
+            return res.json({ success: false, message: "Company not found or has been deleted" });
+        }
+
         const company = await Company.findByIdAndUpdate(id, updateData, { 
             new: true,
             runValidators: true 
@@ -537,13 +546,94 @@ export const updateCompany = async (req, res) => {
     }
 };
 
-// Delete Company
+// Toggle Company Status (Activate/Deactivate)
+export const toggleCompanyStatus = async (req, res) => {
+    try {
+        const companyId = req.params.id;
+        
+        // Find the company first
+        const company = await Company.findById(companyId);
+        if (!company) {
+            return res.json({ success: false, message: "Company not found" });
+        }
+        
+        // Toggle the status
+        const newStatus = !company.isActive;
+        company.isActive = newStatus;
+        await company.save();
+        
+        console.log(`✅ Company ${newStatus ? 'activated' : 'deactivated'}: ${company.companyName} (${company.companyCode})`);
+        
+        // Also update all users associated with this company
+        await User.updateMany(
+            { 'companies.companyId': companyId },
+            { 
+                $set: { 
+                    'companies.$[elem].isActive': newStatus 
+                }
+            },
+            {
+                arrayFilters: [{ 'elem.companyId': companyId }]
+            }
+        );
+        
+        console.log(`✅ All user assignments to company ${newStatus ? 'activated' : 'deactivated'}`);
+        
+        res.json({ 
+            success: true, 
+            message: `Company ${newStatus ? 'activated' : 'deactivated'} successfully`,
+            data: { 
+                companyId: company._id, 
+                companyName: company.companyName,
+                isActive: newStatus 
+            }
+        });
+    } catch (error) {
+        console.error('Error toggling company status:', error);
+        res.json({ success: false, message: error.message });
+    }
+};
+
+// Delete Company (Soft Delete)
 export const deleteCompany = async (req, res) => {
     try {
-        const company = await Company.findByIdAndDelete(req.params.id);
-        if (!company) return res.json({ success: false, message: "Company not found" });
-        res.json({ success: true, message: "Company deleted successfully" });
+        const companyId = req.params.id;
+        
+        // Find the company first
+        const company = await Company.findById(companyId);
+        if (!company) {
+            return res.json({ success: false, message: "Company not found" });
+        }
+        
+        // Soft delete: Set isActive to false instead of deleting
+        company.isActive = false;
+        await company.save();
+        
+        console.log(`✅ Company soft deleted: ${company.companyName} (${company.companyCode})`);
+        
+        // Optional: Also deactivate all users associated with this company
+        // This prevents them from accessing the system
+        await User.updateMany(
+            { 'companies.companyId': companyId },
+            { 
+                $set: { 
+                    'companies.$[elem].isActive': false 
+                }
+            },
+            {
+                arrayFilters: [{ 'elem.companyId': companyId }]
+            }
+        );
+        
+        console.log(`✅ All user assignments to company deactivated`);
+        
+        res.json({ 
+            success: true, 
+            message: "Company deactivated successfully",
+            data: { companyId: company._id, companyName: company.companyName }
+        });
     } catch (error) {
+        console.error('Error deleting company:', error);
         res.json({ success: false, message: error.message });
     }
 };
@@ -551,8 +641,8 @@ export const deleteCompany = async (req, res) => {
 // Get System Overview Statistics
 export const getSystemStats = async (req, res) => {
     try {
-        // Get total companies count
-        const totalCompanies = await Company.countDocuments();
+        // Get total companies count (only active)
+        const totalCompanies = await Company.countDocuments({ isActive: true });
 
         // Get total admins count
         const totalAdmins = await User.countDocuments({ role: 'admin' });
