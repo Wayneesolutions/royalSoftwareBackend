@@ -837,7 +837,7 @@ export const getGroupHierarchy = async (req, res) => {
             groupId: groupDoc._id,
             companyId: currentCompanyId,
             isActive: true
-          }).select('LedgerGUID LedgerName Email1 MobileNo').lean()
+          }).select('LedgerGUID LedgerName Email LedgerMobile').lean()
 
           // Combine both types of dealers
           hierarchy.dealers = [
@@ -851,10 +851,10 @@ export const getGroupHierarchy = async (req, res) => {
             ...ledgerDealersInGroup.map(d => ({
               _id: d._id,
               name: d.LedgerName,
-              email: d.Email1 || '',
-              mobile: d.MobileNo || '',
+              email: d.Email || '',
+              mobile: d.LedgerMobile || '',
               type: 'ledger',
-              ledgerGUID: d.LedgerGUID
+              LedgerGUID: d.LedgerGUID  // ✅ Added for voucher fetching
             }))
           ]
           

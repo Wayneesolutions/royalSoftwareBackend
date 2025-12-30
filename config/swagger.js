@@ -356,6 +356,18 @@ const options = {
       {
         name: 'Tally',
         description: 'Endpoints for integrating with Tally ERP'
+      },
+      {
+        name: 'Voucher',
+        description: 'Tally Voucher Management APIs - Sync and manage vouchers from Tally'
+      },
+      {
+        name: 'LedgerEntries',
+        description: 'Ledger Entries Management APIs - Links vouchers with ledgers for accounting'
+      },
+      {
+        name: 'InventoryEntries',
+        description: 'Inventory Entries Management APIs - Tracks items/products in vouchers'
       }
     ],
     components: {
