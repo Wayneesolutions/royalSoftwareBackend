@@ -2,6 +2,8 @@ import Company from '../models/company/companyModel.js';
 import Product from '../models/product/productModel.js';
 import User from '../models/user/userModel.js';
 import Order from '../models/order/orderModel.js';
+import Ledger from '../models/ledger/ledgerModel.js';
+import SubDealer from '../models/subdealer/subdealerModel.js';
 
 const normalizeGuid = (value) => {
   if (value === null || value === undefined) {
@@ -208,6 +210,135 @@ export const listUsersByCompanyGuid = async (req, res) => {
   }
 };
 
+// Helper to format dealer details
+const formatDealerDetails = async (order, companyId) => {
+  let dealerData = {
+    name: order.dealerName,
+    id: order.dealerId,
+    email: null,
+    mobile: null,
+    address: {
+      street: null,
+      city: null,
+      state: null,
+      pincode: null,
+      country: 'India'
+    }
+  };
+
+  // 1. Try to find by dealerId (User)
+  if (order.dealerId) {
+    const dealerUser = await User.findById(order.dealerId).select('name email mobile address').lean();
+    if (dealerUser) {
+      dealerData.name = dealerUser.name;
+      dealerData.email = dealerUser.email;
+      dealerData.mobile = dealerUser.mobile;
+      if (dealerUser.address) {
+        dealerData.address = {
+          street: dealerUser.address.street,
+          city: dealerUser.address.city,
+          state: dealerUser.address.state,
+          pincode: dealerUser.address.pincode,
+          country: dealerUser.address.country || 'India'
+        };
+      }
+    }
+  }
+
+  // 2. If address missing, try to find in Ledger (using dealerName if id failed or for better address)
+  // Logic: Ledger usually has better address for billing
+  if (!dealerData.address.street && order.dealerName) {
+    const ledger = await Ledger.findOne({
+      LedgerName: order.dealerName,
+      companyId: companyId
+    }).lean();
+
+    if (ledger) {
+      dealerData.address = {
+        street: [ledger.LedgerAddress1, ledger.LedgerAddress2].filter(Boolean).join(', '),
+        city: null, // Ledger might not have separate city field usually part of address
+        state: ledger.LedgerState,
+        pincode: null,
+        country: 'India'
+      };
+      // Fill contact if missing
+      if (!dealerData.mobile) dealerData.mobile = ledger.LedgerMobile;
+      if (!dealerData.email) dealerData.email = ledger.Email;
+
+      // Add LedgerGUID if available - useful for Tally
+      dealerData.ledgerGUID = ledger.LedgerGUID;
+    }
+  }
+
+  return dealerData;
+};
+
+// Helper to format subdealer details
+const formatSubDealerDetails = async (order, companyId) => {
+  if (!order.subDealerName && !order.subDealerId) return null;
+
+  let subDealerData = {
+    name: order.subDealerName,
+    id: order.subDealerId,
+    type: null,
+    email: null,
+    mobile: null,
+    address: {
+      street: null,
+      city: null,
+      state: null,
+      pincode: null,
+      country: 'India'
+    }
+  };
+
+  // 1. Try SubDealer model first (by ID or Name)
+  let subDealer = null;
+  if (order.subDealerId) {
+    subDealer = await SubDealer.findById(order.subDealerId).lean();
+  }
+
+  if (!subDealer && order.subDealerName) {
+    subDealer = await SubDealer.findOne({ SDName: order.subDealerName, companyId }).lean();
+  }
+
+  if (subDealer) {
+    subDealerData.name = subDealer.SDName;
+    subDealerData.type = subDealer.SDType;
+    subDealerData.email = subDealer.SDEmail;
+    subDealerData.mobile = subDealer.SDMobileNo;
+    subDealerData.address = {
+      street: [subDealer.SDAddress1, subDealer.SDAddress2, subDealer.SDAddress3].filter(Boolean).join(', '),
+      city: null,
+      state: subDealer.SDState,
+      pincode: subDealer.SDPincode,
+      country: subDealer.SDCountry || 'India'
+    };
+    return subDealerData;
+  }
+
+  // 2. Fallback to User model (if stored as user)
+  if (order.subDealerId) {
+    const sdUser = await User.findById(order.subDealerId).select('name email mobile address').lean();
+    if (sdUser) {
+      subDealerData.name = sdUser.name;
+      subDealerData.email = sdUser.email;
+      subDealerData.mobile = sdUser.mobile;
+      if (sdUser.address) {
+        subDealerData.address = {
+          street: sdUser.address.street,
+          city: sdUser.address.city,
+          state: sdUser.address.state,
+          pincode: sdUser.address.pincode,
+          country: sdUser.address.country || 'India'
+        };
+      }
+    }
+  }
+
+  return subDealerData;
+};
+
 export const listApprovedOrdersByCompanyGuid = async (req, res) => {
   try {
     const rawGuid = req.params.guid || req.query.guid;
@@ -224,10 +355,68 @@ export const listApprovedOrdersByCompanyGuid = async (req, res) => {
       companyId: company._id,
       status: { $in: ['approved', 'sent_to_tally', 'delivered', 'dispatched'] },
     })
-      .select(
-        'orderNumber status customerName customerEmail customerMobile totalAmount finalAmount taxAmount taxableValueTotal cgstTotal sgstTotal igstTotal createdAt updatedAt'
-      )
+      .populate('items.productId', 'productCode productName description itemHsn')
       .lean();
+
+    const formattedOrders = await Promise.all(orders.map(async (order) => {
+      // 1. Format Dealer Details
+      const dealer = await formatDealerDetails(order, company._id);
+
+      // 2. Format SubDealer Details
+      const subDealer = await formatSubDealerDetails(order, company._id);
+
+      // 3. Format Items
+      const formattedItems = order.items.map(item => ({
+        productCode: item.productCode || item.productId?.productCode,
+        productName: item.productName || item.productId?.productName,
+        description: item.productId?.description,
+        hsnCode: item.productId?.itemHsn,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+        discount: item.discount,
+        taxAmount: item.tax,
+        totalPrice: item.totalPrice,
+        cgstAmount: item.cgstAmount,
+        sgstAmount: item.sgstAmount,
+        igstAmount: item.igstAmount
+      }));
+
+      return {
+        _id: order._id,
+        orderNumber: order.orderNumber,
+        orderDate: order.orderDate,
+        status: order.status,
+
+        // Customer Info
+        customerName: order.customerName,
+        customerEmail: order.customerEmail,
+        customerMobile: order.customerMobile,
+        customerAddress: order.customerAddress,
+        shippingAddress: order.shippingAddress,
+
+        // Dealer Info
+        dealer: dealer,
+
+        // SubDealer Info
+        subDealer: subDealer,
+
+        // Financials
+        totalAmount: order.totalAmount,
+        discountAmount: order.discountAmount || 0,
+        taxableValue: order.taxableValueTotal,
+        taxAmount: order.taxAmount,
+        finalAmount: order.finalAmount,
+        cgstTotal: order.cgstTotal,
+        sgstTotal: order.sgstTotal,
+        igstTotal: order.igstTotal,
+
+        // Items
+        items: formattedItems,
+
+        createdAt: order.createdAt,
+        updatedAt: order.updatedAt
+      };
+    }));
 
     return res.json({
       success: true,
@@ -237,8 +426,8 @@ export const listApprovedOrdersByCompanyGuid = async (req, res) => {
         code: company.companyCode,
         guid: company.guid,
       },
-      totalOrders: orders.length,
-      orders,
+      totalOrders: formattedOrders.length,
+      orders: formattedOrders,
     });
   } catch (error) {
     console.error('Error fetching approved orders for Tally:', error);
@@ -266,11 +455,70 @@ export const listUnapprovedOrdersByCompanyGuid = async (req, res) => {
       companyId: company._id,
       status: { $in: ['draft', 'pending_approval'] },
     })
-      .select(
-        'orderNumber status customerName customerEmail customerMobile dealerName subDealerName totalAmount finalAmount taxAmount taxableValueTotal cgstTotal sgstTotal igstTotal createdAt updatedAt'
-      )
       .populate('createdBy', 'name email userName role')
+      .populate('items.productId', 'productCode productName description itemHsn')
       .lean();
+
+    const formattedOrders = await Promise.all(orders.map(async (order) => {
+      // 1. Format Dealer Details
+      const dealer = await formatDealerDetails(order, company._id);
+
+      // 2. Format SubDealer Details
+      const subDealer = await formatSubDealerDetails(order, company._id);
+
+      // 3. Format Items
+      const formattedItems = order.items.map(item => ({
+        productCode: item.productCode || item.productId?.productCode,
+        productName: item.productName || item.productId?.productName,
+        description: item.productId?.description,
+        hsnCode: item.productId?.itemHsn,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+        discount: item.discount,
+        taxAmount: item.tax,
+        totalPrice: item.totalPrice,
+        cgstAmount: item.cgstAmount,
+        sgstAmount: item.sgstAmount,
+        igstAmount: item.igstAmount
+      }));
+
+      return {
+        _id: order._id,
+        orderNumber: order.orderNumber,
+        orderDate: order.orderDate,
+        status: order.status,
+
+        // Customer Info
+        customerName: order.customerName,
+        customerEmail: order.customerEmail,
+        customerMobile: order.customerMobile,
+        customerAddress: order.customerAddress,
+        shippingAddress: order.shippingAddress,
+
+        // Dealer Info
+        dealer: dealer,
+
+        // SubDealer Info
+        subDealer: subDealer,
+
+        // Financials
+        totalAmount: order.totalAmount,
+        discountAmount: order.discountAmount || 0,
+        taxableValue: order.taxableValueTotal,
+        taxAmount: order.taxAmount,
+        finalAmount: order.finalAmount,
+        cgstTotal: order.cgstTotal,
+        sgstTotal: order.sgstTotal,
+        igstTotal: order.igstTotal,
+
+        // Items
+        items: formattedItems,
+
+        createdBy: order.createdBy,
+        createdAt: order.createdAt,
+        updatedAt: order.updatedAt
+      };
+    }));
 
     return res.json({
       success: true,
@@ -280,8 +528,8 @@ export const listUnapprovedOrdersByCompanyGuid = async (req, res) => {
         code: company.companyCode,
         guid: company.guid,
       },
-      totalOrders: orders.length,
-      orders,
+      totalOrders: formattedOrders.length,
+      orders: formattedOrders,
     });
   } catch (error) {
     console.error('Error fetching unapproved orders for Tally:', error);
@@ -292,4 +540,3 @@ export const listUnapprovedOrdersByCompanyGuid = async (req, res) => {
     });
   }
 };
-
