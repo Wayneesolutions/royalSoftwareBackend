@@ -223,7 +223,8 @@ const formatDealerDetails = async (order, companyId) => {
       state: null,
       pincode: null,
       country: 'India'
-    }
+    },
+    ledgerGUID: null
   };
 
   // 1. Try to find by dealerId (User)
@@ -245,27 +246,30 @@ const formatDealerDetails = async (order, companyId) => {
     }
   }
 
-  // 2. If address missing, try to find in Ledger (using dealerName if id failed or for better address)
-  // Logic: Ledger usually has better address for billing
-  if (!dealerData.address.street && order.dealerName) {
+  // 2. Try to find in Ledger (using dealerName or dealerId for better address and ledgerGUID)
+  // Logic: Ledger usually has better address for billing and contains ledgerGUID
+  if (order.dealerName || order.dealerId) {
     const ledger = await Ledger.findOne({
       LedgerName: order.dealerName,
       companyId: companyId
     }).lean();
 
     if (ledger) {
-      dealerData.address = {
-        street: [ledger.LedgerAddress1, ledger.LedgerAddress2].filter(Boolean).join(', '),
-        city: null, // Ledger might not have separate city field usually part of address
-        state: ledger.LedgerState,
-        pincode: null,
-        country: 'India'
-      };
+      // Update address if missing
+      if (!dealerData.address.street) {
+        dealerData.address = {
+          street: [ledger.LedgerAddress1, ledger.LedgerAddress2].filter(Boolean).join(', '),
+          city: null, // Ledger might not have separate city field usually part of address
+          state: ledger.LedgerState,
+          pincode: null,
+          country: 'India'
+        };
+      }
       // Fill contact if missing
       if (!dealerData.mobile) dealerData.mobile = ledger.LedgerMobile;
       if (!dealerData.email) dealerData.email = ledger.Email;
 
-      // Add LedgerGUID if available - useful for Tally
+      // Add LedgerGUID - useful for Tally
       dealerData.ledgerGUID = ledger.LedgerGUID;
     }
   }
@@ -386,21 +390,10 @@ export const listApprovedOrdersByCompanyGuid = async (req, res) => {
         orderNumber: order.orderNumber,
         orderDate: order.orderDate,
         status: order.status,
-
-        // Customer Info
         customerName: order.customerName,
-        customerEmail: order.customerEmail,
-        customerMobile: order.customerMobile,
         customerAddress: order.customerAddress,
-        shippingAddress: order.shippingAddress,
-
-        // Dealer Info
-        dealer: dealer,
-
-        // SubDealer Info
+        ledgerGUID: dealer?.ledgerGUID || null,
         subDealer: subDealer,
-
-        // Financials
         totalAmount: order.totalAmount,
         discountAmount: order.discountAmount || 0,
         taxableValue: order.taxableValueTotal,
@@ -409,10 +402,12 @@ export const listApprovedOrdersByCompanyGuid = async (req, res) => {
         cgstTotal: order.cgstTotal,
         sgstTotal: order.sgstTotal,
         igstTotal: order.igstTotal,
-
-        // Items
+        termsofpayment: order.termsOfPayment || '',
+        otherref: order.otherReference || '',
+        termsofdel1: order.termsOfDelivery1 || '',
+        termsofdel2: order.termsOfDelivery2 || '',
+        ordernotes: order.notes || '',
         items: formattedItems,
-
         createdAt: order.createdAt,
         updatedAt: order.updatedAt
       };
@@ -487,21 +482,10 @@ export const listUnapprovedOrdersByCompanyGuid = async (req, res) => {
         orderNumber: order.orderNumber,
         orderDate: order.orderDate,
         status: order.status,
-
-        // Customer Info
         customerName: order.customerName,
-        customerEmail: order.customerEmail,
-        customerMobile: order.customerMobile,
         customerAddress: order.customerAddress,
-        shippingAddress: order.shippingAddress,
-
-        // Dealer Info
-        dealer: dealer,
-
-        // SubDealer Info
+        ledgerGUID: dealer?.ledgerGUID || null,
         subDealer: subDealer,
-
-        // Financials
         totalAmount: order.totalAmount,
         discountAmount: order.discountAmount || 0,
         taxableValue: order.taxableValueTotal,
@@ -510,11 +494,12 @@ export const listUnapprovedOrdersByCompanyGuid = async (req, res) => {
         cgstTotal: order.cgstTotal,
         sgstTotal: order.sgstTotal,
         igstTotal: order.igstTotal,
-
-        // Items
+        termsofpayment: order.termsOfPayment || '',
+        otherref: order.otherReference || '',
+        termsofdel1: order.termsOfDelivery1 || '',
+        termsofdel2: order.termsOfDelivery2 || '',
+        ordernotes: order.notes || '',
         items: formattedItems,
-
-        createdBy: order.createdBy,
         createdAt: order.createdAt,
         updatedAt: order.updatedAt
       };
