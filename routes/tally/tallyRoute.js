@@ -41,6 +41,23 @@ import {
   updateSubDealerFromTally,
   deleteSubDealerFromTally,
 } from '../../controllres/tallyDealerController.js';
+import {
+  getVoucherWithEntries,
+  syncVoucherComplete,
+} from '../../controllres/voucherController.js';
+import {
+  syncOutstandingFromTally,
+  getOutstandingForGroupUser,
+  getOutstandingWithDetails,
+} from '../../controllres/tallyOutstandingController.js';
+import {
+  syncSalesFromTally,
+  getSalesSummaryForGroupUser,
+} from '../../controllres/tallySalesController.js';
+import {
+  syncStockFromTally,
+  getStockSummaryForGroupUser,
+} from '../../controllres/tallyStockController.js';
 
 const tallyRoute = express.Router();
 
@@ -63,6 +80,14 @@ const tallyRoute = express.Router();
  *     description: Dealer (Ledger) synchronization endpoints for Tally ERP
  *   - name: Tally SubDealers
  *     description: SubDealer synchronization endpoints for Tally ERP
+ *   - name: Tally Vouchers
+ *     description: Combined voucher API endpoints - Get voucher with entries and sync complete voucher with entries
+ *   - name: Tally Outstanding
+ *     description: Outstanding management endpoints for Tally ERP - Sync and fetch outstanding entries
+ *   - name: Tally Sales
+ *     description: Sales management endpoints for Tally ERP - Sync sales and fetch sales summary for group users
+ *   - name: Tally Stock
+ *     description: Stock synchronization and summary endpoints for Tally ERP - Sync stock levels and fetch stock summary for group users
  */
 
 /**
@@ -3156,6 +3181,1913 @@ tallyRoute.put('/subdealers/update', updateSubDealerFromTally);
  *         description: Subdealer not found
  */
 tallyRoute.delete('/subdealers/delete', deleteSubDealerFromTally);
+
+// ===================== VOUCHER APIS =====================
+
+/**
+ * @swagger
+ * /api/v1/tally/vouchers/{vchguid}/details:
+ *   get:
+ *     summary: Get voucher with ledger entries and inventory entries (Combined API)
+ *     description: >
+ *       Fetches a complete voucher details including:
+ *       - Voucher master information
+ *       - All ledger entries (accounting entries) connected to this voucher
+ *       - All inventory entries (items/products) connected to this voucher
+ *       
+ *       This is a combined API that replaces the need to make three separate API calls.
+ *       When clicking on a voucher, use this endpoint to get all related data in one request.
+ *     tags: [Tally Vouchers]
+ *     parameters:
+ *       - in: path
+ *         name: vchguid
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Voucher GUID
+ *         example: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-00001234"
+ *       - in: query
+ *         name: cmpcode
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Company code
+ *         example: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *     responses:
+ *       200:
+ *         description: Voucher details with entries fetched successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Voucher details with entries fetched successfully"
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     voucher:
+ *                       type: object
+ *                       description: Voucher master information
+ *                       properties:
+ *                         _id:
+ *                           type: string
+ *                         vchguid:
+ *                           type: string
+ *                         vchnumber:
+ *                           type: string
+ *                         vchdate:
+ *                           type: string
+ *                           format: date
+ *                         vchtype:
+ *                           type: string
+ *                         vchamount:
+ *                           type: number
+ *                         vchpartyname:
+ *                           type: string
+ *                         ledgerId:
+ *                           type: object
+ *                           description: Populated ledger information
+ *                         companyId:
+ *                           type: object
+ *                           description: Populated company information
+ *                     ledgerEntries:
+ *                       type: object
+ *                       description: Ledger entries (accounting entries) connected to this voucher
+ *                       properties:
+ *                         entries:
+ *                           type: array
+ *                           items:
+ *                             type: object
+ *                             properties:
+ *                               _id:
+ *                                 type: string
+ *                               vchguid:
+ *                                 type: string
+ *                               ledgerguid:
+ *                                 type: string
+ *                               ledgeramount:
+ *                                 type: number
+ *                               ledgerId:
+ *                                 type: object
+ *                                 description: Populated ledger information
+ *                               voucherId:
+ *                                 type: object
+ *                                 description: Populated voucher information
+ *                               companyId:
+ *                                 type: object
+ *                                 description: Populated company information
+ *                               other1:
+ *                                 type: string
+ *                               other2:
+ *                                 type: string
+ *                               other3:
+ *                                 type: string
+ *                               other4:
+ *                                 type: string
+ *                               other5:
+ *                                 type: string
+ *                         summary:
+ *                           type: object
+ *                           properties:
+ *                             totalEntries:
+ *                               type: number
+ *                               description: Total number of ledger entries
+ *                             totalAmount:
+ *                               type: number
+ *                               description: Sum of all ledger amounts
+ *                     inventoryEntries:
+ *                       type: object
+ *                       description: Inventory entries (items/products) connected to this voucher
+ *                       properties:
+ *                         entries:
+ *                           type: array
+ *                           items:
+ *                             type: object
+ *                             properties:
+ *                               _id:
+ *                                 type: string
+ *                               vchguid:
+ *                                 type: string
+ *                               itemguid:
+ *                                 type: string
+ *                               itemmainqty:
+ *                                 type: number
+ *                               itemaltqty:
+ *                                 type: number
+ *                               itemmainunit:
+ *                                 type: string
+ *                               itemaltunit:
+ *                                 type: string
+ *                               itemrate:
+ *                                 type: number
+ *                               itemrateunit:
+ *                                 type: string
+ *                               itemdisc:
+ *                                 type: number
+ *                               itemamount:
+ *                                 type: number
+ *                               itemdescription:
+ *                                 type: string
+ *                               voucherId:
+ *                                 type: object
+ *                                 description: Populated voucher information
+ *                               companyId:
+ *                                 type: object
+ *                                 description: Populated company information
+ *                               other1:
+ *                                 type: string
+ *                               other2:
+ *                                 type: string
+ *                               other3:
+ *                                 type: string
+ *                               other4:
+ *                                 type: string
+ *                               other5:
+ *                                 type: string
+ *                         summary:
+ *                           type: object
+ *                           properties:
+ *                             totalEntries:
+ *                               type: number
+ *                               description: Total number of inventory entries
+ *                             totalQuantity:
+ *                               type: number
+ *                               description: Sum of all item quantities
+ *                             totalAmount:
+ *                               type: number
+ *                               description: Sum of all item amounts
+ *             example:
+ *               success: true
+ *               message: "Voucher details with entries fetched successfully"
+ *               data:
+ *                 voucher:
+ *                   _id: "507f1f77bcf86cd799439011"
+ *                   vchguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-00001234"
+ *                   vchnumber: "INV-2024-001"
+ *                   vchdate: "2024-12-30T00:00:00.000Z"
+ *                   vchtype: "Sales"
+ *                   vchamount: 59000.00
+ *                   vchpartyname: "ABC Traders"
+ *                   ledgerId:
+ *                     LedgerName: "ABC Traders"
+ *                     LedgerMobile: "9876543210"
+ *                     LedgerGSTIN: "03AABCU9603R1ZM"
+ *                   companyId:
+ *                     companyName: "Royal Software"
+ *                     companyCode: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *                 ledgerEntries:
+ *                   entries:
+ *                     - _id: "507f1f77bcf86cd799439012"
+ *                       vchguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-00001234"
+ *                       ledgerguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-000000a1"
+ *                       ledgeramount: 10000.00
+ *                       ledgerId:
+ *                         LedgerName: "Customer Account"
+ *                         LedgerMobile: "9876543210"
+ *                       other1: "Debit"
+ *                       other2: "Customer Account"
+ *                     - _id: "507f1f77bcf86cd799439013"
+ *                       vchguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-00001234"
+ *                       ledgerguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-000000a2"
+ *                       ledgeramount: -10000.00
+ *                       ledgerId:
+ *                         LedgerName: "Sales Account"
+ *                       other1: "Credit"
+ *                       other2: "Sales Account"
+ *                   summary:
+ *                     totalEntries: 2
+ *                     totalAmount: 0.00
+ *                 inventoryEntries:
+ *                   entries:
+ *                     - _id: "507f1f77bcf86cd799439014"
+ *                       vchguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-00001234"
+ *                       itemguid: "ITEM-001"
+ *                       itemmainqty: 10.00
+ *                       itemmainunit: "PCS"
+ *                       itemrate: 100.00
+ *                       itemamount: 1000.00
+ *                       itemdescription: "Product XYZ"
+ *                       other1: "Batch: B001"
+ *                     - _id: "507f1f77bcf86cd799439015"
+ *                       vchguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-00001234"
+ *                       itemguid: "ITEM-002"
+ *                       itemmainqty: 5.00
+ *                       itemmainunit: "KG"
+ *                       itemrate: 200.00
+ *                       itemamount: 1000.00
+ *                       itemdescription: "Product ABC"
+ *                       other1: "Batch: B002"
+ *                   summary:
+ *                     totalEntries: 2
+ *                     totalQuantity: 15.00
+ *                     totalAmount: 2000.00
+ *       400:
+ *         description: Bad request - Company code is required
+ *       404:
+ *         description: Voucher not found
+ *       500:
+ *         description: Server error
+ */
+tallyRoute.get('/vouchers/:vchguid/details', getVoucherWithEntries);
+
+/**
+ * @swagger
+ * /api/v1/tally/vouchers/sync-complete:
+ *   post:
+ *     summary: Create or update voucher with ledger entries and inventory entries (Combined API)
+ *     description: >
+ *       Creates or updates a complete voucher transaction including:
+ *       - Voucher master information (create or update)
+ *       - All ledger entries (accounting entries) connected to this voucher (create or update)
+ *       - All inventory entries (items/products) connected to this voucher (create or update)
+ *       
+ *       This is a combined API that replaces the need to make three separate API calls.
+ *       All operations are transactional - if voucher creation fails, nothing is created.
+ *       Ledger and inventory entries are processed after voucher is successfully created/updated.
+ *       
+ *       **Update Logic:**
+ *       - Voucher: Updated if vchguid already exists, otherwise created
+ *       - Ledger Entries: Updated if combination of vchguid + ledgerguid exists, otherwise created
+ *       - Inventory Entries: Updated if combination of vchguid + itemguid exists, otherwise created
+ *     tags: [Tally Vouchers]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - voucher
+ *             properties:
+ *               voucher:
+ *                 type: object
+ *                 required:
+ *                   - cmpcode
+ *                   - vchguid
+ *                   - vchnumber
+ *                   - vchdate
+ *                   - vchtype
+ *                   - vchpartyguid
+ *                   - vchamount
+ *                 properties:
+ *                   cmpcode:
+ *                     type: string
+ *                     example: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *                   vchguid:
+ *                     type: string
+ *                     example: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-00001234"
+ *                   vchnumber:
+ *                     type: string
+ *                     example: "INV-2024-001"
+ *                   vchdate:
+ *                     type: string
+ *                     format: date
+ *                     example: "2024-12-30"
+ *                   vchtype:
+ *                     type: string
+ *                     example: "Sales"
+ *                   vchtypeparent:
+ *                     type: string
+ *                     example: "Invoice"
+ *                   vchpartyguid:
+ *                     type: string
+ *                     example: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-000000a1"
+ *                   vchpartyname:
+ *                     type: string
+ *                     example: "ABC Traders"
+ *                   vchamount:
+ *                     type: number
+ *                     example: 59000.00
+ *                   vchgoodsamt:
+ *                     type: number
+ *                     example: 50000.00
+ *                   vchpartyadd1:
+ *                     type: string
+ *                     example: "123 Main Street"
+ *                   vchpartyadd2:
+ *                     type: string
+ *                     example: "Near City Mall"
+ *                   vchpartyadd3:
+ *                     type: string
+ *                     example: "Ludhiana, Punjab"
+ *                   vchpartygstin:
+ *                     type: string
+ *                     example: "03AABCU9603R1ZM"
+ *                     description: Party GSTIN number
+ *                   vchsubdealername:
+ *                     type: string
+ *                     example: "Sub Dealer Name"
+ *                     description: Sub dealer name
+ *                   vchsubdealeradd1:
+ *                     type: string
+ *                     example: "Sub Dealer Address Line 1"
+ *                     description: Sub dealer address line 1
+ *                   vchsubdealeradd2:
+ *                     type: string
+ *                     example: "Sub Dealer Address Line 2"
+ *                     description: Sub dealer address line 2
+ *                   vchsubdealeradd3:
+ *                     type: string
+ *                     example: "Sub Dealer Address Line 3"
+ *                     description: Sub dealer address line 3
+ *                   isinvoice:
+ *                     type: string
+ *                     enum: [Yes, No]
+ *                     example: "Yes"
+ *                     description: Whether this is an invoice
+ *                   vchgrno:
+ *                     type: string
+ *                     example: "GR-12345"
+ *                     description: GR (Goods Receipt) number
+ *                   vchtransport:
+ *                     type: string
+ *                     example: "Royal Transport"
+ *                     description: Transport company name
+ *                   vchtruckno:
+ *                     type: string
+ *                     example: "PB-05-1234"
+ *                     description: Truck/vehicle number
+ *                   vchdrivername:
+ *                     type: string
+ *                     example: "Rajesh Kumar"
+ *                     description: Driver name
+ *                   vchdrivermobile:
+ *                     type: string
+ *                     example: "9876543210"
+ *                     description: Driver mobile number
+ *                   vchdestination:
+ *                     type: string
+ *                     example: "Delhi"
+ *                     description: Delivery destination
+ *                   vchpymtterms:
+ *                     type: string
+ *                     example: "Net 30 Days"
+ *                     description: Payment terms
+ *                   vchotherref:
+ *                     type: string
+ *                     example: "PO-2024-001"
+ *                     description: Other reference number (e.g., PO number)
+ *                   vchqtunit:
+ *                     type: string
+ *                     example: "PCS"
+ *                     description: Quantity unit (pieces, kg, etc.)
+ *                   vchqtunit2:
+ *                     type: string
+ *                     example: "KG"
+ *                     description: Alternate quantity unit
+ *                   vchnarration:
+ *                     type: string
+ *                     example: "Sale of goods as per order"
+ *                     description: Voucher narration/description
+ *                   remarks:
+ *                     type: string
+ *                     example: "Payment received"
+ *                     description: Additional remarks or notes
+ *                   other1:
+ *                     type: string
+ *                     example: "Custom field 1"
+ *                     description: Custom field 1
+ *                   other2:
+ *                     type: string
+ *                     example: "Custom field 2"
+ *                     description: Custom field 2
+ *                   other3:
+ *                     type: string
+ *                     example: "Custom field 3"
+ *                     description: Custom field 3
+ *                   other4:
+ *                     type: string
+ *                     example: "Custom field 4"
+ *                     description: Custom field 4
+ *                   other5:
+ *                     type: string
+ *                     example: "Custom field 5"
+ *                     description: Custom field 5
+ *                   other6:
+ *                     type: string
+ *                     example: "Custom field 6"
+ *                     description: Custom field 6
+ *                   other7:
+ *                     type: string
+ *                     example: "Custom field 7"
+ *                     description: Custom field 7
+ *                   other8:
+ *                     type: string
+ *                     example: "Custom field 8"
+ *                     description: Custom field 8
+ *                   other9:
+ *                     type: string
+ *                     example: "Custom field 9"
+ *                     description: Custom field 9
+ *                   other10:
+ *                     type: string
+ *                     example: "Custom field 10"
+ *                     description: Custom field 10
+ *               ledgerEntries:
+ *                 type: array
+ *                 description: Array of ledger entries (accounting entries) for this voucher
+ *                 items:
+ *                   type: object
+ *                   required:
+ *                     - ledgerguid
+ *                     - ledgeramount
+ *                   properties:
+ *                     cmpcode:
+ *                       type: string
+ *                       example: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *                       description: Company code (must match voucher cmpcode)
+ *                     vchguid:
+ *                       type: string
+ *                       example: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-00001234"
+ *                       description: Voucher GUID (must match voucher vchguid)
+ *                     ledgerguid:
+ *                       type: string
+ *                       example: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-000000a1"
+ *                       description: Ledger GUID (must exist in system)
+ *                     ledgeramount:
+ *                       type: number
+ *                       example: 10000.00
+ *                       description: Amount for this ledger entry (positive for debit, negative for credit)
+ *                     other1:
+ *                       type: string
+ *                       example: "Debit"
+ *                       description: Custom field 1 (e.g., Debit/Credit type)
+ *                     other2:
+ *                       type: string
+ *                       example: "Customer Account"
+ *                       description: Custom field 2 (e.g., Account type)
+ *                     other3:
+ *                       type: string
+ *                       example: "Invoice Payment"
+ *                       description: Custom field 3 (e.g., Transaction type)
+ *                     other4:
+ *                       type: string
+ *                       example: "Q4 2024"
+ *                       description: Custom field 4 (e.g., Period)
+ *                     other5:
+ *                       type: string
+ *                       example: "Approved"
+ *                       description: Custom field 5 (e.g., Status)
+ *               inventoryEntries:
+ *                 type: array
+ *                 description: Array of inventory entries (items/products) for this voucher
+ *                 items:
+ *                   type: object
+ *                   required:
+ *                     - itemguid
+ *                     - itemamount
+ *                   properties:
+ *                     cmpcode:
+ *                       type: string
+ *                       example: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *                       description: Company code (must match voucher cmpcode)
+ *                     vchguid:
+ *                       type: string
+ *                       example: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-00001234"
+ *                       description: Voucher GUID (must match voucher vchguid)
+ *                     itemguid:
+ *                       type: string
+ *                       example: "ITEM-001"
+ *                       description: Item/Product GUID
+ *                     itemmainqty:
+ *                       type: number
+ *                       example: 10.00
+ *                       description: Main quantity
+ *                     itemaltqty:
+ *                       type: number
+ *                       example: 1.00
+ *                       description: Alternate quantity
+ *                     itemmainunit:
+ *                       type: string
+ *                       example: "PCS"
+ *                       description: Main unit (pieces, kg, etc.)
+ *                     itemaltunit:
+ *                       type: string
+ *                       example: "BOX"
+ *                       description: Alternate unit
+ *                     itemrate:
+ *                       type: number
+ *                       example: 100.00
+ *                       description: Rate per unit
+ *                     itemrateunit:
+ *                       type: string
+ *                       example: "PCS"
+ *                       description: Unit for rate
+ *                     itemdisc:
+ *                       type: number
+ *                       example: 50.00
+ *                       description: Discount amount
+ *                     itemamount:
+ *                       type: number
+ *                       example: 950.00
+ *                       description: Total amount (required)
+ *                     itemdescription:
+ *                       type: string
+ *                       example: "Product XYZ - Red Color"
+ *                       description: Item description
+ *                     other1:
+ *                       type: string
+ *                       example: "Batch: B001"
+ *                       description: Custom field 1 (e.g., Batch number)
+ *                     other2:
+ *                       type: string
+ *                       example: "Expiry: 2025-12-31"
+ *                       description: Custom field 2 (e.g., Expiry date)
+ *                     other3:
+ *                       type: string
+ *                       example: "Warehouse: Main"
+ *                       description: Custom field 3 (e.g., Warehouse location)
+ *                     other4:
+ *                       type: string
+ *                       example: "Quality: A+"
+ *                       description: Custom field 4 (e.g., Quality grade)
+ *                     other5:
+ *                       type: string
+ *                       example: "Custom field 5"
+ *                       description: Custom field 5
+ *           example:
+ *             voucher:
+ *               cmpcode: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *               vchguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-00001234"
+ *               vchnumber: "INV-2024-001"
+ *               vchdate: "2024-12-30"
+ *               vchtype: "Sales"
+ *               vchtypeparent: "Invoice"
+ *               vchpartyguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-000000a1"
+ *               vchpartyname: "ABC Traders"
+ *               vchpartyadd1: "123 Main Street"
+ *               vchpartyadd2: "Near City Mall"
+ *               vchpartyadd3: "Ludhiana, Punjab"
+ *               vchpartygstin: "03AABCU9603R1ZM"
+ *               vchsubdealername: "Sub Dealer Name"
+ *               vchsubdealeradd1: "Sub Dealer Address Line 1"
+ *               vchsubdealeradd2: "Sub Dealer Address Line 2"
+ *               vchsubdealeradd3: "Sub Dealer Address Line 3"
+ *               isinvoice: "Yes"
+ *               vchgrno: "GR-12345"
+ *               vchtransport: "Royal Transport"
+ *               vchtruckno: "PB-05-1234"
+ *               vchdrivername: "Rajesh Kumar"
+ *               vchdrivermobile: "9876543210"
+ *               vchdestination: "Delhi"
+ *               vchpymtterms: "Net 30 Days"
+ *               vchotherref: "PO-2024-001"
+ *               vchqtunit: "PCS"
+ *               vchqtunit2: "KG"
+ *               vchgoodsamt: 50000
+ *               vchamount: 59000
+ *               vchnarration: "Sale of goods as per order"
+ *               remarks: "Payment received"
+ *               other1: "Custom field 1"
+ *               other2: "Custom field 2"
+ *               other3: "Custom field 3"
+ *               other4: "Custom field 4"
+ *               other5: "Custom field 5"
+ *               other6: "Custom field 6"
+ *               other7: "Custom field 7"
+ *               other8: "Custom field 8"
+ *               other9: "Custom field 9"
+ *               other10: "Custom field 10"
+ *             ledgerEntries:
+ *               - cmpcode: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *                 vchguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-00001234"
+ *                 ledgerguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-000000a1"
+ *                 ledgeramount: 10000
+ *                 other1: "Debit"
+ *                 other2: "Customer Account"
+ *                 other3: "Invoice Payment"
+ *                 other4: "Q4 2024"
+ *                 other5: "Approved"
+ *               - cmpcode: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *                 vchguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-00001234"
+ *                 ledgerguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-000000a2"
+ *                 ledgeramount: -10000
+ *                 other1: "Credit"
+ *                 other2: "Sales Account"
+ *                 other3: "Invoice Payment"
+ *                 other4: "Q4 2024"
+ *                 other5: "Approved"
+ *             inventoryEntries:
+ *               - cmpcode: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *                 vchguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-00001234"
+ *                 itemguid: "ITEM-001"
+ *                 itemmainqty: 10
+ *                 itemmainunit: "PCS"
+ *                 itemrate: 100
+ *                 itemdisc: 0
+ *                 itemamount: 1000
+ *                 itemdescription: "Product XYZ"
+ *                 other1: "Batch: B001"
+ *                 other2: "Expiry: 2025-12-31"
+ *                 other3: "Warehouse: Main"
+ *                 other4: "Quality: A+"
+ *               - cmpcode: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *                 vchguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-00001234"
+ *                 itemguid: "ITEM-002"
+ *                 itemmainqty: 5
+ *                 itemmainunit: "KG"
+ *                 itemrate: 200
+ *                 itemdisc: 0
+ *                 itemamount: 1000
+ *                 itemdescription: "Product ABC"
+ *                 other1: "Batch: B002"
+ *                 other2: "Expiry: 2026-06-30"
+ *                 other3: "Warehouse: Secondary"
+ *                 other4: "Quality: B+"
+ *     responses:
+ *       200:
+ *         description: Voucher and all entries synced successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Voucher sync completed. Voucher: Created, Ledger Entries: 2/2, Inventory Entries: 2/2"
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     voucher:
+ *                       type: object
+ *                       properties:
+ *                         success:
+ *                           type: boolean
+ *                         action:
+ *                           type: string
+ *                           enum: [Created, Updated]
+ *                         error:
+ *                           type: string
+ *                           nullable: true
+ *                         data:
+ *                           type: object
+ *                           properties:
+ *                             _id:
+ *                               type: string
+ *                             vchguid:
+ *                               type: string
+ *                             vchnumber:
+ *                               type: string
+ *                             vchtype:
+ *                               type: string
+ *                             vchdate:
+ *                               type: string
+ *                               format: date
+ *                             vchamount:
+ *                               type: number
+ *                     ledgerEntries:
+ *                       type: object
+ *                       properties:
+ *                         success:
+ *                           type: array
+ *                           items:
+ *                             type: object
+ *                             properties:
+ *                               index:
+ *                                 type: number
+ *                               _id:
+ *                                 type: string
+ *                               ledgerguid:
+ *                                 type: string
+ *                               ledgerName:
+ *                                 type: string
+ *                               action:
+ *                                 type: string
+ *                                 enum: [Created, Updated]
+ *                               amount:
+ *                                 type: number
+ *                         failed:
+ *                           type: array
+ *                           items:
+ *                             type: object
+ *                             properties:
+ *                               index:
+ *                                 type: number
+ *                               ledgerguid:
+ *                                 type: string
+ *                               error:
+ *                                 type: string
+ *                         totalProcessed:
+ *                           type: number
+ *                         totalSuccess:
+ *                           type: number
+ *                         totalFailed:
+ *                           type: number
+ *                     inventoryEntries:
+ *                       type: object
+ *                       properties:
+ *                         success:
+ *                           type: array
+ *                           items:
+ *                             type: object
+ *                             properties:
+ *                               index:
+ *                                 type: number
+ *                               _id:
+ *                                 type: string
+ *                               itemguid:
+ *                                 type: string
+ *                               itemDescription:
+ *                                 type: string
+ *                               action:
+ *                                 type: string
+ *                                 enum: [Created, Updated]
+ *                               quantity:
+ *                                 type: number
+ *                               amount:
+ *                                 type: number
+ *                         failed:
+ *                           type: array
+ *                           items:
+ *                             type: object
+ *                             properties:
+ *                               index:
+ *                                 type: number
+ *                               itemguid:
+ *                                 type: string
+ *                               error:
+ *                                 type: string
+ *                         totalProcessed:
+ *                           type: number
+ *                         totalSuccess:
+ *                           type: number
+ *                         totalFailed:
+ *                           type: number
+ *             example:
+ *               success: true
+ *               message: "Voucher sync completed. Voucher: Created, Ledger Entries: 2/2, Inventory Entries: 2/2"
+ *               data:
+ *                 voucher:
+ *                   success: true
+ *                   action: "Created"
+ *                   error: null
+ *                   data:
+ *                     _id: "507f1f77bcf86cd799439011"
+ *                     vchguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-00001234"
+ *                     vchnumber: "INV-2024-001"
+ *                     vchtype: "Sales"
+ *                     vchdate: "2024-12-30T00:00:00.000Z"
+ *                     vchamount: 59000.00
+ *                 ledgerEntries:
+ *                   success:
+ *                     - index: 0
+ *                       _id: "507f1f77bcf86cd799439012"
+ *                       ledgerguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-000000a1"
+ *                       ledgerName: "Customer Account"
+ *                       action: "Created"
+ *                       amount: 10000.00
+ *                     - index: 1
+ *                       _id: "507f1f77bcf86cd799439013"
+ *                       ledgerguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-000000a2"
+ *                       ledgerName: "Sales Account"
+ *                       action: "Created"
+ *                       amount: -10000.00
+ *                   failed: []
+ *                   totalProcessed: 2
+ *                   totalSuccess: 2
+ *                   totalFailed: 0
+ *                 inventoryEntries:
+ *                   success:
+ *                     - index: 0
+ *                       _id: "507f1f77bcf86cd799439014"
+ *                       itemguid: "ITEM-001"
+ *                       itemDescription: "Product XYZ"
+ *                       action: "Created"
+ *                       quantity: 10.00
+ *                       amount: 1000.00
+ *                     - index: 1
+ *                       _id: "507f1f77bcf86cd799439015"
+ *                       itemguid: "ITEM-002"
+ *                       itemDescription: "Product ABC"
+ *                       action: "Created"
+ *                       quantity: 5.00
+ *                       amount: 1000.00
+ *                   failed: []
+ *                   totalProcessed: 2
+ *                   totalSuccess: 2
+ *                   totalFailed: 0
+ *       207:
+ *         description: Partial success - Voucher created but some entries failed
+ *       400:
+ *         description: Bad request - Missing required fields or validation error
+ *       404:
+ *         description: Company or Ledger not found
+ *       500:
+ *         description: Server error
+ */
+tallyRoute.post('/vouchers/sync-complete', syncVoucherComplete);
+
+// ===================== OUTSTANDING APIS =====================
+
+/**
+ * @swagger
+ * /api/v1/tally/outstanding/sync:
+ *   post:
+ *     summary: Create or update outstanding entries from Tally (Combined API)
+ *     description: >
+ *       Syncs outstanding entries from Tally ERP. Supports both single outstanding entry and batch processing.
+ *       
+ *       **Required Fields:**
+ *       - cmpcode: Company code
+ *       - ledgerguid: Ledger GUID (dealer GUID)
+ *       - vchguid: Voucher GUID
+ *       - outstandingAmount: Outstanding amount
+ *       
+ *       **Optional Fields:**
+ *       - totalAmount: Total invoice amount
+ *       - paidAmount: Amount already paid
+ *       - dueDate: Due date for payment
+ *       - paymentTerms: Payment terms (immediate, 7_days, 15_days, 30_days, etc.)
+ *       - vchnumber: Voucher number
+ *       - vchdate: Voucher date
+ *       - status: Status (pending, overdue, partially_paid, paid)
+ *       - riskLevel: Risk level (low, medium, high, critical)
+ *       
+ *       The system will automatically:
+ *       - Calculate days overdue based on due date
+ *       - Determine status based on outstanding amount and days overdue
+ *       - Determine risk level based on days overdue
+ *       - Link to voucher if vchguid is provided
+ *       - Link to ledger/dealer if ledgerguid is provided
+ *     tags: [Tally Outstanding]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             oneOf:
+ *               - type: object
+ *                 required:
+ *                   - cmpcode
+ *                   - ledgerguid
+ *                   - vchguid
+ *                   - outstandingAmount
+ *                 properties:
+ *                   cmpcode:
+ *                     type: string
+ *                     example: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *                   ledgerguid:
+ *                     type: string
+ *                     example: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-000000a1"
+ *                     description: Ledger GUID (dealer GUID)
+ *                   vchguid:
+ *                     type: string
+ *                     example: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-00001234"
+ *                     description: Voucher GUID
+ *                   vchnumber:
+ *                     type: string
+ *                     example: "INV-2024-001"
+ *                   vchdate:
+ *                     type: string
+ *                     format: date
+ *                     example: "2024-12-30"
+ *                   totalAmount:
+ *                     type: number
+ *                     example: 59000
+ *                     description: Total invoice amount
+ *                   paidAmount:
+ *                     type: number
+ *                     example: 10000
+ *                     description: Amount already paid
+ *                   outstandingAmount:
+ *                     type: number
+ *                     example: 49000
+ *                     description: Outstanding amount (required)
+ *                   dueDate:
+ *                     type: string
+ *                     format: date
+ *                     example: "2025-01-30"
+ *                   paymentTerms:
+ *                     type: string
+ *                     enum: [immediate, 7_days, 15_days, 30_days, 45_days, 60_days, 90_days, custom]
+ *                     example: "30_days"
+ *                   paymentDays:
+ *                     type: number
+ *                     example: 30
+ *                     description: Number of days for payment (if dueDate not provided)
+ *                   status:
+ *                     type: string
+ *                     enum: [pending, overdue, partially_paid, paid, written_off, disputed]
+ *                     example: "pending"
+ *                   riskLevel:
+ *                     type: string
+ *                     enum: [low, medium, high, critical]
+ *                     example: "low"
+ *                   currency:
+ *                     type: string
+ *                     example: "INR"
+ *                     default: "INR"
+ *                   outstandingId:
+ *                     type: string
+ *                     example: "OUT-2024-001"
+ *                     description: Custom outstanding ID (auto-generated if not provided)
+ *                   tallyGUID:
+ *                     type: string
+ *                     example: "TALLY-OUT-001"
+ *               - type: array
+ *                 description: Array of outstanding entries for batch processing
+ *                 items:
+ *                   type: object
+ *                   required:
+ *                     - cmpcode
+ *                     - ledgerguid
+ *                     - vchguid
+ *                     - outstandingAmount
+ *     responses:
+ *       200:
+ *         description: All outstanding entries synced successfully
+ *       207:
+ *         description: Partial success - some entries synced, some failed
+ *       400:
+ *         description: All entries failed or validation error
+ *       500:
+ *         description: Server error
+ */
+tallyRoute.post('/outstanding/sync', syncOutstandingFromTally);
+
+/**
+ * @swagger
+ * /api/v1/tally/outstanding/group-user:
+ *   get:
+ *     summary: Get outstanding entries for group user (own ledgers + child group dealers)
+ *     description: >
+ *       Fetches outstanding entries for a group user, including:
+ *       - Outstanding from own ledgers (ledgers in user's groups)
+ *       - Outstanding from child group dealers (ledgers in child users' groups)
+ *       
+ *       Returns grouped data by ledger with:
+ *       - Ledger information
+ *       - List of outstanding invoices/bills
+ *       - Summary statistics (total outstanding, invoice count, overdue days)
+ *       
+ *       This API is specifically designed for group users to see all outstanding
+ *       amounts from their own ledgers and their child group's dealers.
+ *     tags: [Tally Outstanding]
+ *     parameters:
+ *       - in: query
+ *         name: cmpcode
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Company code
+ *         example: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *       - in: query
+ *         name: userId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Group user ID
+ *         example: "507f1f77bcf86cd799439011"
+ *     responses:
+ *       200:
+ *         description: Outstanding data fetched successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Outstanding data fetched successfully for group user"
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     LEDGER_GROUPS:
+ *                       type: array
+ *                       description: Array of ledgers with outstanding summary (exact structure matching frontend)
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           id:
+ *                             type: string
+ *                             example: "1"
+ *                           name:
+ *                             type: string
+ *                             example: "ABC Traders"
+ *                           outstanding:
+ *                             type: number
+ *                             example: 330400
+ *                           invoiceCount:
+ *                             type: number
+ *                             example: 2
+ *                           overdueDays:
+ *                             type: number
+ *                             example: 214
+ *                           lastActivity:
+ *                             type: string
+ *                             example: "30 May 25"
+ *                     BILLS_DATA:
+ *                       type: object
+ *                       description: Object keyed by ledger id, containing array of bills (exact structure matching frontend)
+ *                       additionalProperties:
+ *                         type: array
+ *                         items:
+ *                           type: object
+ *                           properties:
+ *                             id:
+ *                               type: string
+ *                               example: "1"
+ *                             date:
+ *                               type: string
+ *                               example: "26 May 25"
+ *                             voucherNo:
+ *                               type: string
+ *                               example: "INV-001"
+ *                             amount:
+ *                               type: number
+ *                               example: 118000
+ *                             dueDate:
+ *                               type: string
+ *                               example: "05 Jun 25"
+ *                             overdueDays:
+ *                               type: number
+ *                               example: 214
+ *                             items:
+ *                               type: string
+ *                               example: "Samsung 12 laptop (10 PC)"
+ *                     summary:
+ *                       type: object
+ *                       properties:
+ *                         totalLedgers:
+ *                           type: number
+ *                         totalOutstanding:
+ *                           type: number
+ *                         totalInvoices:
+ *                           type: number
+ *             example:
+ *               success: true
+ *               message: "Outstanding data fetched successfully for group user"
+ *               data:
+ *                 LEDGER_GROUPS:
+ *                   - id: "1"
+ *                     name: "ABC Traders"
+ *                     outstanding: 330400
+ *                     invoiceCount: 2
+ *                     overdueDays: 214
+ *                     lastActivity: "30 May 25"
+ *                 BILLS_DATA:
+ *                   "1":
+ *                     - id: "1"
+ *                       date: "26 May 25"
+ *                       voucherNo: "INV-001"
+ *                       amount: 118000
+ *                       dueDate: "05 Jun 25"
+ *                       overdueDays: 214
+ *                       items: "Samsung 12 laptop (10 PC)"
+ *                     - id: "2"
+ *                       date: "30 May 25"
+ *                       voucherNo: "INV-003"
+ *                       amount: 212400
+ *                       dueDate: "09 Jun 25"
+ *                       overdueDays: 210
+ *                       items: "Lenovo Tab M10 FHD Plus (4 PC)"
+ *                 summary:
+ *                   totalLedgers: 1
+ *                   totalOutstanding: 330400
+ *                   totalInvoices: 2
+ *       400:
+ *         description: Bad request - Missing required parameters
+ *       404:
+ *         description: Company or User not found
+ *       500:
+ *         description: Server error
+ */
+tallyRoute.get('/outstanding/group-user', getOutstandingForGroupUser);
+
+/**
+ * @swagger
+ * /api/v1/tally/outstanding/{outstandingId}/details:
+ *   get:
+ *     summary: Get outstanding details with complete invoice/voucher information (Combined API)
+ *     description: >
+ *       Fetches outstanding entry details along with complete invoice/voucher information including:
+ *       - Outstanding entry details (amount, due date, status, etc.)
+ *       - Complete voucher information
+ *       - All ledger entries for the voucher
+ *       - All inventory entries for the voucher
+ *       
+ *       This API is designed to show full details when a user clicks on an outstanding entry.
+ *       Can be called with either outstandingId or vchguid (voucher GUID) as query parameter.
+ *     tags: [Tally Outstanding]
+ *     parameters:
+ *       - in: path
+ *         name: outstandingId
+ *         required: false
+ *         schema:
+ *           type: string
+ *         description: Outstanding entry ID (optional if vchguid is provided)
+ *         example: "507f1f77bcf86cd799439011"
+ *       - in: query
+ *         name: cmpcode
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Company code
+ *         example: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *       - in: query
+ *         name: vchguid
+ *         required: false
+ *         schema:
+ *           type: string
+ *         description: Voucher GUID (alternative to outstandingId)
+ *         example: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-00001234"
+ *     responses:
+ *       200:
+ *         description: Outstanding details with invoice information fetched successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Outstanding details with invoice information fetched successfully"
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     outstanding:
+ *                       type: object
+ *                       description: Outstanding entry details
+ *                       properties:
+ *                         _id:
+ *                           type: string
+ *                         outstandingId:
+ *                           type: string
+ *                         partyName:
+ *                           type: string
+ *                         partyType:
+ *                           type: string
+ *                         totalAmount:
+ *                           type: number
+ *                         paidAmount:
+ *                           type: number
+ *                         outstandingAmount:
+ *                           type: number
+ *                         currency:
+ *                           type: string
+ *                         paymentTerms:
+ *                           type: string
+ *                         dueDate:
+ *                           type: string
+ *                           format: date
+ *                         status:
+ *                           type: string
+ *                         daysOverdue:
+ *                           type: number
+ *                         riskLevel:
+ *                           type: string
+ *                         vchguid:
+ *                           type: string
+ *                         vchnumber:
+ *                           type: string
+ *                         vchdate:
+ *                           type: string
+ *                           format: date
+ *                     voucher:
+ *                       type: object
+ *                       description: Complete voucher information
+ *                     ledgerEntries:
+ *                       type: object
+ *                       description: Ledger entries for the voucher
+ *                       properties:
+ *                         entries:
+ *                           type: array
+ *                         summary:
+ *                           type: object
+ *                     inventoryEntries:
+ *                       type: object
+ *                       description: Inventory entries for the voucher
+ *                       properties:
+ *                         entries:
+ *                           type: array
+ *                         summary:
+ *                           type: object
+ *             example:
+ *               success: true
+ *               message: "Outstanding details with invoice information fetched successfully"
+ *               data:
+ *                 outstanding:
+ *                   _id: "507f1f77bcf86cd799439011"
+ *                   outstandingId: "OUT-2024-001"
+ *                   partyName: "ABC Traders"
+ *                   totalAmount: 59000
+ *                   paidAmount: 10000
+ *                   outstandingAmount: 49000
+ *                   dueDate: "2025-01-30"
+ *                   status: "overdue"
+ *                   daysOverdue: 214
+ *                   vchnumber: "INV-2024-001"
+ *                 voucher:
+ *                   vchnumber: "INV-2024-001"
+ *                   vchamount: 59000
+ *                 ledgerEntries:
+ *                   entries: []
+ *                   summary:
+ *                     totalEntries: 0
+ *                 inventoryEntries:
+ *                   entries: []
+ *                   summary:
+ *                     totalEntries: 0
+ *       400:
+ *         description: Bad request - Missing required parameters
+ *       404:
+ *         description: Outstanding entry or voucher not found
+ *       500:
+ *         description: Server error
+ */
+tallyRoute.get('/outstanding/:outstandingId/details', getOutstandingWithDetails);
+
+// ===================== SALES APIS =====================
+
+/**
+ * @swagger
+ * /api/v1/tally/sales/sync:
+ *   post:
+ *     summary: Sync sales data from Tally ERP
+ *     description: >
+ *       Creates or updates sales entries from Tally ERP.
+ *       Sales are linked to vouchers, ledgers (dealers), and inventory entries.
+ *       
+ *       Accepts single or bulk sales data. Each sale entry must include:
+ *       - Voucher information (vchguid, vchnumber, vchdate)
+ *       - Ledger information (ledgerguid)
+ *       - Item information (itemguid, quantity, rate, amount)
+ *       
+ *       The API will automatically link to existing vouchers, ledgers, and inventory entries.
+ *     tags: [Tally Sales]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             oneOf:
+ *               - type: object
+ *                 properties:
+ *                   cmpcode:
+ *                     type: string
+ *                     description: Company code
+ *                     example: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *                   vchguid:
+ *                     type: string
+ *                     description: Voucher GUID from Tally
+ *                     example: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-00001234"
+ *                   vchnumber:
+ *                     type: string
+ *                     description: Voucher number
+ *                     example: "INV-2024-001"
+ *                   vchdate:
+ *                     type: string
+ *                     format: date
+ *                     description: Voucher date
+ *                     example: "2024-12-30"
+ *                   vchtype:
+ *                     type: string
+ *                     description: Voucher type
+ *                     example: "Sales"
+ *                   ledgerguid:
+ *                     type: string
+ *                     description: Ledger GUID (dealer/party)
+ *                     example: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-000000a1"
+ *                   ledgername:
+ *                     type: string
+ *                     description: Ledger name
+ *                     example: "ABC Traders"
+ *                   ledgeraddress:
+ *                     type: string
+ *                     description: Ledger address
+ *                     example: "123 Main Street"
+ *                   ledgermobile:
+ *                     type: string
+ *                     description: Ledger mobile
+ *                     example: "9876543210"
+ *                   ledgeremail:
+ *                     type: string
+ *                     description: Ledger email
+ *                     example: "abc@traders.com"
+ *                   itemguid:
+ *                     type: string
+ *                     description: Item GUID from Tally
+ *                     example: "ITEM-001"
+ *                   itemname:
+ *                     type: string
+ *                     description: Item name
+ *                     example: "Samsung 12 Laptop"
+ *                   itemsku:
+ *                     type: string
+ *                     description: Item SKU
+ *                     example: "SAM-LP-12"
+ *                   itemcategory:
+ *                     type: string
+ *                     description: Item category
+ *                     example: "Laptops"
+ *                   quantity:
+ *                     type: number
+ *                     description: Quantity sold
+ *                     example: 10
+ *                   unit:
+ *                     type: string
+ *                     description: Unit of measurement
+ *                     example: "PCS"
+ *                   rate:
+ *                     type: number
+ *                     description: Rate per unit
+ *                     example: 55000
+ *                   discount:
+ *                     type: number
+ *                     description: Discount amount
+ *                     example: 0
+ *                   amount:
+ *                     type: number
+ *                     description: Total amount
+ *                     example: 550000
+ *                   paymentMode:
+ *                     type: string
+ *                     enum: [Cash, Credit, UPI, "Bank Transfer", Cheque, Other]
+ *                     description: Payment mode
+ *                     example: "Credit"
+ *                   paymentTerms:
+ *                     type: string
+ *                     description: Payment terms
+ *                     example: "Net 30 Days"
+ *                   status:
+ *                     type: string
+ *                     enum: [Completed, Pending, Cancelled, Returned]
+ *                     description: Sale status
+ *                     example: "Completed"
+ *                   description:
+ *                     type: string
+ *                     description: Additional description
+ *                   remarks:
+ *                     type: string
+ *                     description: Remarks
+ *               - type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     cmpcode:
+ *                       type: string
+ *                     vchguid:
+ *                       type: string
+ *                     ledgerguid:
+ *                       type: string
+ *                     itemguid:
+ *                       type: string
+ *                     quantity:
+ *                       type: number
+ *                     rate:
+ *                       type: number
+ *                     amount:
+ *                       type: number
+ *           examples:
+ *             single:
+ *               summary: Single sale entry
+ *               value:
+ *                 cmpcode: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *                 vchguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-00001234"
+ *                 vchnumber: "INV-2024-001"
+ *                 vchdate: "2024-12-30"
+ *                 vchtype: "Sales"
+ *                 ledgerguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-000000a1"
+ *                 ledgername: "ABC Traders"
+ *                 ledgeraddress: "123 Main Street"
+ *                 itemguid: "ITEM-001"
+ *                 itemname: "Samsung 12 Laptop"
+ *                 itemsku: "SAM-LP-12"
+ *                 itemcategory: "Laptops"
+ *                 quantity: 10
+ *                 unit: "PCS"
+ *                 rate: 55000
+ *                 discount: 0
+ *                 amount: 550000
+ *                 paymentMode: "Credit"
+ *                 status: "Completed"
+ *             bulk:
+ *               summary: Bulk sales entries
+ *               value:
+ *                 - cmpcode: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *                   vchguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-00001234"
+ *                   ledgerguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-000000a1"
+ *                   itemguid: "ITEM-001"
+ *                   quantity: 10
+ *                   rate: 55000
+ *                   amount: 550000
+ *                 - cmpcode: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *                   vchguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-00001234"
+ *                   ledgerguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc-000000a1"
+ *                   itemguid: "ITEM-002"
+ *                   quantity: 5
+ *                   rate: 20000
+ *                   amount: 100000
+ *     responses:
+ *       200:
+ *         description: Sales synced successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Sales sync completed: 2 succeeded, 0 failed"
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     total:
+ *                       type: number
+ *                       example: 2
+ *                     success:
+ *                       type: number
+ *                       example: 2
+ *                     failed:
+ *                       type: number
+ *                       example: 0
+ *                     errors:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *       400:
+ *         description: Bad request - Missing required fields
+ *       500:
+ *         description: Server error
+ */
+tallyRoute.post('/sales/sync', syncSalesFromTally);
+
+/**
+ * @swagger
+ * /api/v1/tally/sales/group-user:
+ *   get:
+ *     summary: Get sales summary for group user (own dealers + child group dealers)
+ *     description: >
+ *       Fetches sales summary for a group user, including:
+ *       - Sales from own ledgers (ledgers in user's groups)
+ *       - Sales from child group dealers (ledgers in child users' groups)
+ *       - Sales from directly assigned dealers (admin assigned)
+ *       - Sales from user-created dealers
+ *       
+ *       Returns sales data grouped by item/product with:
+ *       - Sales summary (total quantity, amount, average rate, transaction count)
+ *       - Transaction register (detailed transaction list for each item)
+ *       - Summary statistics (total sales, revenue, transactions)
+ *       
+ *       This API is specifically designed for group users to see all sales
+ *       from their own ledgers and their child group's dealers.
+ *     tags: [Tally Sales]
+ *     parameters:
+ *       - in: query
+ *         name: cmpcode
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Company code
+ *         example: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *       - in: query
+ *         name: userId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Group user ID
+ *         example: "6953690d639894a69a953327"
+ *     responses:
+ *       200:
+ *         description: Sales summary retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     SALES_SUMMARY:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           id:
+ *                             type: string
+ *                             example: "ITEM-001"
+ *                           stockName:
+ *                             type: string
+ *                             example: "Samsung 12 Laptop"
+ *                           sku:
+ *                             type: string
+ *                             example: "SAM-LP-12"
+ *                           category:
+ *                             type: string
+ *                             example: "Laptops"
+ *                           totalQuantitySold:
+ *                             type: number
+ *                             example: 40
+ *                           totalAmount:
+ *                             type: number
+ *                             example: 2200000
+ *                           averageRate:
+ *                             type: number
+ *                             example: 55000
+ *                           transactionCount:
+ *                             type: number
+ *                             example: 2
+ *                           lastSaleDate:
+ *                             type: string
+ *                             example: "02 Jan 26"
+ *                           trend:
+ *                             type: string
+ *                             example: "up"
+ *                           status:
+ *                             type: string
+ *                             enum: [Top Seller, Good, Slow Mover]
+ *                             example: "Top Seller"
+ *                     TRANSACTION_REGISTER:
+ *                       type: object
+ *                       additionalProperties:
+ *                         type: array
+ *                         items:
+ *                           type: object
+ *                           properties:
+ *                             id:
+ *                               type: string
+ *                               example: "TXN-001"
+ *                             date:
+ *                               type: string
+ *                               example: "02 Jan 26"
+ *                             subDealer:
+ *                               type: string
+ *                               example: "Sharma Electronics"
+ *                             location:
+ *                               type: string
+ *                               example: "Delhi NCR"
+ *                             quantity:
+ *                               type: number
+ *                               example: 15
+ *                             rate:
+ *                               type: number
+ *                               example: 55000
+ *                             amount:
+ *                               type: number
+ *                               example: 825000
+ *                             status:
+ *                               type: string
+ *                               example: "Completed"
+ *                             invoiceNo:
+ *                               type: string
+ *                               example: "INV-2026-001"
+ *                             paymentMode:
+ *                               type: string
+ *                               example: "Credit"
+ *                     summary:
+ *                       type: object
+ *                       properties:
+ *                         totalSales:
+ *                           type: number
+ *                           example: 400
+ *                         totalRevenue:
+ *                           type: number
+ *                           example: 22000000
+ *                         totalTransactions:
+ *                           type: number
+ *                           example: 10
+ *       400:
+ *         description: Bad request - Missing required parameters
+ *       404:
+ *         description: Company or user not found
+ *       500:
+ *         description: Server error
+ */
+tallyRoute.get('/sales/group-user', getSalesSummaryForGroupUser);
+
+// ===================== STOCK APIS =====================
+
+/**
+ * @swagger
+ * /api/v1/tally/stock/sync:
+ *   post:
+ *     summary: Sync stock data from Tally ERP
+ *     description: >
+ *       Creates or updates product stock levels from Tally ERP.
+ *       Stock is linked to products (Product model) using itemguid.
+ *       
+ *       Accepts single or bulk stock data. Each stock entry must include:
+ *       - Company information (cmpcode, companyguid)
+ *       - Item information (itemguid, itemname, itemsku, itemcategory)
+ *       - Stock levels (currentStock, openingBalance)
+ *       - Pricing (stdSaleRate, stdPurcRate)
+ *       
+ *       The API will automatically create or update products based on itemguid.
+ *     tags: [Tally Stock]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             oneOf:
+ *               - type: object
+ *                 properties:
+ *                   companyguid:
+ *                     type: string
+ *                     description: Company GUID from Tally
+ *                     example: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc"
+ *                   cmpcode:
+ *                     type: string
+ *                     description: Company code
+ *                     example: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *                   itemguid:
+ *                     type: string
+ *                     required: true
+ *                     description: Item GUID from Tally
+ *                     example: "ITEM-001"
+ *                   itemname:
+ *                     type: string
+ *                     description: Item name
+ *                     example: "Samsung 12 Laptop"
+ *                   itemsku:
+ *                     type: string
+ *                     description: Item SKU
+ *                     example: "SAM-LP-12"
+ *                   itemcategory:
+ *                     type: string
+ *                     description: Item category
+ *                     example: "Laptops"
+ *                   currentStock:
+ *                     type: number
+ *                     description: Current stock quantity
+ *                     example: 45
+ *                   openingBalance:
+ *                     type: number
+ *                     description: Opening balance
+ *                     example: 50
+ *                   stdSaleRate:
+ *                     type: number
+ *                     description: Standard sale rate
+ *                     example: 55000
+ *                   stdPurcRate:
+ *                     type: number
+ *                     description: Standard purchase rate
+ *                     example: 50000
+ *                   itemHsn:
+ *                     type: string
+ *                     description: HSN code
+ *                     example: "8471"
+ *                   itemHsnDesc:
+ *                     type: string
+ *                     description: HSN description
+ *                     example: "Portable automatic data processing machines"
+ *               - type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     cmpcode:
+ *                       type: string
+ *                     itemguid:
+ *                       type: string
+ *                     currentStock:
+ *                       type: number
+ *           examples:
+ *             single:
+ *               summary: Single stock entry
+ *               value:
+ *                 companyguid: "901a1bd7-ab66-4f91-92b0-b6f9edd9fddc"
+ *                 cmpcode: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *                 itemguid: "ITEM-001"
+ *                 itemname: "Samsung 12 Laptop"
+ *                 itemsku: "SAM-LP-12"
+ *                 itemcategory: "Laptops"
+ *                 currentStock: 45
+ *                 openingBalance: 50
+ *                 stdSaleRate: 55000
+ *                 stdPurcRate: 50000
+ *             bulk:
+ *               summary: Bulk stock entries
+ *               value:
+ *                 - cmpcode: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *                   itemguid: "ITEM-001"
+ *                   itemname: "Samsung 12 Laptop"
+ *                   currentStock: 45
+ *                 - cmpcode: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *                   itemguid: "ITEM-002"
+ *                   itemname: "Lenovo Tab M10"
+ *                   currentStock: 5
+ *     responses:
+ *       200:
+ *         description: Stock synced successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Stock synchronization complete"
+ *                 results:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       success:
+ *                         type: boolean
+ *                       message:
+ *                         type: string
+ *                       productId:
+ *                         type: string
+ *                       itemguid:
+ *                         type: string
+ *       400:
+ *         description: Bad request - Missing required fields
+ *       500:
+ *         description: Server error
+ */
+tallyRoute.post('/stock/sync', syncStockFromTally);
+
+/**
+ * @swagger
+ * /api/v1/tally/stock/group-user:
+ *   get:
+ *     summary: Get stock summary for group user (all products in company)
+ *     description: >
+ *       Fetches stock summary for a group user, including:
+ *       - All products in the company (not filtered by ledgers - all products)
+ *       - Current stock levels (inHand)
+ *       - Total quantity sold to sub-dealers (subDealerSold)
+ *       - Last sale date
+ *       - Stock status (Healthy, Low Stock, Out of Stock, Overstocked, Fast Mover)
+ *       - Sales register (detailed transaction list for each product)
+ *       - Summary statistics (total sales, total stock, low stock count)
+ *       
+ *       This API shows all products in the company, regardless of which ledger
+ *       they are associated with. It's designed for group users to see overall
+ *       stock levels and sales performance across all products.
+ *     tags: [Tally Stock]
+ *     parameters:
+ *       - in: query
+ *         name: cmpcode
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Company code
+ *         example: "732081942-901A1BD7-AB66-4F91-92B0-B6F9EDD9FDDC"
+ *     responses:
+ *       200:
+ *         description: Stock summary retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     STOCK_SUMMARY:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           id:
+ *                             type: string
+ *                             example: "ITEM-001"
+ *                           productName:
+ *                             type: string
+ *                             example: "Samsung 12 Laptop"
+ *                           sku:
+ *                             type: string
+ *                             example: "SAM-LP-12"
+ *                           category:
+ *                             type: string
+ *                             example: "Laptops"
+ *                           inHand:
+ *                             type: number
+ *                             description: Current stock available
+ *                             example: 45
+ *                           subDealerSold:
+ *                             type: number
+ *                             description: Total quantity sold to sub-dealers
+ *                             example: 120
+ *                           lastSaleDate:
+ *                             type: string
+ *                             example: "02 Jan 26"
+ *                           trend:
+ *                             type: string
+ *                             enum: [up, down]
+ *                             example: "up"
+ *                           status:
+ *                             type: string
+ *                             enum: [Healthy, "Low Stock", "Out of Stock", Overstocked, "Fast Mover"]
+ *                             example: "Healthy"
+ *                     SALES_REGISTER:
+ *                       type: object
+ *                       additionalProperties:
+ *                         type: array
+ *                         items:
+ *                           type: object
+ *                           properties:
+ *                             id:
+ *                               type: string
+ *                               example: "SR-001"
+ *                             date:
+ *                               type: string
+ *                               example: "02 Jan 26"
+ *                             subDealer:
+ *                               type: string
+ *                               example: "Sharma Electronics"
+ *                             location:
+ *                               type: string
+ *                               example: "Delhi NCR"
+ *                             quantity:
+ *                               type: number
+ *                               example: 15
+ *                             amount:
+ *                               type: string
+ *                               example: "₹ 8,25,000"
+ *                             status:
+ *                               type: string
+ *                               example: "Delivered"
+ *                             invoiceNo:
+ *                               type: string
+ *                               example: "INV-2026-001"
+ *                     summary:
+ *                       type: object
+ *                       properties:
+ *                         totalSales:
+ *                           type: number
+ *                           example: 500
+ *                         totalStock:
+ *                           type: number
+ *                           example: 282
+ *                         lowStockCount:
+ *                           type: number
+ *                           example: 2
+ *       400:
+ *         description: Bad request - Missing required parameters
+ *       404:
+ *         description: Company not found
+ *       500:
+ *         description: Server error
+ */
+tallyRoute.get('/stock/group-user', getStockSummaryForGroupUser);
 
 export default tallyRoute;
 

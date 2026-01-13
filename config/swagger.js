@@ -358,16 +358,20 @@ const options = {
         description: 'Endpoints for integrating with Tally ERP'
       },
       {
-        name: 'Voucher',
-        description: 'Tally Voucher Management APIs - Sync and manage vouchers from Tally'
+        name: 'Tally Vouchers',
+        description: 'Combined voucher API - Get voucher with ledger entries and inventory entries in one request'
       },
       {
-        name: 'LedgerEntries',
-        description: 'Ledger Entries Management APIs - Links vouchers with ledgers for accounting'
+        name: 'Tally Outstanding',
+        description: 'Outstanding management endpoints for Tally ERP - Sync and fetch outstanding entries'
       },
       {
-        name: 'InventoryEntries',
-        description: 'Inventory Entries Management APIs - Tracks items/products in vouchers'
+        name: 'Tally Sales',
+        description: 'Sales management endpoints for Tally ERP - Sync sales and fetch sales summary for group users'
+      },
+      {
+        name: 'Tally Stock',
+        description: 'Stock synchronization and summary endpoints for Tally ERP - Sync stock levels and fetch stock summary for group users'
       }
     ],
     components: {

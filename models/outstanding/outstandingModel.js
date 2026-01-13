@@ -37,16 +37,28 @@ const outstandingSchema = new mongoose.Schema({
   // Outstanding Details
   orderId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Order',
-    required: true
+    ref: 'Order'
   },
   orderNumber: {
-    type: String,
-    required: true
+    type: String
   },
   orderDate: {
-    type: Date,
-    required: true
+    type: Date
+  },
+  // Tally Voucher Integration
+  voucherId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'VoucherMaster'
+  },
+  vchguid: {
+    type: String,
+    index: true
+  },
+  vchnumber: {
+    type: String
+  },
+  vchdate: {
+    type: Date
   },
   
   // Financial Information

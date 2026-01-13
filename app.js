@@ -22,9 +22,6 @@ import { fileURLToPath } from 'url';
 import { superAdminRoute } from './routes/superAdminRoute.js'
 import { specs, swaggerUi } from './config/swagger.js'
 import tallyRoute from './routes/tally/tallyRoute.js'
-import voucherRoute from './routes/voucherRoute.js'
-import ledgerEntriesRoute from './routes/ledgerEntriesRoute.js'
-import inventoryEntriesRoute from './routes/inventoryEntriesRoute.js'
 import maintenanceRoute from './routes/maintenanceRoute.js'
 
 const __filename = fileURLToPath(import.meta.url);
@@ -98,9 +95,6 @@ app.use('/api/v1/rsm', rsmRoute)
 app.use('/api/v1/asm', asmRoute)
 app.use('/api/v1/dealer', dealerTeamRoute)
 app.use('/api/v1/tally', tallyRoute)
-app.use('/api/v1/voucher', voucherRoute)
-app.use('/api/v1/ledger-entries', ledgerEntriesRoute)
-app.use('/api/v1/inventory-entries', inventoryEntriesRoute)
 app.use('/api/v1/maintenance', maintenanceRoute)
 app.use('/api/v1/upload', uploadRoute)
   app.use('/api/v1/superadmin', superAdminRoute)
