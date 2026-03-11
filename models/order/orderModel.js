@@ -303,6 +303,11 @@ const orderSchema = new mongoose.Schema({
     pincode: String,
     country: { type: String, default: 'India' }
   },
+  // Flag to indicate if shipping address is manually entered (not from subdealer)
+  isManualShippingAddress: {
+    type: Boolean,
+    default: false
+  },
   // Timestamps
   createdAt: {
     type: Date,

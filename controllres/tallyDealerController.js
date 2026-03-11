@@ -344,12 +344,104 @@ export const upsertDealerFromTally = async (req, res) => {
       }
 
       if (existingDealer) {
-        results.push({
-          LedgerGUID: ledgerGuid,
-          success: false,
-          message: `Dealer with LedgerGUID "${ledgerGuid}" already exists for this company`,
-          error: 'DEALER_ALREADY_EXISTS',
-        });
+        // Update existing dealer
+        try {
+          // Update fields - only update provided fields
+          if (!isBlank(item.LedgerName || item.ledgerName || item.name)) {
+            existingDealer.LedgerName = normalizeString(item.LedgerName || item.ledgerName || item.name);
+          }
+          if (item.LedgerMobile !== undefined) {
+            existingDealer.LedgerMobile = normalizeString(item.LedgerMobile);
+          }
+          if (item.Email !== undefined) {
+            existingDealer.Email = normalizeString(item.Email);
+          }
+          if (item.password !== undefined && item.password) {
+            existingDealer.password = await bcrypt.hash(normalizeString(item.password), 10);
+          }
+          if (item.LedgerGSTIN !== undefined) {
+            existingDealer.LedgerGSTIN = normalizeString(item.LedgerGSTIN)?.toUpperCase() || '';
+          }
+          if (item.LedgerAddress1 !== undefined) {
+            existingDealer.LedgerAddress1 = normalizeString(item.LedgerAddress1);
+          }
+          if (item.LedgerAddress2 !== undefined) {
+            existingDealer.LedgerAddress2 = normalizeString(item.LedgerAddress2);
+          }
+          if (item.LedgerState !== undefined) {
+            existingDealer.LedgerState = normalizeString(item.LedgerState);
+          }
+          if (item.LedgerOpening !== undefined) {
+            existingDealer.LedgerOpening = toNumber(item.LedgerOpening, 0);
+          }
+          if (item.LedgerOpeningDate !== undefined) {
+            existingDealer.LedgerOpeningDate = normalizeDate(item.LedgerOpeningDate);
+          }
+          if (item.LedgerJoinDate !== undefined) {
+            existingDealer.LedgerJoinDate = normalizeDate(item.LedgerJoinDate);
+          }
+          if (item.Remarks !== undefined) {
+            existingDealer.Remarks = normalizeString(item.Remarks);
+          }
+          if (item.Other1 !== undefined) {
+            existingDealer.Other1 = normalizeString(item.Other1);
+          }
+          if (item.Other2 !== undefined) {
+            existingDealer.Other2 = normalizeString(item.Other2);
+          }
+          if (item.Other3 !== undefined) {
+            existingDealer.Other3 = normalizeString(item.Other3);
+          }
+          if (item.Other4 !== undefined) {
+            existingDealer.Other4 = normalizeString(item.Other4);
+          }
+          if (item.Other5 !== undefined) {
+            existingDealer.Other5 = normalizeString(item.Other5);
+          }
+          if (item.other6 !== undefined) {
+            existingDealer.other6 = normalizeString(item.other6);
+          }
+          if (item.other7 !== undefined) {
+            existingDealer.other7 = normalizeString(item.other7);
+          }
+          if (item.other8 !== undefined) {
+            existingDealer.other8 = normalizeString(item.other8);
+          }
+          if (item.isActive !== undefined) {
+            existingDealer.isActive = item.isActive === true || item.isActive === 'true' || item.isActive === 1;
+          }
+
+          // Handle group assignment
+          if (item.groupGUID || item.groupGuid || item.GroupGUID) {
+            try {
+              const { group, error: groupError, message: groupMessage } = await findGroupByGuid(
+                item.groupGUID || item.groupGuid || item.GroupGUID,
+                company.companyCode
+              );
+              if (group) {
+                existingDealer.groupId = group._id;
+              }
+            } catch (groupError) {
+              // Log but don't fail - group assignment is optional
+              console.warn(`Failed to find group for update: ${groupError.message}`);
+            }
+          }
+
+          await existingDealer.save();
+
+          // Add update message to results
+          results.push({
+            LedgerGUID: ledgerGuid,
+            message: 'Dealer already exists, updated',
+          });
+        } catch (updateError) {
+          results.push({
+            LedgerGUID: ledgerGuid,
+            success: false,
+            message: `Failed to update dealer: ${updateError.message}`,
+            error: 'UPDATE_FAILED',
+          });
+        }
         continue;
       }
 
@@ -501,7 +593,7 @@ export const upsertDealerFromTally = async (req, res) => {
           cmpcode: dealer.cmpcode
         });
 
-        // Populate references for response
+        // Populate references for logging (not needed for response since we don't return success)
         try {
           await dealer.populate([
             { path: 'SalesMan', select: 'name email mobile role' },
@@ -511,15 +603,11 @@ export const upsertDealerFromTally = async (req, res) => {
             { path: 'groupId', select: 'GroupGUID GroupName GroupParent' },
           ]);
         } catch (populateError) {
-          // Log but don't fail - population is for response only
+          // Log but don't fail - population is for logging only
           console.warn('Failed to populate dealer references:', populateError.message);
         }
 
-        results.push({
-          success: true,
-          LedgerGUID: ledgerGuid,
-          dealer: dealer.toObject(),
-        });
+        // Silent success - don't add to results for newly created dealers
       } catch (dbError) {
         // Handle database validation errors
         let errorMessage = 'Failed to create dealer';
@@ -557,7 +645,7 @@ export const upsertDealerFromTally = async (req, res) => {
                   LedgerGUID: dealer.LedgerGUID
                 });
 
-                // Populate and return success
+                // Populate for logging (not needed for response since we don't return success)
                 try {
                   await dealer.populate([
                     { path: 'SalesMan', select: 'name email mobile role' },
@@ -570,11 +658,7 @@ export const upsertDealerFromTally = async (req, res) => {
                   console.warn('Failed to populate dealer references:', populateError.message);
                 }
 
-                results.push({
-                  success: true,
-                  LedgerGUID: ledgerGuid,
-                  dealer: dealer.toObject(),
-                });
+                // Silent success - don't add to results for newly created dealers
                 handledSuccessfully = true; // Mark as handled - don't push error
               } catch (retryError) {
                 errorMessage = `Failed to create dealer after dropping index: ${retryError.message}`;
@@ -618,12 +702,15 @@ export const upsertDealerFromTally = async (req, res) => {
       }
     }
 
-    const failures = results.filter((item) => !item.success);
-    const status = failures.length === results.length ? 400 : failures.length > 0 ? 207 : 200;
+    // Filter results to only include errors and update messages
+    // Errors have success: false, update messages have message field without success
+    const failures = results.filter((item) => item.success === false);
+    const hasErrors = failures.length > 0;
+    const status = failures.length === results.length ? 400 : hasErrors ? 207 : 200;
 
     return res.status(status).json({
-      success: failures.length === 0,
-      results,
+      success: !hasErrors,
+      results, // Only contains errors and update messages, no success entries for new creations
     });
   } catch (error) {
     if (error.message === 'INVALID_TALLY_PAYLOAD' || error.message === 'INVALID_XML_PAYLOAD') {

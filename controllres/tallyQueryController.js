@@ -288,7 +288,6 @@ const formatSubDealerDetails = async (order, companyId) => {
     email: null,
     mobile: null,
     address: {
-      street: null,
       city: null,
       state: null,
       pincode: null,
@@ -312,7 +311,6 @@ const formatSubDealerDetails = async (order, companyId) => {
     subDealerData.email = subDealer.SDEmail;
     subDealerData.mobile = subDealer.SDMobileNo;
     subDealerData.address = {
-      street: [subDealer.SDAddress1, subDealer.SDAddress2, subDealer.SDAddress3].filter(Boolean).join(', '),
       city: null,
       state: subDealer.SDState,
       pincode: subDealer.SDPincode,
@@ -330,7 +328,6 @@ const formatSubDealerDetails = async (order, companyId) => {
       subDealerData.mobile = sdUser.mobile;
       if (sdUser.address) {
         subDealerData.address = {
-          street: sdUser.address.street,
           city: sdUser.address.city,
           state: sdUser.address.state,
           pincode: sdUser.address.pincode,
@@ -385,13 +382,21 @@ export const listApprovedOrdersByCompanyGuid = async (req, res) => {
         igstAmount: item.igstAmount
       }));
 
+      // Remove street field from customerAddress if it exists
+      const customerAddress = order.customerAddress;
+      let formattedCustomerAddress = customerAddress;
+      if (customerAddress && typeof customerAddress === 'object' && customerAddress.street !== undefined) {
+        const { street, ...addressWithoutStreet } = customerAddress;
+        formattedCustomerAddress = addressWithoutStreet;
+      }
+
       return {
         _id: order._id,
         orderNumber: order.orderNumber,
         orderDate: order.orderDate,
         status: order.status,
         customerName: order.customerName,
-        customerAddress: order.customerAddress,
+        customerAddress: formattedCustomerAddress,
         ledgerGUID: dealer?.ledgerGUID || null,
         subDealer: subDealer,
         totalAmount: order.totalAmount,
@@ -477,13 +482,21 @@ export const listUnapprovedOrdersByCompanyGuid = async (req, res) => {
         igstAmount: item.igstAmount
       }));
 
+      // Remove street field from customerAddress if it exists
+      const customerAddress = order.customerAddress;
+      let formattedCustomerAddress = customerAddress;
+      if (customerAddress && typeof customerAddress === 'object' && customerAddress.street !== undefined) {
+        const { street, ...addressWithoutStreet } = customerAddress;
+        formattedCustomerAddress = addressWithoutStreet;
+      }
+
       return {
         _id: order._id,
         orderNumber: order.orderNumber,
         orderDate: order.orderDate,
         status: order.status,
         customerName: order.customerName,
-        customerAddress: order.customerAddress,
+        customerAddress: formattedCustomerAddress,
         ledgerGUID: dealer?.ledgerGUID || null,
         subDealer: subDealer,
         totalAmount: order.totalAmount,

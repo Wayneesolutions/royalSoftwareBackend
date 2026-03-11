@@ -4,6 +4,9 @@
 
 This document provides comprehensive documentation for all Tally ERP integration APIs in the Royal Software Backend. These APIs enable bidirectional synchronization between Tally ERP and Royal Software, supporting companies, products, users, groups, dealers, subdealers, and orders.
 
+> Prefer a shorter, easier-to-scan version?
+> See: `backend/routes/tally/TALLY_API_DOCUMENTATION_SIMPLIFIED.md`
+
 ## Base URL
 
 ```

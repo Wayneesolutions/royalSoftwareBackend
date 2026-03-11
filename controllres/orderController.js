@@ -143,6 +143,7 @@ export const createOrder = async (req, res) => {
       paymentMethod,
       notes,
       shippingAddress,
+      isManualShippingAddress,
       mode,
       modeSelection,
       customMode,
@@ -219,12 +220,24 @@ export const createOrder = async (req, res) => {
       extractState(company.companyState) ||
       extractState(company?.contactDetails?.address?.state);
 
+    // Determine shipping address for buyer state calculation
+    // Priority: manual shipping address > subdealer address > dealer address > customer address
+    const finalShippingAddress = isManualShippingAddress && shippingAddress
+      ? shippingAddress
+      : (shippingAddress || 
+         (subDealerDoc?.address || subDealerDoc) ||
+         (dealerDoc?.address || dealerDoc) ||
+         customerAddress ||
+         customer?.address ||
+         {});
+
     const buyerState =
+      extractState(finalShippingAddress?.state) ||
       extractState(shippingAddress?.state) ||
       extractState(customerAddress?.state) ||
       extractState(customer?.address?.state) ||
-      extractState(subDealerDoc?.address?.state) ||
-      extractState(dealerDoc?.address?.state);
+      extractState(subDealerDoc?.SDState || subDealerDoc?.address?.state) ||
+      extractState(dealerDoc?.LedgerState || dealerDoc?.address?.state);
 
     const gstType = determineGstType(sellerState, buyerState);
 
@@ -339,7 +352,8 @@ export const createOrder = async (req, res) => {
       termsOfDelivery1: sanitizedTermsOfDelivery1,
       termsOfDelivery2: sanitizedTermsOfDelivery2,
       notes,
-      shippingAddress: shippingAddress || customerAddress,
+      shippingAddress: finalShippingAddress || shippingAddress || customerAddress,
+      isManualShippingAddress: isManualShippingAddress || false,
       createdBy,
       totalAmount: grossAmountTotal,
       discountAmount: discountTotal,
