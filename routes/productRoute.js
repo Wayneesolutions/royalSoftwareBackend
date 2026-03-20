@@ -35,7 +35,6 @@ const productRoute = express.Router();
  *           schema:
  *             type: object
  *             required:
- *               - productCode
  *               - productName
  *               - category
  *               - price

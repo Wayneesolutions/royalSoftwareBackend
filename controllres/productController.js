@@ -277,23 +277,18 @@ export const createProduct = async (req, res) => {
     const derivedCategory = resolveCategory(req.body);
     const derivedProductCode = resolveProductCode(req.body);
 
-    if (!derivedProductCode) {
-      return res.status(400).json({
-        success: false,
-        message: 'Product code is required',
+    if (derivedProductCode) {
+      const existingProduct = await Product.findOne({
+        productCode: derivedProductCode,
+        companyId,
       });
-    }
 
-    const existingProduct = await Product.findOne({
-      productCode: derivedProductCode,
-      companyId,
-    });
-
-    if (existingProduct) {
-      return res.status(400).json({
-        success: false,
-        message: 'Product code already exists for this company',
-      });
+      if (existingProduct) {
+        return res.status(400).json({
+          success: false,
+          message: 'Product code already exists for this company',
+        });
+      }
     }
 
     const productPayload = buildCreateProductPayload(req.body, {

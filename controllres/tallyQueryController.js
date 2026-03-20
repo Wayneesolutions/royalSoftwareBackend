@@ -114,6 +114,12 @@ export const listProductsByCompanyGuid = async (req, res) => {
       )
       .lean();
 
+    const normalizedProducts = products.map((p) => ({
+      ...p,
+      // Ensure Tally always receives a usable code field.
+      productCode: p.productCode || p.productName || '',
+    }));
+
     return res.json({
       success: true,
       company: {
@@ -122,8 +128,8 @@ export const listProductsByCompanyGuid = async (req, res) => {
         code: company.companyCode,
         guid: company.guid,
       },
-      totalProducts: products.length,
-      products,
+      totalProducts: normalizedProducts.length,
+      products: normalizedProducts,
     });
   } catch (error) {
     console.error('Error fetching products for Tally:', error);
@@ -352,14 +358,61 @@ export const listApprovedOrdersByCompanyGuid = async (req, res) => {
       });
     }
 
-    const orders = await Order.find({
-      companyId: company._id,
-      status: { $in: ['approved', 'sent_to_tally', 'delivered', 'dispatched'] },
-    })
-      .populate('items.productId', 'productCode productName description itemHsn')
-      .lean();
+    // Concurrency-safe claim:
+    // Atomically move orders from `approved` to `sent_to_tally` before returning them,
+    // so repeated/parallel fetches don't return the same orders twice.
+    const now = new Date();
+    const claimedIds = [];
 
-    const formattedOrders = await Promise.all(orders.map(async (order) => {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const claimed = await Order.findOneAndUpdate(
+        // Claim only orders that are approved and not already sent/synced to Tally.
+        // This guarantees that repeated calls return only new orders.
+        {
+          companyId: company._id,
+          status: 'approved',
+          tallySyncStatus: { $ne: 'synced' },
+        },
+        {
+          $set: {
+            status: 'sent_to_tally',
+            tallySyncStatus: 'synced',
+            tallySyncAt: now,
+          },
+        },
+        { new: true, sort: { orderDate: 1, _id: 1 } }
+      )
+        .select('_id');
+
+      if (!claimed?._id) break;
+      claimedIds.push(claimed._id);
+    }
+
+    // Double-ensure status change for claimed orders.
+    // This helps if the first claim loop updated the document but the change isn't persisted/visible
+    // immediately due to any edge-case in the runtime.
+    if (claimedIds.length > 0) {
+      await Order.updateMany(
+        { _id: { $in: claimedIds } },
+        {
+          $set: {
+            status: 'sent_to_tally',
+            tallySyncStatus: 'synced',
+            tallySyncAt: now,
+          },
+        },
+      );
+    }
+
+    const orders = claimedIds.length
+      ? await Order.find({ _id: { $in: claimedIds } })
+          .populate('items.productId', 'productCode productName description itemHsn')
+          .lean()
+      : [];
+
+    const formattedOrders = await Promise.all(
+      orders.map(async (order) => {
       // 1. Format Dealer Details
       const dealer = await formatDealerDetails(order, company._id);
 
@@ -368,7 +421,13 @@ export const listApprovedOrdersByCompanyGuid = async (req, res) => {
 
       // 3. Format Items
       const formattedItems = order.items.map(item => ({
-        productCode: item.productCode || item.productId?.productCode,
+        // Fallbacks so Tally payload stays valid even if productCode is missing.
+        productCode:
+          item.productCode ||
+          item.productId?.productCode ||
+          item.productName ||
+          item.productId?._id?.toString?.() ||
+          '',
         productName: item.productName || item.productId?.productName,
         description: item.productId?.description,
         hsnCode: item.productId?.itemHsn,
@@ -416,7 +475,8 @@ export const listApprovedOrdersByCompanyGuid = async (req, res) => {
         createdAt: order.createdAt,
         updatedAt: order.updatedAt
       };
-    }));
+    })
+    );
 
     return res.json({
       success: true,
@@ -468,7 +528,13 @@ export const listUnapprovedOrdersByCompanyGuid = async (req, res) => {
 
       // 3. Format Items
       const formattedItems = order.items.map(item => ({
-        productCode: item.productCode || item.productId?.productCode,
+        // Fallbacks so Tally payload stays valid even if productCode is missing.
+        productCode:
+          item.productCode ||
+          item.productId?.productCode ||
+          item.productName ||
+          item.productId?._id?.toString?.() ||
+          '',
         productName: item.productName || item.productId?.productName,
         description: item.productId?.description,
         hsnCode: item.productId?.itemHsn,
