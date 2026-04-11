@@ -15,6 +15,6 @@ connectDB();
 app.listen(PORT, () => {
     console.clear();
     console.log(`🚀 Server running on http://localhost:${PORT} ✅`);
-    console.log(`📚 API Documentation: http://localhost:${PORT}/api-docs`);
+    console.log(`📚 API Documentation: http://localhost:${PORT}/api/v1/api-docs`);
     console.log(`🔐 Universal Login: http://localhost:${PORT}/api/v1/auth/login`);
 });

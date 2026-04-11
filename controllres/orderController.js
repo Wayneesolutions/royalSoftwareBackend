@@ -403,7 +403,7 @@ const getAllChildUserIdsForOrders = async (parentUserId, companyId) => {
   
   // Get direct children
   const directChildren = await User.find({
-    'hierarchy.parentUser': parentUserId,
+    'hierarchy.parentUserId': parentUserId,
     'companies.companyId': companyId,
     'companies.isActive': true,
     isActive: true
