@@ -158,10 +158,9 @@ export const getStockSummaryForGroupUser = async (req, res) => {
       .map(p => p.productCode || p.partNo || p._id.toString())
       .filter(Boolean);
 
-    // Get all sales for these items (to calculate subDealerSold and lastSaleDate)
+    // Get all active sales for the company (we will filter in-memory to ensure we don't miss any due to itemsku/itemguid mismatches)
     const allSales = await Sales.find({
       companyId: company._id,
-      itemguid: { $in: itemGUIDs },
       isActive: true
     })
     .populate('ledgerId', 'LedgerName LedgerMobile LedgerAddress1')
@@ -199,14 +198,17 @@ export const getStockSummaryForGroupUser = async (req, res) => {
     allProducts.forEach(product => {
       const itemKey = product.productCode || product.partNo || product._id.toString();
       
-      // Get sales for this item - match by itemguid OR by productCode/partNo
-      // This handles cases where sales.itemguid might be different from product.productCode
+      // Get sales for this item - match robustly by itemguid OR productCode/partNo OR itemsku
       const itemSales = allSales.filter(sale => {
-        const saleItemGuid = sale.itemguid;
-        return saleItemGuid === itemKey || 
-               saleItemGuid === product.productCode || 
-               saleItemGuid === product.partNo ||
-               saleItemGuid === product._id.toString();
+        const saleGuid = sale.itemguid;
+        const saleSku = sale.itemsku;
+        
+        return saleGuid === itemKey || 
+               saleGuid === product.productCode || 
+               saleGuid === product.partNo ||
+               saleGuid === product._id.toString() ||
+               (saleSku && saleSku === product.productCode) ||
+               (saleSku && saleSku === product.partNo);
       });
       
       // Calculate subDealerSold (total quantity sold)
