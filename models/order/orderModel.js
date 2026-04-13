@@ -221,6 +221,12 @@ const orderSchema = new mongoose.Schema({
     enum: ['cash', 'cheque', 'bank_transfer', 'upi', 'card', 'credit', 'other'],
     default: 'cash'
   },
+  // Category: 'sale' = company selling to dealer, 'purchase' = dealer buying from company
+  orderCategory: {
+    type: String,
+    enum: ['sale', 'purchase'],
+    default: 'sale'
+  },
   modeSelection: {
     type: String
   },

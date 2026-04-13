@@ -1,5 +1,6 @@
 import Ledger from '../models/ledger/ledgerModel.js';
 import LedgerTransaction from '../models/ledger/ledgerTransactionModel.js';
+import VoucherMaster from '../models/voucher/voucherMasterModel.js';
 import User from '../models/user/userModel.js';
 import mongoose from 'mongoose';
 
@@ -34,41 +35,37 @@ export const getLedgers = async (req, res) => {
       sortOrder = 'desc'
     } = req.query;
 
-    // Build query
+    // Build query using actual Ledger schema fields
     let query = { companyId, isActive: true };
-    
-    if (status !== 'all') {
-      query.status = status;
-    }
-    
-    if (partyType) {
-      query.partyType = partyType;
-    }
-    
-    if (accountType) {
-      query.accountType = accountType;
-    }
-    
+
     if (search) {
       query.$or = [
-        { partyName: { $regex: search, $options: 'i' } },
-        { ledgerId: { $regex: search, $options: 'i' } },
-        { 'contactInfo.email': { $regex: search, $options: 'i' } },
-        { 'contactInfo.phone': { $regex: search, $options: 'i' } }
+        { LedgerName: { $regex: search, $options: 'i' } },
+        { LedgerMobile: { $regex: search, $options: 'i' } },
+        { Email: { $regex: search, $options: 'i' } },
+        { LedgerGSTIN: { $regex: search, $options: 'i' } },
       ];
     }
 
     // Calculate pagination
     const skip = (parseInt(page) - 1) * parseInt(limit);
-    
-    // Build sort object
-    const sort = {};
-    sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
 
-    // Execute query
+    // Build sort object — map generic sortBy names to actual schema fields
+    const sortFieldMap = {
+      updatedAt: 'updatedAt',
+      createdAt: 'createdAt',
+      LedgerName: 'LedgerName',
+      name: 'LedgerName',
+    };
+    const resolvedSortField = sortFieldMap[sortBy] || 'updatedAt';
+    const sort = {};
+    sort[resolvedSortField] = sortOrder === 'desc' ? -1 : 1;
+
+    // Execute query with valid schema populates only
     const ledgers = await Ledger.find(query)
-      .populate('partyId', 'name email role')
       .populate('createdBy', 'name email')
+      .populate('groupId', 'name')
+      .populate('SalesMan', 'name email')
       .sort(sort)
       .skip(skip)
       .limit(parseInt(limit));
@@ -82,34 +79,7 @@ export const getLedgers = async (req, res) => {
         $group: {
           _id: null,
           totalLedgers: { $sum: 1 },
-          totalReceivable: {
-            $sum: {
-              $cond: [
-                { $and: [{ $eq: ['$accountType', 'receivable'] }, { $gt: ['$currentBalance', 0] }] },
-                '$currentBalance',
-                0
-              ]
-            }
-          },
-          totalPayable: {
-            $sum: {
-              $cond: [
-                { $and: [{ $eq: ['$accountType', 'payable'] }, { $gt: ['$currentBalance', 0] }] },
-                '$currentBalance',
-                0
-              ]
-            }
-          },
-          totalDebitBalance: {
-            $sum: {
-              $cond: [{ $gt: ['$currentBalance', 0] }, '$currentBalance', 0]
-            }
-          },
-          totalCreditBalance: {
-            $sum: {
-              $cond: [{ $lt: ['$currentBalance', 0] }, { $abs: '$currentBalance' }, 0]
-            }
-          }
+          totalOpening: { $sum: '$LedgerOpening' },
         }
       }
     ]);
@@ -127,10 +97,7 @@ export const getLedgers = async (req, res) => {
         },
         summary: summary[0] || {
           totalLedgers: 0,
-          totalReceivable: 0,
-          totalPayable: 0,
-          totalDebitBalance: 0,
-          totalCreditBalance: 0
+          totalOpening: 0,
         }
       },
       message: 'Ledgers retrieved successfully'
@@ -160,15 +127,19 @@ export const getLedgerDetails = async (req, res) => {
       transactionCategory
     } = req.query;
 
-    // Get ledger details
-    const ledger = await Ledger.findOne({ 
-      _id: ledgerId, 
-      companyId, 
-      isActive: true 
+    // Get ledger details — only populate paths that exist in the schema
+    const ledger = await Ledger.findOne({
+      _id: ledgerId,
+      companyId,
+      isActive: true
     })
-      .populate('partyId', 'name email role hierarchy')
       .populate('createdBy', 'name email')
-      .populate('updatedBy', 'name email');
+      .populate('updatedBy', 'name email')
+      .populate('groupId', 'name')
+      .populate('SalesMan', 'name email role')
+      .populate('ASM', 'name email role')
+      .populate('RSM', 'name email role')
+      .populate('ZSM', 'name email role');
 
     if (!ledger) {
       return res.status(404).json({
@@ -177,68 +148,99 @@ export const getLedgerDetails = async (req, res) => {
       });
     }
 
-    // Build transaction query
-    let transactionQuery = { 
+    // ── Query VoucherMaster for Tally-synced transactions ────────────────────
+    const voucherQuery = {
       ledgerId: new mongoose.Types.ObjectId(ledgerId),
-      companyId: new mongoose.Types.ObjectId(companyId)
+      companyId: new mongoose.Types.ObjectId(companyId),
     };
 
     if (startDate || endDate) {
-      transactionQuery.transactionDate = {};
-      if (startDate) transactionQuery.transactionDate.$gte = new Date(startDate);
-      if (endDate) transactionQuery.transactionDate.$lte = new Date(endDate);
+      voucherQuery.vchdate = {};
+      if (startDate) voucherQuery.vchdate.$gte = new Date(startDate);
+      if (endDate)   voucherQuery.vchdate.$lte = new Date(endDate);
     }
 
-    if (transactionType) {
-      transactionQuery.transactionType = transactionType;
-    }
-
-    if (transactionCategory) {
-      transactionQuery.transactionCategory = transactionCategory;
-    }
-
-    // Calculate pagination
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    // Get transactions
-    const transactions = await LedgerTransaction.find(transactionQuery)
-      .populate('createdBy', 'name email')
-      .populate('approvedBy', 'name email')
-      .sort({ transactionDate: -1, createdAt: -1 })
+    // Fetch vouchers (Tally-synced) — primary transaction source
+    const vouchers = await VoucherMaster.find(voucherQuery)
+      .sort({ vchdate: -1 })
       .skip(skip)
-      .limit(parseInt(limit));
+      .limit(parseInt(limit))
+      .lean();
 
-    const totalTransactions = await LedgerTransaction.countDocuments(transactionQuery);
+    const totalVouchers = await VoucherMaster.countDocuments(voucherQuery);
 
-    // Calculate transaction summary
-    const transactionSummary = await LedgerTransaction.aggregate([
-      { $match: transactionQuery },
-      {
-        $group: {
-          _id: null,
-          totalDebit: { $sum: { $cond: [{ $eq: ['$transactionType', 'debit'] }, '$amount', 0] } },
-          totalCredit: { $sum: { $cond: [{ $eq: ['$transactionType', 'credit'] }, '$amount', 0] } },
-          transactionCount: { $sum: 1 }
-        }
-      }
-    ]);
+    // Also fetch app-created LedgerTransactions (manual entries)
+    const appTxnQuery = {
+      ledgerId: new mongoose.Types.ObjectId(ledgerId),
+      companyId: new mongoose.Types.ObjectId(companyId),
+    };
+    if (startDate || endDate) {
+      appTxnQuery.transactionDate = {};
+      if (startDate) appTxnQuery.transactionDate.$gte = new Date(startDate);
+      if (endDate)   appTxnQuery.transactionDate.$lte = new Date(endDate);
+    }
+    const appTransactions = await LedgerTransaction.find(appTxnQuery)
+      .sort({ transactionDate: -1 })
+      .lean();
+
+    // Normalise both sources to a common shape for the frontend
+    const normalisedVouchers = vouchers.map(v => ({
+      _id: v._id,
+      source: 'tally',
+      date: v.vchdate,
+      voucherNo: v.vchnumber,
+      type: v.vchtype,
+      amount: v.vchamount || 0,
+      debit: v.vchamount > 0 ? Math.abs(v.vchamount) : 0,
+      credit: v.vchamount < 0 ? Math.abs(v.vchamount) : 0,
+      partyName: v.vchpartyname,
+      description: v.vchtype,
+      balance: 0, // Tally running balance not stored; frontend can omit
+    }));
+
+    const normalisedAppTxns = appTransactions.map(t => ({
+      _id: t._id,
+      source: 'app',
+      date: t.transactionDate,
+      voucherNo: t.referenceNumber || t.transactionId,
+      type: t.transactionCategory,
+      amount: t.amount || 0,
+      debit: t.transactionType === 'debit' ? t.amount : 0,
+      credit: t.transactionType === 'credit' ? t.amount : 0,
+      description: t.description,
+      balance: t.balanceAfter || 0,
+    }));
+
+    // Merge and sort by date descending
+    const allTransactions = [...normalisedVouchers, ...normalisedAppTxns]
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    const totalTransactions = totalVouchers + appTransactions.length;
+
+    // Summary — include LedgerOpening so frontend can display it
+    const totalDebit  = allTransactions.reduce((s, t) => s + (t.debit  || 0), 0);
+    const totalCredit = allTransactions.reduce((s, t) => s + (t.credit || 0), 0);
 
     res.status(200).json({
       success: true,
       data: {
         ledger,
-        transactions,
+        transactions: allTransactions,
         pagination: {
           currentPage: parseInt(page),
           totalPages: Math.ceil(totalTransactions / parseInt(limit)),
           totalTransactions,
-          hasNext: skip + transactions.length < totalTransactions,
+          hasNext: skip + allTransactions.length < totalTransactions,
           hasPrev: parseInt(page) > 1
         },
-        summary: transactionSummary[0] || {
-          totalDebit: 0,
-          totalCredit: 0,
-          transactionCount: 0
+        summary: {
+          openingBalance: ledger.LedgerOpening || 0,
+          totalDebit,
+          totalCredit,
+          closingBalance: (ledger.LedgerOpening || 0) + totalDebit - totalCredit,
+          transactionCount: totalTransactions,
         }
       },
       message: 'Ledger details retrieved successfully'
@@ -341,10 +343,10 @@ export const createLedger = async (req, res) => {
       await openingTransaction.save();
     }
 
-    // Populate the response
+    // Populate the response with valid schema paths only
     await newLedger.populate([
-      { path: 'partyId', select: 'name email role' },
-      { path: 'createdBy', select: 'name email' }
+      { path: 'createdBy', select: 'name email' },
+      { path: 'groupId', select: 'name' }
     ]);
 
     res.status(201).json({
@@ -377,15 +379,16 @@ export const updateLedger = async (req, res) => {
 
     const ledger = await Ledger.findOneAndUpdate(
       { _id: ledgerId, companyId, isActive: true },
-      { 
-        ...updateData, 
-        updatedBy: userId 
+      {
+        ...updateData,
+        updatedBy: userId
       },
       { new: true, runValidators: true }
     )
-      .populate('partyId', 'name email role')
       .populate('createdBy', 'name email')
-      .populate('updatedBy', 'name email');
+      .populate('updatedBy', 'name email')
+      .populate('groupId', 'name')
+      .populate('SalesMan', 'name email role');
 
     if (!ledger) {
       return res.status(404).json({
@@ -510,72 +513,32 @@ export const getLedgerSummary = async (req, res) => {
   try {
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
     
+    // Use actual Ledger schema fields (Tally-sync model)
     const summary = await Ledger.aggregate([
       { $match: { companyId: new mongoose.Types.ObjectId(companyId), isActive: true } },
       {
         $group: {
           _id: null,
           totalLedgers: { $sum: 1 },
-          totalReceivable: {
-            $sum: {
-              $cond: [
-                { $and: [{ $eq: ['$accountType', 'receivable'] }, { $gt: ['$currentBalance', 0] }] },
-                '$currentBalance',
-                0
-              ]
-            }
-          },
-          totalPayable: {
-            $sum: {
-              $cond: [
-                { $and: [{ $eq: ['$accountType', 'payable'] }, { $gt: ['$currentBalance', 0] }] },
-                '$currentBalance',
-                0
-              ]
-            }
-          },
-          totalDebitBalance: {
-            $sum: {
-              $cond: [{ $gt: ['$currentBalance', 0] }, '$currentBalance', 0]
-            }
-          },
-          totalCreditBalance: {
-            $sum: {
-              $cond: [{ $lt: ['$currentBalance', 0] }, { $abs: '$currentBalance' }, 0]
-            }
-          },
-          activeLedgers: {
-            $sum: { $cond: [{ $eq: ['$status', 'active'] }, 1, 0] }
-          },
-          inactiveLedgers: {
-            $sum: { $cond: [{ $eq: ['$status', 'inactive'] }, 1, 0] }
-          }
+          totalOpening: { $sum: '$LedgerOpening' },
+          withGroup: { $sum: { $cond: [{ $ifNull: ['$groupId', false] }, 1, 0] } },
+          withSalesman: { $sum: { $cond: [{ $ifNull: ['$SalesMan', false] }, 1, 0] } },
         }
       }
     ]);
 
-    // Get party type breakdown
-    const partyTypeBreakdown = await Ledger.aggregate([
+    // Breakdown by LedgerParent (Tally parent group)
+    const parentBreakdown = await Ledger.aggregate([
       { $match: { companyId: new mongoose.Types.ObjectId(companyId), isActive: true } },
       {
         $group: {
-          _id: '$partyType',
+          _id: '$LedgerParent',
           count: { $sum: 1 },
-          totalBalance: { $sum: '$currentBalance' }
+          totalOpening: { $sum: '$LedgerOpening' }
         }
-      }
-    ]);
-
-    // Get account type breakdown
-    const accountTypeBreakdown = await Ledger.aggregate([
-      { $match: { companyId: new mongoose.Types.ObjectId(companyId), isActive: true } },
-      {
-        $group: {
-          _id: '$accountType',
-          count: { $sum: 1 },
-          totalBalance: { $sum: '$currentBalance' }
-        }
-      }
+      },
+      { $sort: { count: -1 } },
+      { $limit: 10 }
     ]);
 
     res.status(200).json({
@@ -583,15 +546,11 @@ export const getLedgerSummary = async (req, res) => {
       data: {
         summary: summary[0] || {
           totalLedgers: 0,
-          totalReceivable: 0,
-          totalPayable: 0,
-          totalDebitBalance: 0,
-          totalCreditBalance: 0,
-          activeLedgers: 0,
-          inactiveLedgers: 0
+          totalOpening: 0,
+          withGroup: 0,
+          withSalesman: 0,
         },
-        partyTypeBreakdown,
-        accountTypeBreakdown
+        parentBreakdown,
       },
       message: 'Ledger summary retrieved successfully'
     });

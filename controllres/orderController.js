@@ -155,6 +155,12 @@ export const createOrder = async (req, res) => {
 
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
     const createdBy = req.user.userDetails._id;
+    const creatorRole = req.user.userDetails.role || '';
+    // 'sale' = created by company-side staff (admin/groupuser/zonal/rsm/asm/salesman)
+    // 'purchase' = created by a buyer-side user (dealer/distributor/subdealer)
+    const orderCategory = ['dealers', 'distibutors', 'distributor', 'subdealer'].includes(creatorRole)
+      ? 'purchase'
+      : 'sale';
 
     // Validate required fields - now customerName is required instead of customerId
     if (!customerName || !items || items.length === 0) {
@@ -332,6 +338,7 @@ export const createOrder = async (req, res) => {
     const order = new Order({
       orderNumber,
       companyId,
+      orderCategory,
       customerId: finalCustomerId, // Use provided customerId (from Ledger) or customer._id (from User)
       customerName: customerName || (customer ? customer.name : 'Unknown Customer'),
       customerEmail: customerEmail || (customer ? customer.email : ''),
@@ -438,6 +445,8 @@ export const getOrders = async (req, res) => {
       endDate,
       search,
       orderType,
+      orderCategory, // 'sale' | 'purchase'
+      sortBy = 'orderDate', // 'orderDate' | 'finalAmount' | 'orderNumber'
       createdBy // Filter by createdBy (user ID)
     } = req.query;
 
@@ -536,44 +545,14 @@ export const getOrders = async (req, res) => {
             console.log('🔍 Group user filtering orders by groupIds:', activeGroupIds);
             console.log('🔍 Allowed user/dealer/subdealer IDs:', allowedIds.length);
           } else {
-            // No active groups, return empty
-            return res.json({
-              success: true,
-              orders: [],
-              pagination: {
-                currentPage: parseInt(page),
-                totalPages: 0,
-                totalOrders: 0,
-                hasNext: false,
-                hasPrev: false
-              },
-              stats: {
-                totalOrders: 0,
-                totalAmount: 0,
-                pendingOrders: 0,
-                completedOrders: 0
-              }
-            });
+            // No active groups — fall back to orders created by this user only
+            console.log('ℹ️ Group user has no active groups, showing own orders only');
+            filter.createdBy = new mongoose.Types.ObjectId(userIdStr);
           }
         } else {
-          // No groups assigned, return empty
-          return res.json({
-            success: true,
-            orders: [],
-            pagination: {
-              currentPage: parseInt(page),
-              totalPages: 0,
-              totalOrders: 0,
-              hasNext: false,
-              hasPrev: false
-            },
-            stats: {
-              totalOrders: 0,
-              totalAmount: 0,
-              pendingOrders: 0,
-              completedOrders: 0
-            }
-          });
+          // No groups assigned — fall back to orders created by this user only
+          console.log('ℹ️ Group user has no groups assigned, showing own orders only');
+          filter.createdBy = new mongoose.Types.ObjectId(userIdStr);
         }
       } else if (!isDealerQueryingAssignedOrders) {
         // For other non-admin roles, use hierarchy-based filtering
@@ -634,6 +613,7 @@ export const getOrders = async (req, res) => {
     if (status) filter.status = status;
     if (customerId) filter.customerId = customerId;
     if (orderType) filter.orderType = orderType; // Filter by orderType (e.g., 'zonal_created', 'admin_created')
+    if (orderCategory) filter.orderCategory = orderCategory; // 'sale' | 'purchase'
     if (startDate || endDate) {
       filter.orderDate = {};
       if (startDate) filter.orderDate.$gte = new Date(startDate);
@@ -715,11 +695,19 @@ export const getOrders = async (req, res) => {
 
     // Fetch orders without populate first, then manually populate from Ledger/SubDealer models
     // This is because dealers are stored in Ledger model, not User model
+    // Build sort object from sortBy param
+    const sortMap = {
+      orderDate: { orderDate: -1 },
+      finalAmount: { finalAmount: -1 },
+      orderNumber: { orderNumber: 1 },
+    };
+    const sortObj = sortMap[sortBy] || { orderDate: -1 };
+
     let orders = await Order.find(filter)
       .populate('createdBy', 'name role')
       .populate('approvedBy', 'name role')
       .populate('items.productId', 'productName productCode sellingPrice specifications')
-      .sort({ orderDate: -1 })
+      .sort(sortObj)
       .skip(skip)
       .limit(parseInt(limit))
       .lean(); // Use lean() for better performance
