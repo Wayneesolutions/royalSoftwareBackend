@@ -324,8 +324,9 @@ export const upsertGroupFromTally = async (req, res) => {
       // Validate parent group GUID if provided
       // Note: For the first group in a company, parentGroupGUID should not be provided (or be null)
       // The first group will be created as a root group with GroupParent = null
+      // Tally convention: root/predefined groups have parentGroupGUID === their own GroupGUID — treat as root (no parent)
       let parentGroup = null;
-      if (parentGroupGuid) {
+      if (parentGroupGuid && parentGroupGuid !== groupGuid) {
         // Find parent group by GroupGUID and cmpcode (must be in same company)
         const parentGroupResult = await findGroupByGuid(parentGroupGuid, cmpcode);
         if (!parentGroupResult.group) {
@@ -341,25 +342,12 @@ export const upsertGroupFromTally = async (req, res) => {
           continue;
         }
         parentGroup = parentGroupResult.group;
-        
-        // Prevent circular reference - check if parent is trying to be its own child
-        if (parentGroupGuid === groupGuid) {
-          results.push({
-            GroupGUID: groupGuid,
-            GroupName: groupName,
-            companyGuid: companyGuid,
-            parentGroupGUID: parentGroupGuid,
-            success: false,
-            message: 'A group cannot be its own parent. GroupParent cannot be the same as GroupGUID.',
-            error: 'CIRCULAR_REFERENCE',
-          });
-          continue;
-        }
       }
       
       // Set GroupParent to parent group GUID (or null if not provided)
       // If parentGroupGuid is null/undefined, this will be the first/root group for the company
-      const groupParent = parentGroupGuid || null;
+      // If self-referential (Tally root group convention), store as null (no parent)
+      const groupParent = (parentGroupGuid && parentGroupGuid !== groupGuid) ? parentGroupGuid : null;
       const remarks = item.Remarks !== undefined || item.remarks !== undefined ? normalizeString(item.Remarks || item.remarks) : undefined;
       // Handle Other1-Other4: save them if provided, even if empty string
       const other1 = item.Other1 !== undefined || item.other1 !== undefined ? normalizeString(item.Other1 || item.other1) : undefined;
@@ -675,7 +663,8 @@ export const updateGroupFromTally = async (req, res) => {
       
       if (parentGroupGuid !== undefined && parentGroupGuid !== null) {
         // Validate parent group exists if provided
-        if (parentGroupGuid) {
+        // Tally convention: root/predefined groups have parentGroupGUID === their own GroupGUID — treat as root (no parent)
+        if (parentGroupGuid && parentGroupGuid !== groupGuid) {
           // Find parent group by GroupGUID and cmpcode (must be in same company)
           const parentGroupResult = await findGroupByGuid(parentGroupGuid, cmpcode);
           if (!parentGroupResult.group) {
@@ -689,20 +678,7 @@ export const updateGroupFromTally = async (req, res) => {
             });
             continue;
           }
-          
-          // Prevent circular reference - check if parent is trying to be its own child
-          if (parentGroupGuid === groupGuid) {
-            results.push({
-              GroupGUID: groupGuid,
-              companyGuid: companyGuid,
-              parentGroupGUID: parentGroupGuid,
-              success: false,
-              message: 'A group cannot be its own parent. GroupParent cannot be the same as GroupGUID.',
-              error: 'CIRCULAR_REFERENCE',
-            });
-            continue;
-          }
-          
+
           updates.GroupParent = parentGroupGuid;
         } else {
           // Setting to null/empty - remove parent relationship
