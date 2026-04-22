@@ -445,29 +445,6 @@ export const upsertDealerFromTally = async (req, res) => {
         continue;
       }
 
-      // Check member limit before creating
-      try {
-        const { checkCompanyMemberLimit } = await import('./adminController.js');
-        const limitCheck = await checkCompanyMemberLimit(company._id, 1);
-        if (!limitCheck.allowed) {
-          results.push({
-            LedgerGUID: ledgerGuid,
-            success: false,
-            message: limitCheck.message,
-            error: 'MEMBER_LIMIT_EXCEEDED',
-          });
-          continue;
-        }
-      } catch (limitError) {
-        results.push({
-          LedgerGUID: ledgerGuid,
-          success: false,
-          message: `Failed to check company member limit: ${limitError.message}`,
-          error: 'LIMIT_CHECK_FAILED',
-        });
-        continue;
-      }
-
       // Prepare dealer data - simplified fields only
       const dealerData = {
         LedgerGUID: ledgerGuid,
@@ -839,21 +816,6 @@ export const upsertSubDealerFromTally = async (req, res) => {
         SDName: sdName,
         companyId: company._id,
       });
-
-      // Only check limit if creating a new subdealer (not updating existing)
-      if (!existingSubDealer) {
-        const { checkCompanyMemberLimit } = await import('./adminController.js');
-        const limitCheck = await checkCompanyMemberLimit(company._id, 1);
-        if (!limitCheck.allowed) {
-          results.push({
-            SDName: sdName,
-            success: false,
-            message: limitCheck.message,
-            error: 'MEMBER_LIMIT_EXCEEDED',
-          });
-          continue;
-        }
-      }
 
       // Prepare subdealer data
       const subDealerData = {

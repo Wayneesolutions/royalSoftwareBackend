@@ -117,7 +117,7 @@ export const checkCompanyMemberLimit = async (companyId, additionalCount = 1) =>
       };
     }
 
-    // Count active users (excluding admin and superadmin)
+    // Count active users only (excluding admin and superadmin) — dealers and subdealers are not counted against the limit
     const totalUsers = await User.countDocuments({
       'companies.companyId': companyId,
       'companies.isActive': true,
@@ -125,37 +125,23 @@ export const checkCompanyMemberLimit = async (companyId, additionalCount = 1) =>
       role: { $nin: ['admin', 'superadmin'] }
     });
 
-    // Count active dealers
-    const totalDealers = await Ledger.countDocuments({
-      companyId: companyId,
-      isActive: true
-    });
+    const newTotal = totalUsers + additionalCount;
 
-    // Count active subdealers
-    const totalSubDealers = await SubDealer.countDocuments({
-      companyId: companyId,
-      isActive: true
-    });
-
-    // Calculate total members
-    const currentTotal = totalUsers + totalDealers + totalSubDealers;
-    const newTotal = currentTotal + additionalCount;
-
-    // Check if adding new members would exceed limit
+    // Check if adding new users would exceed limit
     if (newTotal > company.maxUser) {
       return {
         allowed: false,
-        currentTotal,
+        currentTotal: totalUsers,
         maxUser: company.maxUser,
-        message: `Company has reached its member limit. Maximum allowed members: ${company.maxUser}. Current members: ${currentTotal} (${totalUsers} users, ${totalDealers} dealers, ${totalSubDealers} subdealers). Cannot create more members.`
+        message: `Company has reached its user limit. Maximum allowed users: ${company.maxUser}. Current users: ${totalUsers}. Cannot create more users.`
       };
     }
 
     return {
       allowed: true,
-      currentTotal,
+      currentTotal: totalUsers,
       maxUser: company.maxUser,
-      message: 'Member limit check passed'
+      message: 'User limit check passed'
     };
   } catch (error) {
     console.error('Error checking company member limit:', error);
@@ -1003,7 +989,7 @@ export const createUser = async (req, res) => {
       });
     }
 
-    // Check total member limit for the company (users + dealers + subdealers)
+    // Check user limit for the company (dealers and subdealers are not counted)
     const limitCheck = await checkCompanyMemberLimit(companyId, 1);
     if (!limitCheck.allowed) {
       return res.status(400).json({
@@ -6274,15 +6260,6 @@ export const createDealer = async (req, res) => {
       });
     }
 
-    // Check total member limit for the company (users + dealers + subdealers)
-    const limitCheck = await checkCompanyMemberLimit(companyId, 1);
-    if (!limitCheck.allowed) {
-      return res.status(400).json({
-        success: false,
-        message: limitCheck.message
-      });
-    }
-
     // Generate LedgerGUID if not provided
     let finalLedgerGUID = LedgerGUID;
     if (!finalLedgerGUID || !finalLedgerGUID.trim()) {
@@ -7652,15 +7629,6 @@ export const createSubDealer = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: "Company not found"
-      });
-    }
-
-    // Check total member limit for the company (users + dealers + subdealers)
-    const limitCheck = await checkCompanyMemberLimit(companyId, 1);
-    if (!limitCheck.allowed) {
-      return res.status(400).json({
-        success: false,
-        message: limitCheck.message
       });
     }
 
