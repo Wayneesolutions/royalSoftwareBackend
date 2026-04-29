@@ -80,8 +80,8 @@ adminRoute.delete('/dealers/:dealerId', requireAuth, authorizeRoles(['admin', 'g
 
 // SubDealer management routes
 adminRoute.get('/subdealers', requireAuth, authorizeRoles(['admin', 'groupuser']), getAllSubDealers)
-adminRoute.post('/subdealers', requireAuth, authorizeRoles(['admin']), createSubDealer)
-adminRoute.put('/subdealers/:subdealerId', requireAuth, authorizeRoles(['admin']), updateSubDealer)
-adminRoute.delete('/subdealers/:subdealerId', requireAuth, authorizeRoles(['admin']), deleteSubDealer)
+adminRoute.post('/subdealers', requireAuth, authorizeRoles(['admin', 'groupuser']), createSubDealer)
+adminRoute.put('/subdealers/:subdealerId', requireAuth, authorizeRoles(['admin', 'groupuser']), updateSubDealer)
+adminRoute.delete('/subdealers/:subdealerId', requireAuth, authorizeRoles(['admin', 'groupuser']), deleteSubDealer)
 
 export default adminRoute

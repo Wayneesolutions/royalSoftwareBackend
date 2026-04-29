@@ -234,22 +234,31 @@ export const getSubDealers = async (req, res) => {
     console.log('getSubDealers - Company ID:', companyId);
     console.log('getSubDealers - Dealer ID:', dealerId);
 
-    // Build query for SubDealer model - filter by createdBy (dealer who created them) and companyId
-    // Each dealer/ledger should only see the subdealers they created
-    const query = {
-      createdBy: dealerId,
-      companyId: companyId,
-      isActive: true
-    };
+    // Match sub dealers created by this dealer OR explicitly linked to this dealer
+    // (dealerId is set when admin/group user creates a sub dealer on behalf of a dealer)
+    const ownershipOr = { $or: [{ createdBy: dealerId }, { dealerId: dealerId }] };
 
-    // Add search functionality
+    let query;
     if (search) {
-      query.$or = [
-        { SDName: { $regex: search, $options: 'i' } },
-        { SDEmail: { $regex: search, $options: 'i' } },
-        { SDMobileNo: { $regex: search, $options: 'i' } },
-        { SDContactPerson: { $regex: search, $options: 'i' } }
-      ];
+      const searchOr = {
+        $or: [
+          { SDName: { $regex: search, $options: 'i' } },
+          { SDEmail: { $regex: search, $options: 'i' } },
+          { SDMobileNo: { $regex: search, $options: 'i' } },
+          { SDContactPerson: { $regex: search, $options: 'i' } }
+        ]
+      };
+      query = {
+        companyId: companyId,
+        isActive: true,
+        $and: [ownershipOr, searchOr]
+      };
+    } else {
+      query = {
+        companyId: companyId,
+        isActive: true,
+        ...ownershipOr
+      };
     }
 
     const subDealers = await SubDealer.find(query)
