@@ -22,6 +22,7 @@ import {
   listUsersByCompanyGuid,
   listApprovedOrdersByCompanyGuid,
   listUnapprovedOrdersByCompanyGuid,
+  handleTallyOrderResponse,
 } from '../../controllres/tallyQueryController.js';
 import {
   upsertGroupFromTally,
@@ -1249,6 +1250,62 @@ tallyRoute.get('/companies/:guid/orders/approved', listApprovedOrdersByCompanyGu
  *         description: Server error while fetching orders
  */
 tallyRoute.get('/companies/:guid/orders/unapproved', listUnapprovedOrdersByCompanyGuid);
+
+/**
+ * @swagger
+ * /api/v1/tally/orders/response:
+ *   post:
+ *     summary: Receive Tally acceptance or rejection for a sent order
+ *     description: >
+ *       Called by Tally client after processing an order fetched from the approved orders endpoint.
+ *       - If accepted: marks the order as synced and stores Tally GUID and voucher number.
+ *       - If rejected: marks the order as failed, stores the error reason, and reverts the order
+ *         back to approved so it will be included in the next fetch automatically.
+ *     tags: [Tally Orders]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - orderId
+ *               - status
+ *             properties:
+ *               orderId:
+ *                 type: string
+ *                 example: "68f8cd55d473fa8d4af0b817"
+ *               status:
+ *                 type: string
+ *                 enum: [accepted, rejected]
+ *                 example: "accepted"
+ *               tallyGUID:
+ *                 type: string
+ *                 example: "TALLY-GUID-12345"
+ *                 description: Required when status is accepted
+ *               tallyVoucherNumber:
+ *                 type: string
+ *                 example: "VCH-2024-001"
+ *                 description: Required when status is accepted
+ *               errorCode:
+ *                 type: string
+ *                 example: "DUPLICATE_VOUCHER"
+ *                 description: Required when status is rejected
+ *               errorMessage:
+ *                 type: string
+ *                 example: "Voucher already exists in Tally"
+ *                 description: Required when status is rejected
+ *     responses:
+ *       200:
+ *         description: Response handled successfully
+ *       400:
+ *         description: Missing or invalid fields
+ *       404:
+ *         description: Order not found or not in sent_to_tally status
+ *       500:
+ *         description: Server error
+ */
+tallyRoute.post('/orders/response', handleTallyOrderResponse);
 
 /**
  * @swagger

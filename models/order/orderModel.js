@@ -290,12 +290,16 @@ const orderSchema = new mongoose.Schema({
   },
   // Tally integration
   tallyGUID: String,
+  tallyVoucherNumber: String,
+  tallyErrorCode: String,
+  tallyErrorMessage: String,
   tallySyncStatus: {
     type: String,
     enum: ['pending', 'synced', 'failed'],
     default: 'pending'
   },
   tallySyncAt: Date,
+  tallyResponseAt: Date,
   isActive: {
     type: Boolean,
     default: true

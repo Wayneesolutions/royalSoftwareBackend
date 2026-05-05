@@ -377,7 +377,7 @@ export const listApprovedOrdersByCompanyGuid = async (req, res) => {
         {
           $set: {
             status: 'sent_to_tally',
-            tallySyncStatus: 'synced',
+            tallySyncStatus: 'pending',
             tallySyncAt: now,
           },
         },
@@ -398,7 +398,7 @@ export const listApprovedOrdersByCompanyGuid = async (req, res) => {
         {
           $set: {
             status: 'sent_to_tally',
-            tallySyncStatus: 'synced',
+            tallySyncStatus: 'pending',
             tallySyncAt: now,
           },
         },
@@ -600,6 +600,112 @@ export const listUnapprovedOrdersByCompanyGuid = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Failed to fetch unapproved orders for company',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
+};
+
+export const handleTallyOrderResponse = async (req, res) => {
+  try {
+    let body = req.body;
+    if (typeof body === 'string') {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid JSON in request body',
+        });
+      }
+    }
+
+    const { orderId, status, tallyGUID, tallyVoucherNumber, errorCode, errorMessage } = body;
+
+    if (!orderId) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderId is required',
+      });
+    }
+
+    if (!status || !['accepted', 'rejected'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'status is required and must be "accepted" or "rejected"',
+      });
+    }
+
+    const order = await Order.findOne({ _id: orderId, status: 'sent_to_tally' });
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found or not in sent_to_tally status',
+      });
+    }
+
+    const now = new Date();
+
+    if (status === 'accepted') {
+      order.tallySyncStatus = 'synced';
+      order.tallyGUID = tallyGUID || order.tallyGUID;
+      order.tallyVoucherNumber = tallyVoucherNumber || null;
+      order.tallyResponseAt = now;
+      // Clear any previous error info
+      order.tallyErrorCode = null;
+      order.tallyErrorMessage = null;
+
+      await order.save();
+
+      return res.json({
+        success: true,
+        message: 'Order marked as synced with Tally',
+        order: {
+          _id: order._id,
+          orderNumber: order.orderNumber,
+          status: order.status,
+          tallySyncStatus: order.tallySyncStatus,
+          tallyGUID: order.tallyGUID,
+          tallyVoucherNumber: order.tallyVoucherNumber,
+          tallyResponseAt: order.tallyResponseAt,
+        },
+      });
+    }
+
+    // status === 'rejected'
+    if (!errorMessage && !errorCode) {
+      return res.status(400).json({
+        success: false,
+        message: 'errorMessage or errorCode is required when status is "rejected"',
+      });
+    }
+
+    order.tallySyncStatus = 'failed';
+    order.status = 'approved'; // revert so GET picks it up again on next poll
+    order.tallyErrorCode = errorCode || null;
+    order.tallyErrorMessage = errorMessage || null;
+    order.tallyResponseAt = now;
+
+    await order.save();
+
+    return res.json({
+      success: true,
+      message: 'Order marked as failed. It has been reset to approved for retry.',
+      order: {
+        _id: order._id,
+        orderNumber: order.orderNumber,
+        status: order.status,
+        tallySyncStatus: order.tallySyncStatus,
+        tallyErrorCode: order.tallyErrorCode,
+        tallyErrorMessage: order.tallyErrorMessage,
+        tallyResponseAt: order.tallyResponseAt,
+      },
+    });
+  } catch (error) {
+    console.error('Error handling Tally order response:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to handle Tally order response',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
   }
