@@ -152,7 +152,7 @@ const orderSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['draft', 'pending_approval', 'approved', 'sent_to_tally', 'dispatched', 'delivered', 'cancelled', 'returned'],
+    enum: ['draft', 'pending_approval', 'approved', 'tally_fetched', 'sent_to_tally', 'dispatched', 'delivered', 'cancelled', 'returned'],
     default: 'draft'
   },
   priority: {
@@ -299,6 +299,7 @@ const orderSchema = new mongoose.Schema({
     default: 'pending'
   },
   tallySyncAt: Date,
+  tallyFetchedAt: Date,
   tallyResponseAt: Date,
   isActive: {
     type: Boolean,
