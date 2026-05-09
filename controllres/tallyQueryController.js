@@ -360,26 +360,24 @@ export const listApprovedOrdersByCompanyGuid = async (req, res) => {
 
     const now = new Date();
 
-    // Revert any tally_fetched orders older than 10 minutes back to approved.
-    // This handles the case where the Tally connector fetched orders but crashed
-    // before sending the ACK, leaving orders stranded in tally_fetched indefinitely.
-    const staleThreshold = new Date(now.getTime() - 10 * 60 * 1000);
+    // Revert any sent_to_tally orders older than 10 minutes back to approved.
+    // Protects against the connector crashing after GET but before POST /orders/response,
+    // which would otherwise leave orders stranded in sent_to_tally indefinitely.
+    const staleThreshold = new Date(now.getTime() - 24 * 60 * 60 * 1000);
     await Order.updateMany(
       {
         companyId: company._id,
-        status: 'tally_fetched',
-        tallyFetchedAt: { $lt: staleThreshold },
+        status: 'sent_to_tally',
+        tallySyncAt: { $lt: staleThreshold },
+        tallySyncStatus: { $ne: 'synced' },
       },
       {
         $set: { status: 'approved' },
-        $unset: { tallyFetchedAt: '' },
       }
     );
 
-    // Concurrency-safe claim: atomically lock orders as tally_fetched (NOT sent_to_tally).
-    // Status only advances to sent_to_tally once the Tally connector ACKs receipt
-    // via POST /api/v1/tally/orders/ack. This prevents orders being lost if the
-    // connector crashes between receiving the GET response and creating the voucher.
+    // Concurrency-safe claim: atomically move orders from approved to sent_to_tally.
+    // tallySyncAt is stamped here so the 10-minute stale revert above has a reference point.
     const claimedIds = [];
 
     // eslint-disable-next-line no-constant-condition
@@ -392,8 +390,8 @@ export const listApprovedOrdersByCompanyGuid = async (req, res) => {
         },
         {
           $set: {
-            status: 'tally_fetched',
-            tallyFetchedAt: now,
+            status: 'sent_to_tally',
+            tallySyncAt: now,
           },
         },
         { new: true, sort: { orderDate: 1, _id: 1 } }
@@ -604,79 +602,8 @@ export const listUnapprovedOrdersByCompanyGuid = async (req, res) => {
   }
 };
 
-export const acknowledgeTallyOrderReceipt = async (req, res) => {
-  try {
-    let body = req.body;
-    if (typeof body === 'string') {
-      try {
-        body = JSON.parse(body);
-      } catch {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid JSON in request body',
-        });
-      }
-    }
-
-    const { orderIds } = body;
-
-    if (!Array.isArray(orderIds) || orderIds.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'orderIds must be a non-empty array of order IDs',
-      });
-    }
-
-    // Filter out blank/invalid entries before hitting MongoDB to prevent cast errors
-    const validIds = orderIds.filter((id) => id && typeof id === 'string' && id.trim().length === 24);
-
-    if (validIds.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'No valid order IDs provided. Each ID must be a 24-character MongoDB ObjectId.',
-      });
-    }
-
-    const now = new Date();
-
-    // Advance only orders currently in tally_fetched — guards against
-    // replayed ACKs for orders that already timed out and reverted to approved.
-    const result = await Order.updateMany(
-      { _id: { $in: validIds }, status: 'tally_fetched' },
-      {
-        $set: {
-          status: 'sent_to_tally',
-          tallySyncStatus: 'pending',
-          tallySyncAt: now,
-        },
-        $unset: { tallyFetchedAt: '' },
-      }
-    );
-
-    const notAcknowledged = validIds.length - result.modifiedCount;
-
-    return res.json({
-      success: true,
-      message: `${result.modifiedCount} order(s) acknowledged and marked as sent_to_tally`,
-      acknowledged: result.modifiedCount,
-      // > 0 means those orders already timed out and reverted to approved — Tally should re-fetch
-      notAcknowledged,
-      ...(notAcknowledged > 0 && {
-        warning: `${notAcknowledged} order(s) were not in tally_fetched state (likely timed out and reverted). Re-fetch to get them again.`,
-      }),
-    });
-  } catch (error) {
-    console.error('Error acknowledging Tally order receipt:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Failed to acknowledge Tally order receipt',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
-  }
-};
-
 const processSingleOrderResponse = async (entry, now) => {
-  const { orderId, status, tallyGUID, tallyVoucherNumber, errorCode, errorMessage } = entry;
+  const { orderId, status, tallyGUID, tallyVoucherNumber, remarks } = entry;
 
   if (!orderId) return { orderId: null, success: false, error: 'orderId is required' };
   if (!status || !['accepted', 'rejected'].includes(status)) {
@@ -693,8 +620,7 @@ const processSingleOrderResponse = async (entry, now) => {
     order.tallyGUID = tallyGUID || order.tallyGUID;
     order.tallyVoucherNumber = tallyVoucherNumber || null;
     order.tallyResponseAt = now;
-    order.tallyErrorCode = null;
-    order.tallyErrorMessage = null;
+    order.tallyRemarks = null;
     await order.save();
 
     return {
@@ -709,15 +635,10 @@ const processSingleOrderResponse = async (entry, now) => {
     };
   }
 
-  // rejected
-  if (!errorMessage && !errorCode) {
-    return { orderId, success: false, error: 'errorMessage or errorCode is required when status is "rejected"' };
-  }
-
+  // rejected — revert to approved so next GET poll picks it up again
   order.tallySyncStatus = 'failed';
-  order.status = 'approved'; // revert so GET picks it up on next poll
-  order.tallyErrorCode = errorCode || null;
-  order.tallyErrorMessage = errorMessage || null;
+  order.status = 'approved';
+  order.tallyRemarks = remarks || null;
   order.tallyResponseAt = now;
   await order.save();
 
@@ -727,8 +648,7 @@ const processSingleOrderResponse = async (entry, now) => {
     success: true,
     status: order.status,
     tallySyncStatus: order.tallySyncStatus,
-    tallyErrorCode: order.tallyErrorCode,
-    tallyErrorMessage: order.tallyErrorMessage,
+    tallyRemarks: order.tallyRemarks,
     tallyResponseAt: order.tallyResponseAt,
   };
 };

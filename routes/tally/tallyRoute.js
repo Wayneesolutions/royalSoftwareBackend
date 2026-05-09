@@ -22,7 +22,6 @@ import {
   listUsersByCompanyGuid,
   listApprovedOrdersByCompanyGuid,
   listUnapprovedOrdersByCompanyGuid,
-  acknowledgeTallyOrderReceipt,
   handleTallyOrderResponse,
 } from '../../controllres/tallyQueryController.js';
 import {
@@ -1288,14 +1287,10 @@ tallyRoute.get('/companies/:guid/orders/unapproved', listUnapprovedOrdersByCompa
  *                 type: string
  *                 example: "VCH-2024-001"
  *                 description: Required when status is accepted
- *               errorCode:
+ *               remarks:
  *                 type: string
- *                 example: "DUPLICATE_VOUCHER"
- *                 description: Required when status is rejected
- *               errorMessage:
- *                 type: string
- *                 example: "Voucher already exists in Tally"
- *                 description: Required when status is rejected
+ *                 example: "Ledger not found in Tally. Please create it first."
+ *                 description: Optional human-readable reason when status is rejected. Stored and shown in the app.
  *     responses:
  *       200:
  *         description: Response handled successfully
@@ -1307,80 +1302,6 @@ tallyRoute.get('/companies/:guid/orders/unapproved', listUnapprovedOrdersByCompa
  *         description: Server error
  */
 tallyRoute.post('/orders/response', handleTallyOrderResponse);
-
-/**
- * @swagger
- * /api/v1/tally/orders/ack:
- *   post:
- *     summary: Acknowledge receipt of orders fetched from approved list
- *     description: >
- *       **Two-Phase Sync — Phase 2 of 3.**
- *
- *       After the Tally connector calls `GET /api/v1/tally/companies/:guid/orders/approved`
- *       and successfully parses + queues the orders locally, it MUST immediately call this
- *       endpoint to confirm receipt. Only then do the orders advance from `tally_fetched`
- *       to `sent_to_tally` status.
- *
- *       **Why this exists:** Without an ACK, if the connector crashes between receiving the
- *       GET response and creating Tally vouchers, orders get stuck and are never retried.
- *       With this ACK, unacknowledged orders automatically revert to `approved` after a
- *       10-minute timeout and will be picked up on the next poll.
- *
- *       **Timing:** Call this immediately after queuing the orders in the Tally connector —
- *       NOT after voucher creation. Voucher creation result must be reported via
- *       `POST /api/v1/tally/orders/response`.
- *
- *       **Stale order warning:** If `notAcknowledged > 0` in the response, those orders
- *       already timed out and reverted to `approved`. The connector should re-fetch them
- *       on the next poll cycle.
- *     tags: [Tally Orders]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - orderIds
- *             properties:
- *               orderIds:
- *                 type: array
- *                 description: Array of order _id values received from the approved orders GET response
- *                 items:
- *                   type: string
- *                 example: ["69fed0558a4831c37ad57087", "69fed1234a4831c37ad57099"]
- *     responses:
- *       200:
- *         description: ACK processed successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: true
- *                 message:
- *                   type: string
- *                   example: "2 order(s) acknowledged and marked as sent_to_tally"
- *                 acknowledged:
- *                   type: integer
- *                   description: Number of orders successfully advanced to sent_to_tally
- *                   example: 2
- *                 notAcknowledged:
- *                   type: integer
- *                   description: Number of order IDs that were NOT in tally_fetched state (already timed out and reverted). Re-fetch these.
- *                   example: 0
- *                 warning:
- *                   type: string
- *                   description: Present only when notAcknowledged > 0
- *                   example: "1 order(s) were not in tally_fetched state (likely timed out and reverted). Re-fetch to get them again."
- *       400:
- *         description: Missing or invalid orderIds array
- *       500:
- *         description: Server error
- */
-tallyRoute.post('/orders/ack', acknowledgeTallyOrderReceipt);
 
 /**
  * @swagger
