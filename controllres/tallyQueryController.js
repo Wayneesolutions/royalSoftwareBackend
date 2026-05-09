@@ -627,12 +627,22 @@ export const acknowledgeTallyOrderReceipt = async (req, res) => {
       });
     }
 
+    // Filter out blank/invalid entries before hitting MongoDB to prevent cast errors
+    const validIds = orderIds.filter((id) => id && typeof id === 'string' && id.trim().length === 24);
+
+    if (validIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No valid order IDs provided. Each ID must be a 24-character MongoDB ObjectId.',
+      });
+    }
+
     const now = new Date();
 
     // Advance only orders currently in tally_fetched — guards against
     // replayed ACKs for orders that already timed out and reverted to approved.
     const result = await Order.updateMany(
-      { _id: { $in: orderIds }, status: 'tally_fetched' },
+      { _id: { $in: validIds }, status: 'tally_fetched' },
       {
         $set: {
           status: 'sent_to_tally',
@@ -643,7 +653,7 @@ export const acknowledgeTallyOrderReceipt = async (req, res) => {
       }
     );
 
-    const notAcknowledged = orderIds.length - result.modifiedCount;
+    const notAcknowledged = validIds.length - result.modifiedCount;
 
     return res.json({
       success: true,
