@@ -463,95 +463,83 @@ export const getOrders = async (req, res) => {
       const userIdStr = userId.toString();
       const isDealerQueryingAssignedOrders = dealerIdStr && dealerIdStr === userIdStr;
       
-      // For group users, filter by group - only show orders from their group
+      // For group users — own orders + assigned dealers + their subdealers (NOT other groupusers)
       if (userRole === 'groupuser') {
-        // Get current user's groups
-        const currentUser = await User.findById(userId).select('groups').lean();
-        if (currentUser && currentUser.groups && currentUser.groups.length > 0) {
-          // Get active group IDs
-          const activeGroupIds = currentUser.groups
-            .filter(g => g.isActive && g.groupId)
-            .map(g => {
-              return typeof g.groupId === 'object' && g.groupId._id 
-                ? g.groupId._id 
-                : (g.groupId || null);
-            })
-            .filter(id => id !== null);
+        const currentUser = await User.findById(userId)
+          .select('groups assignedDealerIds')
+          .lean();
 
-          if (activeGroupIds.length > 0) {
-            // Get all dealers in these groups
-            const dealersInGroup = await Ledger.find({
-              groupId: { $in: activeGroupIds },
-              isActive: true
-            }).select('_id').lean();
-            const dealerIds = dealersInGroup.map(d => d._id.toString());
+        // ── 1. Dealers via direct assignment (assignedDealerIds) ──────────────
+        const directDealerIds = (currentUser?.assignedDealerIds || []).map(id => id.toString());
 
-            // Get all subdealers in these groups
-            const subdealersInGroup = await SubDealer.find({
-              groupId: { $in: activeGroupIds },
-              isActive: true
-            }).select('_id').lean();
-            const subdealerIds = subdealersInGroup.map(s => s._id.toString());
+        // ── 2. Dealers via Tally group membership ────────────────────────────
+        let groupDealerIds = [];
+        let groupSubdealerIds = [];
 
-            // Get all group users in these groups
-            const groupUsersInGroup = await User.find({
-              'groups.groupId': { $in: activeGroupIds },
-              'groups.isActive': true,
-              isActive: true
-            }).select('_id').lean();
-            const groupUserIds = groupUsersInGroup.map(u => u._id.toString());
+        const activeGroupIds = (currentUser?.groups || [])
+          .filter(g => g.isActive && g.groupId)
+          .map(g => (typeof g.groupId === 'object' && g.groupId._id ? g.groupId._id : g.groupId))
+          .filter(Boolean);
 
-            // Combine all IDs that belong to this group
-            const allowedIds = [...groupUserIds, ...dealerIds, ...subdealerIds, userIdStr];
+        if (activeGroupIds.length > 0) {
+          const dealersInGroup = await Ledger.find({
+            groupId: { $in: activeGroupIds },
+            isActive: true
+          }).select('_id').lean();
+          groupDealerIds = dealersInGroup.map(d => d._id.toString());
 
-            // Filter orders: created by group members OR assigned to dealers/subdealers in the group
-            const orderConditions = [
-              { createdBy: { $in: allowedIds.map(id => new mongoose.Types.ObjectId(id)) } },
-              { dealerId: { $in: dealerIds.map(id => new mongoose.Types.ObjectId(id)) } },
-              { customerId: { $in: dealerIds.map(id => new mongoose.Types.ObjectId(id)) } },
-              { subDealerId: { $in: subdealerIds.map(id => new mongoose.Types.ObjectId(id)) } }
-            ];
+          const subdealersInGroup = await SubDealer.find({
+            groupId: { $in: activeGroupIds },
+            isActive: true
+          }).select('_id').lean();
+          groupSubdealerIds = subdealersInGroup.map(s => s._id.toString());
+        }
 
-            // If createdBy is specified, check if it's in the allowed list
-            if (createdBy) {
-              const createdById = createdBy.toString();
-              if (!allowedIds.includes(createdById)) {
-                return res.json({
-                  success: true,
-                  orders: [],
-                  pagination: {
-                    currentPage: parseInt(page),
-                    totalPages: 0,
-                    totalOrders: 0,
-                    hasNext: false,
-                    hasPrev: false
-                  },
-                  stats: {
-                    totalOrders: 0,
-                    totalAmount: 0,
-                    pendingOrders: 0,
-                    completedOrders: 0
-                  }
-                });
-              }
-              filter.createdBy = mongoose.Types.ObjectId.isValid(createdBy) 
-                ? new mongoose.Types.ObjectId(createdBy) 
-                : createdBy;
-            } else {
-              // Filter to only show orders from the group
-              filter.$or = orderConditions;
+        // ── 3. Merge dealer IDs from both sources ────────────────────────────
+        const allDealerIds = [...new Set([...directDealerIds, ...groupDealerIds])];
+
+        // ── 4. Subdealers for directly-assigned dealers (by dealerId field) ──
+        if (directDealerIds.length > 0) {
+          const subdealersOfDirect = await SubDealer.find({
+            dealerId: { $in: directDealerIds.map(id => new mongoose.Types.ObjectId(id)) },
+            isActive: true
+          }).select('_id').lean();
+          subdealersOfDirect.forEach(s => groupSubdealerIds.push(s._id.toString()));
+        }
+
+        const allSubdealerIds = [...new Set(groupSubdealerIds)];
+
+        // ── 5. Build filter ──────────────────────────────────────────────────
+        const allowedIds = [userIdStr, ...allDealerIds, ...allSubdealerIds];
+
+        console.log('🔍 groupuser visible IDs — self:1 dealers:', allDealerIds.length, 'subdealers:', allSubdealerIds.length);
+
+        if (allDealerIds.length > 0 || allSubdealerIds.length > 0) {
+          const orderConditions = [
+            { createdBy: { $in: allowedIds.map(id => new mongoose.Types.ObjectId(id)) } },
+            { dealerId: { $in: allDealerIds.map(id => new mongoose.Types.ObjectId(id)) } },
+            { customerId: { $in: allDealerIds.map(id => new mongoose.Types.ObjectId(id)) } },
+            { subDealerId: { $in: allSubdealerIds.map(id => new mongoose.Types.ObjectId(id)) } }
+          ];
+
+          if (createdBy) {
+            if (!allowedIds.includes(createdBy.toString())) {
+              return res.json({
+                success: true,
+                orders: [],
+                pagination: { currentPage: parseInt(page), totalPages: 0, totalOrders: 0, hasNext: false, hasPrev: false },
+                stats: { totalOrders: 0, totalAmount: 0, pendingOrders: 0, completedOrders: 0 }
+              });
             }
-
-            console.log('🔍 Group user filtering orders by groupIds:', activeGroupIds);
-            console.log('🔍 Allowed user/dealer/subdealer IDs:', allowedIds.length);
+            filter.createdBy = mongoose.Types.ObjectId.isValid(createdBy)
+              ? new mongoose.Types.ObjectId(createdBy)
+              : createdBy;
           } else {
-            // No active groups — fall back to orders created by this user only
-            console.log('ℹ️ Group user has no active groups, showing own orders only');
-            filter.createdBy = new mongoose.Types.ObjectId(userIdStr);
+            filter.$or = orderConditions;
           }
         } else {
-          // No groups assigned — fall back to orders created by this user only
-          console.log('ℹ️ Group user has no groups assigned, showing own orders only');
+          // No dealers assigned — show own orders only
+          console.log('ℹ️ groupuser has no dealers assigned, showing own orders only');
           filter.createdBy = new mongoose.Types.ObjectId(userIdStr);
         }
       } else if (!isDealerQueryingAssignedOrders) {

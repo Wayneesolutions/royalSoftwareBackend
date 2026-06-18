@@ -308,6 +308,6 @@ orderRoute.patch('/:orderId/status', requireAuth, authorizeRoles(['admin', 'zona
  *       500:
  *         description: Server error
  */
-orderRoute.delete('/:orderId', requireAuth, authorizeRoles(['admin', 'zonal', 'rsm', 'asm', 'salesman']), deleteOrder);
+orderRoute.delete('/:orderId', requireAuth, authorizeRoles(['superadmin', 'admin', 'zonal', 'rsm', 'asm', 'salesman', 'dealers', 'distibutors', 'subdealer', 'groupuser']), deleteOrder);
 
 export default orderRoute;
