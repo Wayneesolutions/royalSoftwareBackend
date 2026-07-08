@@ -59,6 +59,11 @@ import {
   syncStockFromTally,
   getStockSummaryForGroupUser,
 } from '../../controllres/tallyStockController.js';
+import {
+  syncDispatchFromTally,
+  getDispatchForGroupUser,
+  getDispatchForAdmin,
+} from '../../controllres/tallyDispatchController.js';
 
 const tallyRoute = express.Router();
 
@@ -5141,6 +5146,168 @@ tallyRoute.post('/stock/sync', syncStockFromTally);
  *         description: Server error
  */
 tallyRoute.get('/stock/group-user', getStockSummaryForGroupUser);
+
+// ===================== DISPATCH APIS =====================
+
+/**
+ * @swagger
+ * /api/v1/tally/dispatch/sync:
+ *   post:
+ *     summary: Sync order dispatch status from Tally
+ *     description: Creates or updates dispatch records sent from Tally. Supports single object or batch array.
+ *     tags: [Tally Dispatch]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             oneOf:
+ *               - type: object
+ *                 required: [cmpcode, orderguid, dispatchStatus]
+ *                 properties:
+ *                   cmpcode:
+ *                     type: string
+ *                     example: ROYAL01
+ *                   orderguid:
+ *                     type: string
+ *                     example: ORDER-GUID-001
+ *                   orderNumber:
+ *                     type: string
+ *                     example: SO-2026-001
+ *                   orderDate:
+ *                     type: string
+ *                     format: date
+ *                     example: "2026-01-02"
+ *                   ledgerguid:
+ *                     type: string
+ *                     example: LEDGER-GUID-001
+ *                   partyName:
+ *                     type: string
+ *                     example: Raj Traders
+ *                   totalAmount:
+ *                     type: number
+ *                     example: 59000
+ *                   dispatchStatus:
+ *                     type: string
+ *                     enum: [pending, fully_dispatched]
+ *                   items:
+ *                     type: array
+ *                     items:
+ *                       type: object
+ *                       properties:
+ *                         itemName:
+ *                           type: string
+ *                         hsnCode:
+ *                           type: string
+ *                         unit:
+ *                           type: string
+ *                         orderedQty:
+ *                           type: number
+ *                         dispatchedQty:
+ *                           type: number
+ *                         pendingQty:
+ *                           type: number
+ *                         rate:
+ *                           type: number
+ *                         amount:
+ *                           type: number
+ *               - type: array
+ *                 items:
+ *                   type: object
+ *     responses:
+ *       200:
+ *         description: All dispatch records synced successfully
+ *       207:
+ *         description: Partial success
+ *       400:
+ *         description: Bad request
+ *       500:
+ *         description: Server error
+ */
+tallyRoute.post('/dispatch/sync', syncDispatchFromTally);
+
+/**
+ * @swagger
+ * /api/v1/tally/dispatch/group-user:
+ *   get:
+ *     summary: Get dispatch records for a group user
+ *     tags: [Tally Dispatch]
+ *     parameters:
+ *       - in: query
+ *         name: cmpcode
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: userId
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: dispatchStatus
+ *         schema:
+ *           type: string
+ *           enum: [pending, fully_dispatched]
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *     responses:
+ *       200:
+ *         description: Dispatch records fetched successfully
+ *       400:
+ *         description: Missing required parameters
+ *       500:
+ *         description: Server error
+ */
+tallyRoute.get('/dispatch/group-user', getDispatchForGroupUser);
+
+/**
+ * @swagger
+ * /api/v1/tally/dispatch/admin:
+ *   get:
+ *     summary: Get all dispatch records for admin
+ *     tags: [Tally Dispatch]
+ *     parameters:
+ *       - in: query
+ *         name: cmpcode
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: ledgerguid
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: dispatchStatus
+ *         schema:
+ *           type: string
+ *           enum: [pending, fully_dispatched]
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *     responses:
+ *       200:
+ *         description: Dispatch records fetched successfully
+ *       400:
+ *         description: Missing required parameters
+ *       500:
+ *         description: Server error
+ */
+tallyRoute.get('/dispatch/admin', getDispatchForAdmin);
 
 export default tallyRoute;
 

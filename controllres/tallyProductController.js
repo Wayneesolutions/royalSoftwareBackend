@@ -218,7 +218,10 @@ const buildProductPayload = ({ item, company, partial = false, existingProduct =
       ? normalizeNumber(item.stock ?? item.quantity, 0)
       : undefined;
   const derivedGst =
-    item.gstRate !== undefined ? normalizeNumber(item.gstRate, 0) : undefined;
+    item.gstRate !== undefined ? normalizeNumber(item.gstRate, 0) :
+    item.itemGstPer !== undefined ? normalizeNumber(item.itemGstPer, 0) :
+    item.Itemgstper !== undefined ? normalizeNumber(item.Itemgstper, 0) :
+    undefined;
   const derivedCategory =
     item.category !== undefined || item.Category !== undefined
       ? normalizeString(item.category || item.Category)
@@ -311,7 +314,7 @@ const buildProductPayload = ({ item, company, partial = false, existingProduct =
   assignNumberField(
     'itemGstPer',
     ['Itemgstper', 'itemGstPer', 'ItemGstPer', 'ITEMGSTPER', 'gstRate', 'GstRate', 'gst'],
-    normalizeNumber(item.itemGstPer ?? derivedGst ?? 0, 0)
+    normalizeNumber(item.itemGstPer ?? derivedGst ?? 18, 18)
   );
 
   assignStringField('itemHsn', ['Itemhsn', 'itemHsn', 'ItemHsn', 'ITEMHSN', 'hsn', 'Hsn', 'HSN'], undefined);
@@ -362,7 +365,7 @@ const buildProductPayload = ({ item, company, partial = false, existingProduct =
   assignNumberField(
     'gstRate',
     ['gstRate', 'GstRate', 'GSTRATE'],
-    normalizeNumber(item.gstRate ?? derivedGst ?? 0, 0)
+    normalizeNumber(item.gstRate ?? derivedGst ?? 18, 18)
   );
 
   assignStringField(
@@ -385,6 +388,26 @@ const buildProductPayload = ({ item, company, partial = false, existingProduct =
 
   if (!partial && company?._id) {
     payload.companyId = company._id;
+  }
+
+  // Sync price ↔ stdSaleRate based on what Tally explicitly sent
+  const hasExplicitPrice = ['price', 'Price', 'unitPrice', 'UnitPrice'].some(f => item[f] !== undefined && item[f] !== null && item[f] !== '');
+  const hasExplicitSaleRate = ['StdSalerate', 'stdSaleRate', 'StdSaleRate', 'STDSALERATE', 'stdSalesRate', 'saleRate'].some(f => item[f] !== undefined && item[f] !== null && item[f] !== '');
+
+  if (hasExplicitPrice && !hasExplicitSaleRate && payload.price !== undefined) {
+    payload.stdSaleRate = payload.price;
+  } else if (hasExplicitSaleRate && !hasExplicitPrice && payload.stdSaleRate !== undefined) {
+    payload.price = payload.stdSaleRate;
+  }
+
+  // Sync gstRate ↔ itemGstPer based on what Tally explicitly sent
+  const hasExplicitGstRate = ['gstRate', 'GstRate', 'GSTRATE'].some(f => item[f] !== undefined && item[f] !== null && item[f] !== '');
+  const hasExplicitItemGst = ['Itemgstper', 'itemGstPer', 'ItemGstPer', 'ITEMGSTPER', 'gst'].some(f => item[f] !== undefined && item[f] !== null && item[f] !== '');
+
+  if (hasExplicitGstRate && !hasExplicitItemGst && payload.gstRate !== undefined) {
+    payload.itemGstPer = payload.gstRate;
+  } else if (hasExplicitItemGst && !hasExplicitGstRate && payload.itemGstPer !== undefined) {
+    payload.gstRate = payload.itemGstPer;
   }
 
   Object.keys(payload).forEach((key) => {
@@ -460,48 +483,56 @@ export const upsertCompanyProductFromTally = async (req, res) => {
       const resolvedProductCode = derived.productCode || productCode;
       const resolvedName = derived.productName;
 
-      // Check for duplicate product (same productCode and companyId)
+      // Check if product already exists (same productCode and companyId)
       const existingProduct = await Product.findOne({
         productCode: resolvedProductCode,
         companyId: company._id,
       });
 
       if (existingProduct) {
+        // Update existing product with new data from Tally
+        const { payload: updatePayload } = buildProductPayload({
+          item,
+          company,
+          partial: true,
+          existingProduct,
+        });
+
+        const updatedProduct = await Product.findByIdAndUpdate(
+          existingProduct._id,
+          { $set: updatePayload },
+          { new: true, runValidators: true, context: 'query' }
+        );
+
         results.push({
-          productCode: resolvedProductCode,
-          productName: productName || resolvedName || name,
-          success: false,
-          message: `Product with code "${productCode}" already exists for this company. Duplicate products are not allowed.`,
-          error: 'DUPLICATE_PRODUCT',
-          existingProductId: existingProduct._id,
+          success: true,
+          action: 'updated',
+          product: updatedProduct ? updatedProduct.toObject() : existingProduct.toObject(),
         });
         continue;
       }
 
       // For Tally products, createdBy is optional
-      // Try to get from item, then company, otherwise use null
       let creatorId = null;
       if (item.createdBy) {
-        // Validate if createdBy is a valid ObjectId
         if (mongoose.Types.ObjectId.isValid(item.createdBy)) {
           creatorId = item.createdBy;
         }
       } else if (company.createdBy) {
         creatorId = company.createdBy;
       }
-      // If still null, that's fine - createdBy is optional for Tally products
 
-      // Create new product only if it doesn't exist
+      // Create new product
       const product = await Product.create({
         ...baseData,
         createdBy: creatorId || null,
       });
 
-      // Convert to plain object to ensure all fields (including non-schema fields) are included
       const productObj = product.toObject ? product.toObject() : product;
 
       results.push({
         success: true,
+        action: 'created',
         product: productObj,
       });
     }

@@ -114,7 +114,7 @@ const buildCreateProductPayload = (payload, context) => {
     subCategory: normalizeString(payload.subCategory),
     brand: normalizeString(payload.brand),
     price: resolvedPrice,
-    stock: normalizeInteger(payload.stock, 0),
+    stock: normalizeNumber(payload.stock, 0),
     gstRate: resolvedGstRate,
     companyId,
     isActive: normalizeBoolean(payload.isActive, true),
@@ -205,7 +205,7 @@ const buildUpdateProductPayload = (payload, currentProduct, companyCodeFallback)
   });
 
   if (hasOwn('stock')) {
-    const stockValue = normalizeInteger(payload.stock);
+    const stockValue = normalizeNumber(payload.stock);
     if (stockValue === undefined) {
       throw new InvalidProductPayloadError('Invalid value provided for stock');
     }
