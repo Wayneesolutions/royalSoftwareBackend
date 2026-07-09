@@ -44,6 +44,9 @@ export const syncDispatchFromTally = async (req, res) => {
           continue;
         }
 
+        // Normalize cmpcode to uppercase to match Company.companyCode storage
+        const cmpcode = data.cmpcode.trim().toUpperCase();
+
         // Validate dispatchStatus
         if (!['pending', 'fully_dispatched'].includes(data.dispatchStatus)) {
           results.push({
@@ -57,7 +60,7 @@ export const syncDispatchFromTally = async (req, res) => {
 
         // Find company
         const company = await Company.findOne({
-          companyCode: data.cmpcode,
+          companyCode: cmpcode,
           isActive: true,
         });
 
@@ -66,7 +69,7 @@ export const syncDispatchFromTally = async (req, res) => {
             success: false,
             index: i,
             orderguid: data.orderguid,
-            error: `Company not found for cmpcode: ${data.cmpcode}`,
+            error: `Company not found for cmpcode: ${cmpcode}`,
           });
           continue;
         }
@@ -76,7 +79,7 @@ export const syncDispatchFromTally = async (req, res) => {
         if (data.ledgerguid) {
           const ledger = await Ledger.findOne({
             LedgerGUID: data.ledgerguid,
-            cmpcode: data.cmpcode,
+            cmpcode,
             isActive: true,
           }).select('_id');
           if (ledger) ledgerId = ledger._id;
@@ -98,7 +101,7 @@ export const syncDispatchFromTally = async (req, res) => {
 
         const payload = {
           orderguid: data.orderguid,
-          cmpcode: data.cmpcode,
+          cmpcode,
           orderNumber: data.orderNumber || null,
           orderDate: data.orderDate ? new Date(data.orderDate) : null,
           ledgerguid: data.ledgerguid || null,
@@ -115,7 +118,7 @@ export const syncDispatchFromTally = async (req, res) => {
         // Upsert by orderguid + cmpcode
         const existing = await TallyDispatch.findOne({
           orderguid: data.orderguid,
-          cmpcode: data.cmpcode,
+          cmpcode,
         });
 
         let saved;
@@ -186,14 +189,16 @@ export const syncDispatchFromTally = async (req, res) => {
  */
 export const getDispatchForGroupUser = async (req, res) => {
   try {
-    const { cmpcode, userId, dispatchStatus, page = 1, limit = 20 } = req.query;
+    const { cmpcode: rawCmpcode, userId, dispatchStatus, page = 1, limit = 20 } = req.query;
 
-    if (!cmpcode) {
+    if (!rawCmpcode) {
       return res.status(400).json({ success: false, message: 'cmpcode is required' });
     }
     if (!userId) {
       return res.status(400).json({ success: false, message: 'userId is required' });
     }
+
+    const cmpcode = rawCmpcode.trim().toUpperCase();
 
     // Find company
     const company = await Company.findOne({ companyCode: cmpcode, isActive: true });
@@ -284,12 +289,13 @@ export const getDispatchForGroupUser = async (req, res) => {
  */
 export const getDispatchForAdmin = async (req, res) => {
   try {
-    const { cmpcode, ledgerguid, dispatchStatus, page = 1, limit = 20 } = req.query;
+    const { cmpcode: rawCmpcode, ledgerguid, dispatchStatus, page = 1, limit = 20 } = req.query;
 
-    if (!cmpcode) {
+    if (!rawCmpcode) {
       return res.status(400).json({ success: false, message: 'cmpcode is required' });
     }
 
+    const cmpcode = rawCmpcode.trim().toUpperCase();
     const filter = { cmpcode, isActive: true };
     if (ledgerguid) filter.ledgerguid = ledgerguid;
     if (dispatchStatus && ['pending', 'fully_dispatched'].includes(dispatchStatus)) {

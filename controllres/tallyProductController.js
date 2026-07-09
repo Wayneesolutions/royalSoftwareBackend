@@ -368,11 +368,13 @@ const buildProductPayload = ({ item, company, partial = false, existingProduct =
     normalizeNumber(item.gstRate ?? derivedGst ?? 18, 18)
   );
 
-  assignStringField(
-    'productCode',
-    ['productCode', 'ProductCode', 'product_code', 'code', 'Code'],
-    productCode
-  );
+  if (productCode) {
+    assignStringField(
+      'productCode',
+      ['productCode', 'ProductCode', 'product_code', 'code', 'Code'],
+      productCode
+    );
+  }
 
   assignStringField(
     'productName',
