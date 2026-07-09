@@ -39,7 +39,7 @@ export const syncOutstandingFromTally = async (req, res) => {
         // Validate required fields
         const requiredFields = ['cmpcode', 'ledgerguid', 'vchguid', 'outstandingAmount'];
         const missingFields = requiredFields.filter(field => !data[field]);
-        
+
         if (missingFields.length > 0) {
           results.push({
             success: false,
@@ -50,9 +50,12 @@ export const syncOutstandingFromTally = async (req, res) => {
           continue;
         }
 
+        // Normalize cmpcode to uppercase to match Company.companyCode storage
+        const cmpcode = data.cmpcode.trim().toUpperCase();
+
         // Find company
         const company = await Company.findOne({
-          companyCode: data.cmpcode,
+          companyCode: cmpcode,
           isActive: true
         });
 
@@ -60,36 +63,24 @@ export const syncOutstandingFromTally = async (req, res) => {
           results.push({
             success: false,
             index: i,
-            error: `Company not found for cmpcode: ${data.cmpcode}`,
+            error: `Company not found for cmpcode: ${cmpcode}`,
             data: null
           });
           continue;
         }
 
-        // Find ledger
+        // Find ledger (optional — don't hard-fail if not synced yet)
         const ledger = await Ledger.findOne({
           LedgerGUID: data.ledgerguid,
-          cmpcode: data.cmpcode,
           companyId: company._id,
-          isActive: true
         });
-
-        if (!ledger) {
-          results.push({
-            success: false,
-            index: i,
-            error: `Ledger not found for LedgerGUID: ${data.ledgerguid}`,
-            data: null
-          });
-          continue;
-        }
 
         // Find voucher (optional but preferred)
         let voucher = null;
         if (data.vchguid) {
           voucher = await VoucherMaster.findOne({
             vchguid: data.vchguid,
-            cmpcode: data.cmpcode,
+            cmpcode: company.companyCode,
             isActive: true
           });
         }
@@ -153,13 +144,13 @@ export const syncOutstandingFromTally = async (req, res) => {
         const outstandingPayload = {
           outstandingId,
           companyId: company._id,
-          partyId: ledger._id,
-          partyName: ledger.LedgerName || data.partyName,
+          partyId: ledger ? ledger._id : null,
+          partyName: (ledger ? ledger.LedgerName : null) || data.partyName || null,
           partyType: data.partyType || 'dealer',
           partyContact: {
-            mobile: ledger.LedgerMobile || data.partyMobile || '',
-            email: ledger.Email || data.partyEmail || '',
-            address: ledger.LedgerAddress1 || data.partyAddress || ''
+            mobile: (ledger ? ledger.LedgerMobile : null) || data.partyMobile || '',
+            email: (ledger ? ledger.Email : null) || data.partyEmail || '',
+            address: (ledger ? ledger.LedgerAddress1 : null) || data.partyAddress || ''
           },
           voucherId: voucher ? voucher._id : null,
           vchguid: data.vchguid || null,
@@ -273,11 +264,11 @@ export const syncOutstandingFromTally = async (req, res) => {
  */
 export const getOutstandingForGroupUser = async (req, res) => {
   try {
-    const { cmpcode, userId } = req.query;
-    
-    console.log(`🔍 getOutstandingForGroupUser called with cmpcode: ${cmpcode}, userId: ${userId}`);
+    const { cmpcode: rawCmpcode, userId } = req.query;
 
-    if (!cmpcode) {
+    console.log(`🔍 getOutstandingForGroupUser called with cmpcode: ${rawCmpcode}, userId: ${userId}`);
+
+    if (!rawCmpcode) {
       return res.status(400).json({
         success: false,
         message: 'Company code (cmpcode) is required'
@@ -290,6 +281,9 @@ export const getOutstandingForGroupUser = async (req, res) => {
         message: 'User ID (userId) is required'
       });
     }
+
+    const cmpcode = rawCmpcode.trim().toUpperCase();
+
     // Find company
     const company = await Company.findOne({
       companyCode: cmpcode,
@@ -1221,14 +1215,16 @@ export const getOutstandingForGroupUser = async (req, res) => {
 export const getOutstandingWithDetails = async (req, res) => {
   try {
     const { outstandingId } = req.params;
-    const { cmpcode, vchguid } = req.query;
+    const { cmpcode: rawCmpcode, vchguid } = req.query;
 
-    if (!cmpcode) {
+    if (!rawCmpcode) {
       return res.status(400).json({
         success: false,
         message: 'Company code (cmpcode) is required'
       });
     }
+
+    const cmpcode = rawCmpcode.trim().toUpperCase();
 
     // Find company first
     const company = await Company.findOne({ companyCode: cmpcode, isActive: true });

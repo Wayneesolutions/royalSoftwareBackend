@@ -25,9 +25,12 @@ export const syncStockFromTally = async (req, res) => {
 
     for (const data of stockDataArray) {
       const {
-        companyguid, cmpcode, itemguid, itemname, itemsku, itemcategory,
+        companyguid, itemguid, itemname, itemsku, itemcategory,
         currentStock, openingBalance, stdSaleRate, stdPurcRate, itemHsn, itemHsnDesc
       } = data;
+
+      // Normalize cmpcode to uppercase to match Company.companyCode storage
+      const cmpcode = data.cmpcode ? data.cmpcode.trim().toUpperCase() : '';
 
       if (!cmpcode || !itemguid) {
         results.push({ success: false, message: 'Missing required fields: cmpcode and itemguid are required', data });
@@ -36,9 +39,9 @@ export const syncStockFromTally = async (req, res) => {
 
       try {
         // Find company by companyCode (cmpcode) only - matching sales controller logic
-        const company = await Company.findOne({ 
-          companyCode: cmpcode, 
-          isActive: true 
+        const company = await Company.findOne({
+          companyCode: cmpcode,
+          isActive: true
         });
         
         if (!company) {
@@ -124,11 +127,13 @@ export const syncStockFromTally = async (req, res) => {
  */
 export const getStockSummaryForGroupUser = async (req, res) => {
   try {
-    const { cmpcode } = req.query;
+    const { cmpcode: rawCmpcode } = req.query;
 
-    if (!cmpcode) {
+    if (!rawCmpcode) {
       return res.status(400).json({ success: false, message: 'Company code (cmpcode) is required' });
     }
+
+    const cmpcode = rawCmpcode.trim().toUpperCase();
 
     const company = await Company.findOne({ companyCode: cmpcode, isActive: true });
     if (!company) {

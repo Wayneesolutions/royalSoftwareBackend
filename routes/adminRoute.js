@@ -28,8 +28,8 @@ import {
   updateSubDealer,
   deleteSubDealer
 } from '../controllres/adminController.js'
-import { 
-  getUsersByRole, 
+import {
+  getUsersByRole,
   getUserById
 } from '../controllres/adminUserController.js'
 import { requireAuth, authorizeRoles } from '../middleware/authMiddleware.js'

@@ -56,9 +56,12 @@ export const syncSalesFromTally = async (req, res) => {
           continue;
         }
 
+        // Normalize cmpcode to uppercase to match Company.companyCode storage
+        const cmpcode = salesData.cmpcode.trim().toUpperCase();
+
         // Find company
         const company = await Company.findOne({
-          companyCode: salesData.cmpcode,
+          companyCode: cmpcode,
           isActive: true
         });
 
@@ -67,7 +70,7 @@ export const syncSalesFromTally = async (req, res) => {
           results.errors.push({
             vchguid: salesData.vchguid,
             itemguid: salesData.itemguid,
-            error: `Company not found for cmpcode: ${salesData.cmpcode}`
+            error: `Company not found for cmpcode: ${cmpcode}`
           });
           continue;
         }
@@ -214,11 +217,11 @@ export const syncSalesFromTally = async (req, res) => {
  */
 export const getSalesSummaryForGroupUser = async (req, res) => {
   try {
-    const { cmpcode, userId } = req.query;
-    
-    console.log(`🔍 getSalesSummaryForGroupUser called with cmpcode: ${cmpcode}, userId: ${userId}`);
+    const { cmpcode: rawCmpcode, userId } = req.query;
 
-    if (!cmpcode) {
+    console.log(`🔍 getSalesSummaryForGroupUser called with cmpcode: ${rawCmpcode}, userId: ${userId}`);
+
+    if (!rawCmpcode) {
       return res.status(400).json({
         success: false,
         message: 'Company code (cmpcode) is required'
@@ -231,6 +234,8 @@ export const getSalesSummaryForGroupUser = async (req, res) => {
         message: 'User ID (userId) is required'
       });
     }
+
+    const cmpcode = rawCmpcode.trim().toUpperCase();
 
     // Find company
     const company = await Company.findOne({
