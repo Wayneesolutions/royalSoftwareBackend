@@ -465,12 +465,15 @@ export const upsertCompanyProductFromTally = async (req, res) => {
       const productCode = normalizeString(item.productCode);
       const productName = normalizeString(item.productName);
       const name = normalizeString(item.name || item.Name || item.productName);
-      
-      if (!productCode || (!productName && !name)) {
+      const resolvedName = productName || name;
+
+      // Only productName (or name) is required — productCode is optional
+      if (!resolvedName) {
         results.push({
           productCode,
+          productName,
           success: false,
-          message: 'Product code and product name are required',
+          message: 'Product name is required (productName or name)',
         });
         continue;
       }
@@ -481,13 +484,23 @@ export const upsertCompanyProductFromTally = async (req, res) => {
         partial: false,
       });
       const resolvedProductCode = derived.productCode || productCode;
-      const resolvedName = derived.productName;
 
-      // Check if product already exists (same productCode and companyId)
-      const existingProduct = await Product.findOne({
-        productCode: resolvedProductCode,
-        companyId: company._id,
-      });
+      // Find existing product — by productCode if provided, otherwise by productName
+      let existingProduct = null;
+      if (resolvedProductCode) {
+        existingProduct = await Product.findOne({
+          productCode: resolvedProductCode,
+          companyId: company._id,
+        });
+      }
+      if (!existingProduct) {
+        existingProduct = await Product.findOne({
+          $or: [
+            { productName: resolvedName, companyId: company._id },
+            { name: resolvedName, companyId: company._id },
+          ],
+        });
+      }
 
       if (existingProduct) {
         // Update existing product with new data from Tally
@@ -608,10 +621,14 @@ export const updateProductFromTally = async (req, res) => {
         ? normalizeString(productId)
         : providedProductCode;
 
-      if (!productId && !productCode) {
+      const providedProductName = normalizeString(
+        item.productName || item.ProductName || item.name || item.Name
+      );
+
+      if (!productId && !productCode && !providedProductName) {
         results.push({
           success: false,
-          message: 'productId or productCode is required for updates',
+          message: 'productId, productCode, or productName is required for updates',
           error: 'MISSING_PRODUCT_IDENTIFIER',
         });
         continue;
@@ -632,11 +649,22 @@ export const updateProductFromTally = async (req, res) => {
         });
       }
 
+      // Find by productName if still not found
+      if (!product && providedProductName) {
+        product = await Product.findOne({
+          $or: [
+            { productName: providedProductName, companyId: company._id },
+            { name: providedProductName, companyId: company._id },
+          ],
+        });
+      }
+
       if (!product) {
         results.push({
           success: false,
           productId,
           productCode,
+          productName: providedProductName,
           message: 'Product not found for the provided identifier and company GUID',
           error: 'PRODUCT_NOT_FOUND',
         });
