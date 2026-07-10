@@ -1,5 +1,20 @@
 import Outstanding from '../models/outstanding/outstandingModel.js';
 import Company from '../models/company/companyModel.js';
+
+const normalizePaymentTerms = (terms) => {
+  if (!terms) return '30_days';
+  const valid = ['immediate', '7_days', '15_days', '30_days', '45_days', '60_days', '90_days', 'custom'];
+  if (valid.includes(terms)) return terms;
+  const s = terms.toString().toLowerCase().replace(/\s+/g, ' ').trim();
+  if (s === '0' || s === '0 days' || s === 'immediate') return 'immediate';
+  if (s === '7' || s === '7 days') return '7_days';
+  if (s === '15' || s === '15 days') return '15_days';
+  if (s === '30' || s === '30 days') return '30_days';
+  if (s === '45' || s === '45 days') return '45_days';
+  if (s === '60' || s === '60 days') return '60_days';
+  if (s === '90' || s === '90 days') return '90_days';
+  return 'custom';
+};
 import Ledger from '../models/ledger/ledgerModel.js';
 import VoucherMaster from '../models/voucher/voucherMasterModel.js';
 import InventoryEntries from '../models/inventory/inventoryEntriesModel.js';
@@ -145,7 +160,7 @@ export const syncOutstandingFromTally = async (req, res) => {
           outstandingId,
           companyId: company._id,
           partyId: ledger ? ledger._id : null,
-          partyName: (ledger ? ledger.LedgerName : null) || data.partyName || null,
+          partyName: (ledger ? ledger.LedgerName : null) || data.partyName || data.ledgerguid || 'Unknown',
           partyType: data.partyType || 'dealer',
           partyContact: {
             mobile: (ledger ? ledger.LedgerMobile : null) || data.partyMobile || '',
@@ -160,7 +175,7 @@ export const syncOutstandingFromTally = async (req, res) => {
           paidAmount,
           outstandingAmount,
           currency: data.currency || 'INR',
-          paymentTerms: data.paymentTerms || '30_days',
+          paymentTerms: normalizePaymentTerms(data.paymentTerms),
           dueDate,
           creditLimit: parseFloat(data.creditLimit) || 0,
           status,

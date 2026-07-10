@@ -16,12 +16,10 @@ const outstandingSchema = new mongoose.Schema({
   // Party Information
   partyId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
+    ref: 'User'
   },
   partyName: {
-    type: String,
-    required: true
+    type: String
   },
   partyType: {
     type: String,
