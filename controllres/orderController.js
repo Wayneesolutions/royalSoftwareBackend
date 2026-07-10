@@ -1569,36 +1569,51 @@ export const getOrderStats = async (req, res) => {
           totalOrders: { $sum: 1 },
           totalAmount: { $sum: '$finalAmount' },
           pendingOrders: {
-            $sum: { $cond: [{ $eq: ['$status', 'pending'] }, 1, 0] }
+            $sum: { $cond: [{ $in: ['$status', ['pending', 'pending_approval', 'draft']] }, 1, 0] }
           },
+          pendingAmount: {
+            $sum: { $cond: [{ $in: ['$status', ['pending', 'pending_approval', 'draft']] }, '$finalAmount', 0] }
+          },
+          averageOrderValue: { $avg: '$finalAmount' },
           confirmedOrders: {
-            $sum: { $cond: [{ $eq: ['$status', 'confirmed'] }, 1, 0] }
+            $sum: { $cond: [{ $in: ['$status', ['confirmed', 'approved']] }, 1, 0] }
           },
           processingOrders: {
-            $sum: { $cond: [{ $eq: ['$status', 'processing'] }, 1, 0] }
+            $sum: { $cond: [{ $in: ['$status', ['processing', 'sent_to_tally']] }, 1, 0] }
           },
           shippedOrders: {
-            $sum: { $cond: [{ $eq: ['$status', 'shipped'] }, 1, 0] }
+            $sum: { $cond: [{ $in: ['$status', ['shipped', 'dispatched']] }, 1, 0] }
           },
           deliveredOrders: {
             $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0] }
           },
           cancelledOrders: {
             $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 1, 0] }
-          }
+          },
+          ordersByStatus: { $push: '$status' },
+          ordersByPriority: { $push: '$priority' },
+          ordersByPaymentMethod: { $push: '$paymentMethod' },
+          ordersByRole: { $push: { $ifNull: ['$createdBy.role', 'unknown'] } }
         }
       }
     ]);
 
-    const result = stats[0] || {
-      totalOrders: 0,
-      totalAmount: 0,
-      pendingOrders: 0,
-      confirmedOrders: 0,
-      processingOrders: 0,
-      shippedOrders: 0,
-      deliveredOrders: 0,
-      cancelledOrders: 0
+    const raw = stats[0] || {};
+    const result = {
+      totalOrders: raw.totalOrders || 0,
+      totalAmount: raw.totalAmount || 0,
+      pendingOrders: raw.pendingOrders || 0,
+      pendingAmount: raw.pendingAmount || 0,
+      averageOrderValue: raw.averageOrderValue || 0,
+      confirmedOrders: raw.confirmedOrders || 0,
+      processingOrders: raw.processingOrders || 0,
+      shippedOrders: raw.shippedOrders || 0,
+      deliveredOrders: raw.deliveredOrders || 0,
+      cancelledOrders: raw.cancelledOrders || 0,
+      ordersByStatus: {},
+      ordersByPriority: {},
+      ordersByPaymentMethod: {},
+      ordersByRole: {},
     };
 
     res.json({
