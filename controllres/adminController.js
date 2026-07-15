@@ -4634,7 +4634,7 @@ export const updateUserStatus = async (req, res) => {
 export const editUser = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { name, email, mobile, role, userName, isActive, address, parentUserId, subdealerDetails, groupId, groupGUID } = req.body;
+    const { name, email, mobile, role, userName, isActive, address, parentUserId, subdealerDetails, groupId, groupGUID, password } = req.body;
     const adminId = req.user.userId;
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
 
@@ -4738,6 +4738,11 @@ export const editUser = async (req, res) => {
     
     if (userName) {
       userToEdit.userName = userName;
+    }
+
+    // Update password only if provided
+    if (password && password.trim()) {
+      userToEdit.password = await bcrypt.hash(password.trim(), 10);
     }
 
     // Update address if provided
