@@ -206,13 +206,15 @@ export const getDispatchForGroupUser = async (req, res) => {
       return res.status(404).json({ success: false, message: `Company not found for cmpcode: ${cmpcode}` });
     }
 
-    // Find user with assigned dealers
+    // Find user with assigned dealers and groups
     const user = await User.findById(userId).select('assignedDealerIds groups').lean();
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    // Get ledger GUIDs from assignedDealerIds
+    // Resolve dealer ObjectIds: prefer assignedDealerIds, fall back to group-based dealers
+    let dealerObjectIds = [];
+
     const assignedLedgerIds = (user.assignedDealerIds || [])
       .map(id => {
         if (typeof id === 'object' && id._id) return id._id;
@@ -221,11 +223,37 @@ export const getDispatchForGroupUser = async (req, res) => {
       })
       .filter(Boolean);
 
-    let ledgerGUIDs = [];
     if (assignedLedgerIds.length > 0) {
+      // User has directly assigned dealers
+      dealerObjectIds = assignedLedgerIds;
+    } else if (user.groups && user.groups.length > 0) {
+      // Fall back to group-based dealers (same logic as getAllDealers)
+      const groupIds = user.groups
+        .filter(g => g.isActive !== false && g.groupId)
+        .map(g => {
+          const gid = typeof g.groupId === 'object' && g.groupId._id ? g.groupId._id : g.groupId;
+          return mongoose.Types.ObjectId.isValid(gid)
+            ? (typeof gid === 'string' ? new mongoose.Types.ObjectId(gid) : gid)
+            : null;
+        })
+        .filter(Boolean);
+
+      if (groupIds.length > 0) {
+        const groupDealers = await Ledger.find({
+          groupId: { $in: groupIds },
+          cmpcode,
+          isActive: true,
+        }).select('_id').lean();
+        dealerObjectIds = groupDealers.map(d => d._id);
+      }
+    }
+
+    // Get LedgerGUIDs for the resolved dealers
+    let ledgerGUIDs = [];
+    if (dealerObjectIds.length > 0) {
       const ledgers = await Ledger.find({
-        _id: { $in: assignedLedgerIds },
-        companyId: company._id,
+        _id: { $in: dealerObjectIds },
+        cmpcode,
         isActive: true,
       }).select('LedgerGUID').lean();
       ledgerGUIDs = ledgers.map(l => l.LedgerGUID).filter(Boolean);
