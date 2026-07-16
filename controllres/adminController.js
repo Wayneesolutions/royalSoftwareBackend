@@ -4679,10 +4679,13 @@ export const editUser = async (req, res) => {
       });
     }
 
-    // Find the user to edit
+    // Find the user to edit - check both companies array and defaultCompany (mirrors getUsersByCompany logic)
     const userToEdit = await User.findOne({
       _id: userId,
-      'companies.companyId': companyId
+      $or: [
+        { 'companies.companyId': companyId },
+        { defaultCompany: companyId }
+      ]
     });
 
     if (!userToEdit) {
@@ -4742,7 +4745,10 @@ export const editUser = async (req, res) => {
 
     // Update password only if provided
     if (password && password.trim()) {
+      console.log('🔐 Updating password for user:', userId);
       userToEdit.password = await bcrypt.hash(password.trim(), 10);
+    } else {
+      console.log('🔐 No password change for user:', userId);
     }
 
     // Update address if provided
@@ -5613,10 +5619,13 @@ export const deleteUser = async (req, res) => {
       });
     }
 
-    // Find the user to delete
+    // Find the user to delete - check both companies array and defaultCompany (mirrors getUsersByCompany logic)
     const userToDelete = await User.findOne({
       _id: userId,
-      'companies.companyId': companyId
+      $or: [
+        { 'companies.companyId': companyId },
+        { defaultCompany: companyId }
+      ]
     });
 
     if (!userToDelete) {

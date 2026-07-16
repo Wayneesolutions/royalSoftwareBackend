@@ -509,21 +509,25 @@ export const getOrders = async (req, res) => {
 
         const allSubdealerIds = [...new Set(groupSubdealerIds)];
 
-        // ── 5. Build filter ──────────────────────────────────────────────────
-        const allowedIds = [userIdStr, ...allDealerIds, ...allSubdealerIds];
+        // ── 5. Get hierarchy children (users directly below in org chart) ────
+        const childUserIds = await getAllChildUserIdsForOrders(userId, companyId);
+        // createdBy is restricted to self + hierarchy children only (NOT dealers/subdealers)
+        const hierarchyCreatorIds = [userIdStr, ...childUserIds];
+        // dealerId/customerId/subDealerId still use all dealer IDs
+        const allAllowedIds = [...new Set([...hierarchyCreatorIds, ...allDealerIds, ...allSubdealerIds])];
 
-        console.log('🔍 groupuser visible IDs — self:1 dealers:', allDealerIds.length, 'subdealers:', allSubdealerIds.length);
+        console.log('🔍 groupuser visible IDs — self:1 children:', childUserIds.length, 'dealers:', allDealerIds.length, 'subdealers:', allSubdealerIds.length);
 
-        if (allDealerIds.length > 0 || allSubdealerIds.length > 0) {
+        if (allDealerIds.length > 0 || allSubdealerIds.length > 0 || childUserIds.length > 0) {
           const orderConditions = [
-            { createdBy: { $in: allowedIds.map(id => new mongoose.Types.ObjectId(id)) } },
+            { createdBy: { $in: hierarchyCreatorIds.map(id => new mongoose.Types.ObjectId(id)) } },
             { dealerId: { $in: allDealerIds.map(id => new mongoose.Types.ObjectId(id)) } },
             { customerId: { $in: allDealerIds.map(id => new mongoose.Types.ObjectId(id)) } },
             { subDealerId: { $in: allSubdealerIds.map(id => new mongoose.Types.ObjectId(id)) } }
           ];
 
           if (createdBy) {
-            if (!allowedIds.includes(createdBy.toString())) {
+            if (!allAllowedIds.includes(createdBy.toString())) {
               return res.json({
                 success: true,
                 orders: [],
@@ -538,8 +542,8 @@ export const getOrders = async (req, res) => {
             filter.$or = orderConditions;
           }
         } else {
-          // No dealers assigned — show own orders only
-          console.log('ℹ️ groupuser has no dealers assigned, showing own orders only');
+          // No dealers or children — show own orders only
+          console.log('ℹ️ groupuser has no dealers/children assigned, showing own orders only');
           filter.createdBy = new mongoose.Types.ObjectId(userIdStr);
         }
       } else if (!isDealerQueryingAssignedOrders) {
@@ -692,7 +696,7 @@ export const getOrders = async (req, res) => {
     const sortObj = sortMap[sortBy] || { orderDate: -1 };
 
     let orders = await Order.find(filter)
-      .populate('createdBy', 'name role')
+      .populate('createdBy', 'name role hierarchy')
       .populate('approvedBy', 'name role')
       .populate('items.productId', 'productName productCode sellingPrice specifications')
       .sort(sortObj)
@@ -975,7 +979,7 @@ export const getOrderById = async (req, res) => {
       companyId,
       isActive: true
     })
-      .populate('createdBy', 'name role')
+      .populate('createdBy', 'name role hierarchy')
       .populate('approvedBy', 'name role')
       .populate('items.productId', 'productName productCode sellingPrice specifications description category brand')
       .lean();
