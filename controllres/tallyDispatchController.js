@@ -200,76 +200,141 @@ export const getDispatchForGroupUser = async (req, res) => {
 
     const cmpcode = rawCmpcode.trim().toUpperCase();
 
-    // Find company
     const company = await Company.findOne({ companyCode: cmpcode, isActive: true });
     if (!company) {
       return res.status(404).json({ success: false, message: `Company not found for cmpcode: ${cmpcode}` });
     }
 
-    // Find user with assigned dealers and groups
-    const user = await User.findById(userId).select('assignedDealerIds groups').lean();
+    const user = await User.findById(userId).select('assignedDealerIds groups hierarchy').lean();
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    // Resolve dealer ObjectIds: prefer assignedDealerIds, fall back to group-based dealers
-    let dealerObjectIds = [];
+    const ledgerGUIDs = new Set();
 
-    const assignedLedgerIds = (user.assignedDealerIds || [])
+    // Step 1: Resolve child user IDs (same logic as outstanding controller)
+    const getAllChildUserIds = async (parentUserId, visited = new Set(), depth = 0) => {
+      if (depth > 10 || visited.has(parentUserId.toString())) return [];
+      visited.add(parentUserId.toString());
+      const parentId = mongoose.Types.ObjectId.isValid(parentUserId)
+        ? (typeof parentUserId === 'string' ? new mongoose.Types.ObjectId(parentUserId) : parentUserId)
+        : parentUserId;
+      try {
+        const children = await User.find({
+          $and: [
+            { $or: [{ 'hierarchy.parentUserId': parentId }, { 'hierarchy.parentUser': parentId }] },
+            { $or: [{ 'companies.companyId': company._id }, { defaultCompany: company._id }] },
+            { isActive: true }
+          ]
+        }).select('_id').lean().maxTimeMS(5000);
+        const childIds = children.map(c => c._id.toString());
+        const nested = await Promise.all(childIds.map(id => getAllChildUserIds(id, visited, depth + 1)));
+        return [...childIds, ...nested.flat()];
+      } catch {
+        return [];
+      }
+    };
+
+    const childUserIds = await getAllChildUserIds(userId);
+    const allUserIds = [userId, ...childUserIds];
+
+    // Step 2: Group-based dealers — merge user's own groups + child users' groups
+    // Filter by cmpcode to avoid cross-company leakage (same as outstanding controller)
+    const allGroupIds = new Set();
+
+    const collectGroupIds = (groups) => {
+      (groups || [])
+        .filter(g => g.isActive && g.cmpcode === cmpcode && g.groupId)
+        .forEach(g => {
+          const gid = typeof g.groupId === 'object' && g.groupId._id ? g.groupId._id : g.groupId;
+          if (mongoose.Types.ObjectId.isValid(gid)) {
+            allGroupIds.add(typeof gid === 'string' ? new mongoose.Types.ObjectId(gid) : gid);
+          }
+        });
+    };
+
+    collectGroupIds(user.groups);
+
+    if (childUserIds.length > 0) {
+      const childUsers = await User.find({ _id: { $in: childUserIds }, isActive: true }).select('groups').lean();
+      childUsers.forEach(cu => collectGroupIds(cu.groups));
+    }
+
+    if (allGroupIds.size > 0) {
+      const groupLedgers = await Ledger.find({
+        groupId: { $in: Array.from(allGroupIds) },
+        companyId: company._id,
+        isActive: true,
+      }).select('LedgerGUID').lean();
+      groupLedgers.forEach(l => l.LedgerGUID && ledgerGUIDs.add(l.LedgerGUID));
+    }
+
+    // Step 3: Directly assigned dealers (assignedDealerIds)
+    const assignedDealerObjectIds = (user.assignedDealerIds || [])
       .map(id => {
-        if (typeof id === 'object' && id._id) return id._id;
-        if (mongoose.Types.ObjectId.isValid(id)) return typeof id === 'string' ? new mongoose.Types.ObjectId(id) : id;
-        return null;
+        const resolved = typeof id === 'object' && id._id ? id._id : id;
+        return mongoose.Types.ObjectId.isValid(resolved)
+          ? (typeof resolved === 'string' ? new mongoose.Types.ObjectId(resolved) : resolved)
+          : null;
       })
       .filter(Boolean);
 
-    if (assignedLedgerIds.length > 0) {
-      // User has directly assigned dealers
-      dealerObjectIds = assignedLedgerIds;
-    } else if (user.groups && user.groups.length > 0) {
-      // Fall back to group-based dealers (same logic as getAllDealers)
-      const groupIds = user.groups
-        .filter(g => g.isActive !== false && g.groupId)
-        .map(g => {
-          const gid = typeof g.groupId === 'object' && g.groupId._id ? g.groupId._id : g.groupId;
-          return mongoose.Types.ObjectId.isValid(gid)
-            ? (typeof gid === 'string' ? new mongoose.Types.ObjectId(gid) : gid)
-            : null;
-        })
-        .filter(Boolean);
+    if (assignedDealerObjectIds.length > 0) {
+      const assignedLedgers = await Ledger.find({
+        _id: { $in: assignedDealerObjectIds },
+        companyId: company._id,
+        isActive: true,
+      }).select('LedgerGUID').lean();
+      assignedLedgers.forEach(l => l.LedgerGUID && ledgerGUIDs.add(l.LedgerGUID));
+    }
 
-      if (groupIds.length > 0) {
-        const groupDealers = await Ledger.find({
-          groupId: { $in: groupIds },
-          cmpcode,
+    // Step 4: Dealers created by this user (or child users)
+    const userObjectIds = allUserIds.map(id =>
+      mongoose.Types.ObjectId.isValid(id)
+        ? (typeof id === 'string' ? new mongoose.Types.ObjectId(id) : id)
+        : id
+    );
+    const createdLedgers = await Ledger.find({
+      createdBy: { $in: userObjectIds },
+      companyId: company._id,
+      isActive: true,
+    }).select('LedgerGUID').lean();
+    createdLedgers.forEach(l => l.LedgerGUID && ledgerGUIDs.add(l.LedgerGUID));
+
+    // Step 5: Child users' directly assigned dealers
+    if (childUserIds.length > 0) {
+      const childUsers = await User.find({ _id: { $in: childUserIds }, isActive: true }).select('assignedDealerIds').lean();
+      const childDealerIds = [];
+      childUsers.forEach(cu => {
+        (cu.assignedDealerIds || []).forEach(id => {
+          const resolved = typeof id === 'object' && id._id ? id._id : id;
+          if (mongoose.Types.ObjectId.isValid(resolved)) {
+            childDealerIds.push(typeof resolved === 'string' ? new mongoose.Types.ObjectId(resolved) : resolved);
+          }
+        });
+      });
+      if (childDealerIds.length > 0) {
+        const childAssigned = await Ledger.find({
+          _id: { $in: childDealerIds },
+          companyId: company._id,
           isActive: true,
-        }).select('_id').lean();
-        dealerObjectIds = groupDealers.map(d => d._id);
+        }).select('LedgerGUID').lean();
+        childAssigned.forEach(l => l.LedgerGUID && ledgerGUIDs.add(l.LedgerGUID));
       }
     }
 
-    // Get LedgerGUIDs for the resolved dealers
-    let ledgerGUIDs = [];
-    if (dealerObjectIds.length > 0) {
-      const ledgers = await Ledger.find({
-        _id: { $in: dealerObjectIds },
-        cmpcode,
-        isActive: true,
-      }).select('LedgerGUID').lean();
-      ledgerGUIDs = ledgers.map(l => l.LedgerGUID).filter(Boolean);
-    }
+    const ledgerGUIDsArray = Array.from(ledgerGUIDs);
 
-    if (ledgerGUIDs.length === 0) {
+    if (ledgerGUIDsArray.length === 0) {
       return res.status(200).json({
         success: true,
-        message: 'No dealers assigned to this user',
+        message: 'No dealers found for this user',
         data: { dispatches: [], pagination: { totalCount: 0 } },
       });
     }
 
-    // Build filter
     const filter = {
-      ledgerguid: { $in: ledgerGUIDs },
+      ledgerguid: { $in: ledgerGUIDsArray },
       cmpcode,
       isActive: true,
     };
