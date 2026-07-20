@@ -696,7 +696,7 @@ export const getOrders = async (req, res) => {
     const sortObj = sortMap[sortBy] || { orderDate: -1 };
 
     let orders = await Order.find(filter)
-      .populate('createdBy', 'name role hierarchy groups')
+      .populate({ path: 'createdBy', select: 'name role hierarchy groups', populate: { path: 'hierarchy.parentUserId', select: 'name role hierarchy' } })
       .populate('approvedBy', 'name role')
       .populate('items.productId', 'productName productCode sellingPrice specifications')
       .sort(sortObj)
@@ -964,7 +964,7 @@ export const getOrderById = async (req, res) => {
       companyId,
       isActive: true
     })
-      .populate('createdBy', 'name role hierarchy groups')
+      .populate({ path: 'createdBy', select: 'name role hierarchy groups', populate: { path: 'hierarchy.parentUserId', select: 'name role hierarchy' } })
       .populate('approvedBy', 'name role')
       .populate('items.productId', 'productName productCode sellingPrice specifications description category brand')
       .lean();
