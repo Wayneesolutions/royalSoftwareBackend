@@ -696,7 +696,7 @@ export const getOrders = async (req, res) => {
     const sortObj = sortMap[sortBy] || { orderDate: -1 };
 
     let orders = await Order.find(filter)
-      .populate('createdBy', 'name role hierarchy')
+      .populate('createdBy', 'name role hierarchy groups')
       .populate('approvedBy', 'name role')
       .populate('items.productId', 'productName productCode sellingPrice specifications')
       .sort(sortObj)
@@ -704,138 +704,123 @@ export const getOrders = async (req, res) => {
       .limit(parseInt(limit))
       .lean(); // Use lean() for better performance
 
-    // Manually populate dealerId, customerId, and subDealerId from Ledger/SubDealer models
-    // Prioritize Ledger model over User model since dealers are stored in Ledger
+    // Batch populate dealerId, customerId, subDealerId — collect all IDs first, then
+    // fetch in bulk (3-4 queries total instead of N queries per order).
+    const rawDealerCustomerIds = [];
+    const rawSubDealerIds = [];
+
     for (const order of orders) {
-      // Populate dealerId from Ledger model (primary source for dealers)
       if (order.dealerId) {
-        const dealerId = typeof order.dealerId === 'object' ? order.dealerId._id : order.dealerId;
-        if (dealerId) {
-          try {
-            // Try Ledger model first (dealers are stored here)
-            const ledgerDealer = await Ledger.findById(dealerId).lean();
-            if (ledgerDealer) {
-              order.dealerId = {
-                _id: ledgerDealer._id,
-                name: ledgerDealer.LedgerName,
-                email: ledgerDealer.Email || '',
-                mobile: ledgerDealer.LedgerMobile || '',
-                role: 'dealer'
-              };
-            } else {
-              // Fallback to User model if not found in Ledger
-              const userDealer = await User.findById(dealerId).select('name email mobile role').lean();
-              if (userDealer) {
-                order.dealerId = {
-                  _id: userDealer._id,
-                  name: userDealer.name,
-                  email: userDealer.email || '',
-                  mobile: userDealer.mobile || '',
-                  role: userDealer.role || 'dealer'
-                };
-              } else {
-                // Keep as is if not found in either model
-                order.dealerId = typeof order.dealerId === 'object' ? order.dealerId : { _id: dealerId };
-              }
-            }
-          } catch (error) {
-            console.error('Error populating dealerId:', error);
-          }
-        }
+        const id = typeof order.dealerId === 'object' ? order.dealerId._id : order.dealerId;
+        if (id) rawDealerCustomerIds.push(String(id));
       }
-      
-      // Populate customerId from Ledger model (primary source for dealers)
       if (order.customerId) {
-        const customerId = typeof order.customerId === 'object' ? order.customerId._id : order.customerId;
-        if (customerId) {
-          try {
-            // Try Ledger model first (dealers are stored here)
-            const ledgerCustomer = await Ledger.findById(customerId).lean();
-            if (ledgerCustomer) {
-              order.customerId = {
-                _id: ledgerCustomer._id,
-                name: ledgerCustomer.LedgerName,
-                email: ledgerCustomer.Email || '',
-                mobile: ledgerCustomer.LedgerMobile || '',
-                role: 'dealer'
-              };
-            } else {
-              // Fallback to User model if not found in Ledger
-              const userCustomer = await User.findById(customerId).select('name email mobile role').lean();
-              if (userCustomer) {
-                order.customerId = {
-                  _id: userCustomer._id,
-                  name: userCustomer.name,
-                  email: userCustomer.email || '',
-                  mobile: userCustomer.mobile || '',
-                  role: userCustomer.role || 'dealer'
-                };
-              } else {
-                // Keep as is if not found in either model
-                order.customerId = typeof order.customerId === 'object' ? order.customerId : { _id: customerId };
-              }
-            }
-          } catch (error) {
-            console.error('Error populating customerId:', error);
+        const id = typeof order.customerId === 'object' ? order.customerId._id : order.customerId;
+        if (id) rawDealerCustomerIds.push(String(id));
+      }
+      if (order.subDealerId) {
+        const id = typeof order.subDealerId === 'object' ? order.subDealerId._id : order.subDealerId;
+        if (id) rawSubDealerIds.push(String(id));
+      }
+    }
+
+    const uniqueDealerCustomerIds = [...new Set(rawDealerCustomerIds)];
+    const uniqueSubDealerIds = [...new Set(rawSubDealerIds)];
+
+    const [ledgerDocs, subDealerDocs] = await Promise.all([
+      uniqueDealerCustomerIds.length > 0
+        ? Ledger.find({ _id: { $in: uniqueDealerCustomerIds } }).lean()
+        : [],
+      uniqueSubDealerIds.length > 0
+        ? SubDealer.find({ _id: { $in: uniqueSubDealerIds } }).lean()
+        : [],
+    ]);
+
+    const ledgerMap = new Map(ledgerDocs.map(l => [l._id.toString(), l]));
+    const subDealerMap = new Map(subDealerDocs.map(s => [s._id.toString(), s]));
+
+    // Fallback: fetch from User model for IDs not found in Ledger/SubDealer
+    const unresolvedLedgerIds = uniqueDealerCustomerIds.filter(id => !ledgerMap.has(id));
+    const unresolvedSubIds = uniqueSubDealerIds.filter(id => !subDealerMap.has(id));
+
+    const [userLedgerFallbacks, userSubFallbacks] = await Promise.all([
+      unresolvedLedgerIds.length > 0
+        ? User.find({ _id: { $in: unresolvedLedgerIds } }).select('name email mobile role').lean()
+        : [],
+      unresolvedSubIds.length > 0
+        ? User.find({ _id: { $in: unresolvedSubIds } }).select('name email mobile role address').lean()
+        : [],
+    ]);
+
+    const userLedgerMap = new Map(userLedgerFallbacks.map(u => [u._id.toString(), u]));
+    const userSubMap = new Map(userSubFallbacks.map(u => [u._id.toString(), u]));
+
+    // Synchronously map resolved docs back onto each order
+    for (const order of orders) {
+      if (order.dealerId) {
+        const id = String(typeof order.dealerId === 'object' ? order.dealerId._id : order.dealerId);
+        const ledger = ledgerMap.get(id);
+        if (ledger) {
+          order.dealerId = { _id: ledger._id, name: ledger.LedgerName, email: ledger.Email || '', mobile: ledger.LedgerMobile || '', role: 'dealer' };
+        } else {
+          const user = userLedgerMap.get(id);
+          if (user) {
+            order.dealerId = { _id: user._id, name: user.name, email: user.email || '', mobile: user.mobile || '', role: user.role || 'dealer' };
+          } else if (typeof order.dealerId !== 'object') {
+            order.dealerId = { _id: id };
           }
         }
       }
-      
-      // Populate subDealerId from SubDealer model
+
+      if (order.customerId) {
+        const id = String(typeof order.customerId === 'object' ? order.customerId._id : order.customerId);
+        const ledger = ledgerMap.get(id);
+        if (ledger) {
+          order.customerId = { _id: ledger._id, name: ledger.LedgerName, email: ledger.Email || '', mobile: ledger.LedgerMobile || '', role: 'dealer' };
+        } else {
+          const user = userLedgerMap.get(id);
+          if (user) {
+            order.customerId = { _id: user._id, name: user.name, email: user.email || '', mobile: user.mobile || '', role: user.role || 'dealer' };
+          } else if (typeof order.customerId !== 'object') {
+            order.customerId = { _id: id };
+          }
+        }
+      }
+
       if (order.subDealerId) {
-        const subDealerId = typeof order.subDealerId === 'object' ? order.subDealerId._id : order.subDealerId;
-        if (subDealerId) {
-          try {
-            // Try SubDealer model first
-            const subDealer = await SubDealer.findById(subDealerId).lean();
-            if (subDealer) {
-              // Map SubDealer model fields properly
-              order.subDealerId = {
-                _id: subDealer._id,
-                // SubDealer model fields (primary)
-                SDName: subDealer.SDName || '',
-                SDEmail: subDealer.SDEmail || '',
-                SDMobileNo: subDealer.SDMobileNo || '',
-                SDAddress1: subDealer.SDAddress1 || '',
-                SDAddress2: subDealer.SDAddress2 || '',
-                SDAddress3: subDealer.SDAddress3 || '',
-                SDState: subDealer.SDState || '',
-                SDCountry: subDealer.SDCountry || 'India',
-                SDPincode: subDealer.SDPincode || '',
-                SDContactPerson: subDealer.SDContactPerson || '',
-                // Backward compatibility fields (for legacy support)
-                name: subDealer.SDName || '',
-                email: subDealer.SDEmail || '',
-                mobile: subDealer.SDMobileNo || '',
-                role: 'subdealer',
-                // Construct address object from SubDealer fields
-                address: {
-                  street: subDealer.SDAddress1 || '',
-                  city: subDealer.SDAddress2 || '',
-                  state: subDealer.SDState || '',
-                  pincode: subDealer.SDPincode || '',
-                  country: subDealer.SDCountry || 'India',
-                }
-              };
-            } else {
-              // Fallback to User model if not found in SubDealer
-              const userSubDealer = await User.findById(subDealerId).select('name email mobile role address').lean();
-              if (userSubDealer) {
-                order.subDealerId = {
-                  _id: userSubDealer._id,
-                  name: userSubDealer.name,
-                  email: userSubDealer.email || '',
-                  mobile: userSubDealer.mobile || '',
-                  role: userSubDealer.role || 'subdealer',
-                  address: userSubDealer.address || {}
-                };
-              } else {
-                // Keep as is if not found in either model
-                order.subDealerId = typeof order.subDealerId === 'object' ? order.subDealerId : { _id: subDealerId };
-              }
+        const id = String(typeof order.subDealerId === 'object' ? order.subDealerId._id : order.subDealerId);
+        const subDealer = subDealerMap.get(id);
+        if (subDealer) {
+          order.subDealerId = {
+            _id: subDealer._id,
+            SDName: subDealer.SDName || '',
+            SDEmail: subDealer.SDEmail || '',
+            SDMobileNo: subDealer.SDMobileNo || '',
+            SDAddress1: subDealer.SDAddress1 || '',
+            SDAddress2: subDealer.SDAddress2 || '',
+            SDAddress3: subDealer.SDAddress3 || '',
+            SDState: subDealer.SDState || '',
+            SDCountry: subDealer.SDCountry || 'India',
+            SDPincode: subDealer.SDPincode || '',
+            SDContactPerson: subDealer.SDContactPerson || '',
+            name: subDealer.SDName || '',
+            email: subDealer.SDEmail || '',
+            mobile: subDealer.SDMobileNo || '',
+            role: 'subdealer',
+            address: {
+              street: subDealer.SDAddress1 || '',
+              city: subDealer.SDAddress2 || '',
+              state: subDealer.SDState || '',
+              pincode: subDealer.SDPincode || '',
+              country: subDealer.SDCountry || 'India',
             }
-          } catch (error) {
-            console.error('Error populating subDealerId:', error);
+          };
+        } else {
+          const user = userSubMap.get(id);
+          if (user) {
+            order.subDealerId = { _id: user._id, name: user.name, email: user.email || '', mobile: user.mobile || '', role: user.role || 'subdealer', address: user.address || {} };
+          } else if (typeof order.subDealerId !== 'object') {
+            order.subDealerId = { _id: id };
           }
         }
       }
@@ -979,7 +964,7 @@ export const getOrderById = async (req, res) => {
       companyId,
       isActive: true
     })
-      .populate('createdBy', 'name role hierarchy')
+      .populate('createdBy', 'name role hierarchy groups')
       .populate('approvedBy', 'name role')
       .populate('items.productId', 'productName productCode sellingPrice specifications description category brand')
       .lean();

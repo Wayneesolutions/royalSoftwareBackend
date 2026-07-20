@@ -5044,6 +5044,36 @@ export const editUser = async (req, res) => {
       }
     }
     
+    // Auto-derive parentUserId from group hierarchy when group assigned without explicit parentUserId
+    if ((groupId || groupGUID) && foundGroupId && !parentUserId && foundGroupParent) {
+      try {
+        const parentGroup = await Group.findOne({
+          GroupGUID: foundGroupParent,
+          isActive: true
+        }).lean();
+
+        if (parentGroup) {
+          const parentGroupUser = await User.findOne({
+            'groups.groupId': parentGroup._id,
+            'groups.isActive': true,
+            'companies.companyId': companyId,
+            'companies.isActive': true,
+            isActive: true
+          }).select('_id name role').lean();
+
+          if (parentGroupUser) {
+            userToEdit.hierarchy.parentUserId = parentGroupUser._id;
+            userToEdit.hierarchy.parentUserName = parentGroupUser.name;
+            userToEdit.hierarchy.parentUserRole = parentGroupUser.role;
+            userToEdit.hierarchy.level = getRoleLevel(finalRole);
+            console.log(`✅ Auto-set parentUserId from group hierarchy: ${parentGroupUser.name} (${parentGroupUser.role}) → ${foundGroupName}`);
+          }
+        }
+      } catch (err) {
+        console.error('Error auto-deriving parentUserId from group hierarchy:', err);
+      }
+    }
+
     // Handle direct group assignment (groupId/groupGUID) when parentUserId is NOT provided
     // This handles the case where user only changes the group without changing parent user
     // OR when user explicitly removes parent user but keeps/assigns a group
