@@ -64,6 +64,9 @@ import {
   getDispatchForGroupUser,
   getDispatchForAdmin,
 } from '../../controllres/tallyDispatchController.js';
+import {
+  upsertPriceListFromTally,
+} from '../../controllres/tallyPriceListController.js';
 
 const tallyRoute = express.Router();
 
@@ -5308,6 +5311,62 @@ tallyRoute.get('/dispatch/group-user', getDispatchForGroupUser);
  *         description: Server error
  */
 tallyRoute.get('/dispatch/admin', getDispatchForAdmin);
+
+// ===================== PRICE LIST APIS =====================
+
+/**
+ * @swagger
+ * /api/v1/tally/pricelists:
+ *   post:
+ *     summary: Sync price list entries from Tally
+ *     description: >
+ *       Accepts price list data pushed from Tally ERP (JSON or XML).
+ *       Upserts each entry keyed on cmpcode + itemguid + plname.
+ *       Accepts a single entry or an array.
+ *     tags: [Tally Price Lists]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             oneOf:
+ *               - type: object
+ *               - type: array
+ *                 items:
+ *                   type: object
+ *             properties:
+ *               companyGuid:
+ *                 type: string
+ *                 description: Company GUID
+ *               cmpcode:
+ *                 type: string
+ *               itemguid:
+ *                 type: string
+ *               itemname:
+ *                 type: string
+ *               plname:
+ *                 type: string
+ *                 description: Price list name (e.g. "Dealer Rate")
+ *               pldate:
+ *                 type: string
+ *                 format: date
+ *               plrate:
+ *                 type: number
+ *               other1:
+ *                 type: string
+ *               other2:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: All entries synced successfully
+ *       207:
+ *         description: Partial success
+ *       400:
+ *         description: Validation error or bad payload
+ *       500:
+ *         description: Server error
+ */
+tallyRoute.post('/pricelists', upsertPriceListFromTally);
 
 export default tallyRoute;
 

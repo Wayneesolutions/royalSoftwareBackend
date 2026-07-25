@@ -141,6 +141,21 @@ const orderSchema = new mongoose.Schema({
       type: Number,
       default: 0,
       min: 0
+    },
+    // Price List fields
+    priceListRate: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    difference: {
+      type: Number,
+      default: 0
+    },
+    finalRate: {
+      type: Number,
+      default: 0,
+      min: 0
     }
   }],
   orderDate: {
@@ -247,6 +262,11 @@ const orderSchema = new mongoose.Schema({
   },
   notes: {
     type: String
+  },
+  // Price list applied to this order
+  priceListName: {
+    type: String,
+    trim: true
   },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,

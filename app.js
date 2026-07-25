@@ -23,6 +23,7 @@ import { superAdminRoute } from './routes/superAdminRoute.js'
 import { specs, swaggerUi } from './config/swagger.js'
 import tallyRoute from './routes/tally/tallyRoute.js'
 import maintenanceRoute from './routes/maintenanceRoute.js'
+import priceListRoute from './routes/priceListRoute.js'
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -95,6 +96,7 @@ app.use('/api/v1/rsm', rsmRoute)
 app.use('/api/v1/asm', asmRoute)
 app.use('/api/v1/dealer', dealerTeamRoute)
 app.use('/api/v1/tally', tallyRoute)
+app.use('/api/v1/pricelists', priceListRoute)
 app.use('/api/v1/maintenance', maintenanceRoute)
 app.use('/api/v1/upload', uploadRoute)
   app.use('/api/v1/superadmin', superAdminRoute)

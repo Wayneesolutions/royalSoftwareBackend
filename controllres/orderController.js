@@ -150,7 +150,8 @@ export const createOrder = async (req, res) => {
       termsOfPayment,
       otherReference,
       termsOfDelivery1,
-      termsOfDelivery2
+      termsOfDelivery2,
+      priceListName,
     } = req.body;
 
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
@@ -271,7 +272,8 @@ export const createOrder = async (req, res) => {
         });
       }
 
-      const unitPrice = product.sellingPrice;
+      // Use finalRate from price list if provided, otherwise fall back to product selling price
+      const unitPrice = safeNumber(item.finalRate ?? item.unitPrice, product.sellingPrice);
       const discountPercent = item.discount || 0;
       const gstRateInput = item.gstRate !== undefined ? item.gstRate : product.gstRate;
 
@@ -301,7 +303,10 @@ export const createOrder = async (req, res) => {
         igstRate: taxDetails.igstRate,
         igstAmount: taxDetails.igstAmount,
         totalTaxAmount: taxDetails.totalTaxAmount,
-        totalPrice: taxDetails.lineTotal
+        totalPrice: taxDetails.lineTotal,
+        priceListRate: safeNumber(item.priceListRate, 0),
+        difference: safeNumber(item.difference, 0),
+        finalRate: safeNumber(item.finalRate ?? item.unitPrice, unitPrice),
       });
 
       grossAmountTotal += taxDetails.baseAmount;
@@ -359,6 +364,7 @@ export const createOrder = async (req, res) => {
       termsOfDelivery1: sanitizedTermsOfDelivery1,
       termsOfDelivery2: sanitizedTermsOfDelivery2,
       notes,
+      priceListName: priceListName || null,
       shippingAddress: finalShippingAddress || shippingAddress || customerAddress,
       isManualShippingAddress: isManualShippingAddress || false,
       createdBy,
@@ -1423,7 +1429,10 @@ export const updateOrder = async (req, res) => {
         igstRate: taxDetails.igstRate,
         igstAmount: taxDetails.igstAmount,
         totalTaxAmount: taxDetails.totalTaxAmount,
-        totalPrice: taxDetails.lineTotal
+        totalPrice: taxDetails.lineTotal,
+        priceListRate: safeNumber(item.priceListRate, 0),
+        difference: safeNumber(item.difference, 0),
+        finalRate: safeNumber(item.finalRate ?? item.unitPrice, unitPrice),
       });
 
       grossAmountTotal += taxDetails.baseAmount;
@@ -1463,6 +1472,7 @@ export const updateOrder = async (req, res) => {
     order.termsOfDelivery1 = updateData.termsOfDelivery1 ?? order.termsOfDelivery1;
     order.termsOfDelivery2 = updateData.termsOfDelivery2 ?? order.termsOfDelivery2;
     order.notes = updateData.notes ?? order.notes;
+    order.priceListName = updateData.priceListName ?? order.priceListName ?? null;
     order.shippingAddress = shippingAddress || {};
     order.status = updateData.status ?? order.status;
     order.taxableValueTotal = taxableValueTotal;
