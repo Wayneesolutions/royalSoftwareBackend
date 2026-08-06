@@ -2,6 +2,7 @@ import express from 'express';
 import {
   getOutstandingSummary,
   getOutstandingList,
+  getOutstandingHierarchy,
   getOutstandingDetails,
   updateOutstanding,
   addCollectionNote,
@@ -21,6 +22,12 @@ router.get('/summary', getOutstandingSummary);
 // Get outstanding list with filters and pagination
 router.get('/list', getOutstandingList);
 
+// Get outstanding grouped by party for hierarchy view
+router.get('/hierarchy', getOutstandingHierarchy);
+
+// Get users for assignment (must be before /:outstandingId to avoid route shadowing)
+router.get('/users/for-assignment', getUsersForAssignment);
+
 // Get outstanding details by ID
 router.get('/:outstandingId', getOutstandingDetails);
 
@@ -32,8 +39,5 @@ router.post('/:outstandingId/notes', addCollectionNote);
 
 // Assign outstanding to user
 router.post('/:outstandingId/assign', assignOutstanding);
-
-// Get users for assignment
-router.get('/users/for-assignment', getUsersForAssignment);
 
 export default router;

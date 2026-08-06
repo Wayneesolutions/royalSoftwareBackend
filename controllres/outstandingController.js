@@ -1,11 +1,30 @@
 import Outstanding from '../models/outstanding/outstandingModel.js';
 import Order from '../models/order/orderModel.js';
 import User from '../models/user/userModel.js';
+import Ledger from '../models/ledger/ledgerModel.js';
 import mongoose from 'mongoose';
+
+const getAllChildUserIds = async (parentUserId, companyId) => {
+  const childUserIds = [];
+  const directChildren = await User.find({
+    'hierarchy.parentUserId': parentUserId,
+    'companies.companyId': companyId,
+    isActive: true,
+  }).select('_id');
+  const directChildIds = directChildren.map(c => c._id.toString());
+  childUserIds.push(...directChildIds);
+  for (const childId of directChildIds) {
+    const nested = await getAllChildUserIds(childId, companyId);
+    childUserIds.push(...nested);
+  }
+  return [...new Set(childUserIds)];
+};
 
 // Get outstanding summary and statistics
 export const getOutstandingSummary = async (req, res) => {
   try {
+    const userId = req.user.userId;
+    const userRole = req.user.userDetails.role;
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
     const { status, riskLevel, daysOverdue } = req.query;
 
@@ -16,6 +35,12 @@ export const getOutstandingSummary = async (req, res) => {
     if (daysOverdue) {
       const days = parseInt(daysOverdue);
       filters.daysOverdue = { $gte: days };
+    }
+
+    // Apply hierarchy-based filtering for non-admin roles
+    if (userRole !== 'admin' && userRole !== 'superadmin') {
+      const ledgerGUIDs = await resolveVisibleLedgerGUIDs(userId, userRole, companyId);
+      if (ledgerGUIDs !== null) filters.ledgerguid = { $in: ledgerGUIDs };
     }
 
     // Get summary statistics
@@ -93,9 +118,60 @@ export const getOutstandingSummary = async (req, res) => {
   }
 };
 
+// Returns array of ledger GUIDs visible to the user based on hierarchy.
+// Returns null if user has no dealers (caller should return empty).
+const resolveVisibleLedgerGUIDs = async (userId, userRole, companyId) => {
+  const ledgerGUIDs = new Set();
+
+  if (userRole === 'groupuser') {
+    const currentUser = await User.findById(userId).select('groups assignedDealerIds').lean();
+
+    const activeGroupIds = (currentUser?.groups || [])
+      .filter(g => g.isActive && g.groupId)
+      .map(g => (typeof g.groupId === 'object' ? g.groupId._id : g.groupId))
+      .filter(Boolean);
+
+    if (activeGroupIds.length > 0) {
+      const groupLedgers = await Ledger.find({ groupId: { $in: activeGroupIds }, companyId, isActive: true }).select('LedgerGUID').lean();
+      groupLedgers.forEach(l => l.LedgerGUID && ledgerGUIDs.add(l.LedgerGUID));
+    }
+
+    if (currentUser?.assignedDealerIds?.length > 0) {
+      const assignedLedgers = await Ledger.find({ _id: { $in: currentUser.assignedDealerIds }, companyId, isActive: true }).select('LedgerGUID').lean();
+      assignedLedgers.forEach(l => l.LedgerGUID && ledgerGUIDs.add(l.LedgerGUID));
+    }
+
+    const childUserIds = await getAllChildUserIds(userId, companyId);
+    if (childUserIds.length > 0) {
+      const childUsers = await User.find({ _id: { $in: childUserIds }, isActive: true }).select('groups assignedDealerIds').lean();
+      for (const child of childUsers) {
+        const childGroupIds = (child.groups || []).filter(g => g.isActive && g.groupId)
+          .map(g => (typeof g.groupId === 'object' ? g.groupId._id : g.groupId)).filter(Boolean);
+        if (childGroupIds.length > 0) {
+          const cl = await Ledger.find({ groupId: { $in: childGroupIds }, companyId, isActive: true }).select('LedgerGUID').lean();
+          cl.forEach(l => l.LedgerGUID && ledgerGUIDs.add(l.LedgerGUID));
+        }
+        if (child.assignedDealerIds?.length > 0) {
+          const al = await Ledger.find({ _id: { $in: child.assignedDealerIds }, companyId, isActive: true }).select('LedgerGUID').lean();
+          al.forEach(l => l.LedgerGUID && ledgerGUIDs.add(l.LedgerGUID));
+        }
+      }
+    }
+  } else {
+    const childUserIds = await getAllChildUserIds(userId, companyId);
+    const allUserIds = [userId, ...childUserIds].map(id => new mongoose.Types.ObjectId(id));
+    const createdLedgers = await Ledger.find({ createdBy: { $in: allUserIds }, companyId, isActive: true }).select('LedgerGUID').lean();
+    createdLedgers.forEach(l => l.LedgerGUID && ledgerGUIDs.add(l.LedgerGUID));
+  }
+
+  return ledgerGUIDs.size > 0 ? Array.from(ledgerGUIDs) : null;
+};
+
 // Get outstanding list with filters and pagination
 export const getOutstandingList = async (req, res) => {
   try {
+    const userId = req.user.userId;
+    const userRole = req.user.userDetails.role;
     const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
     const {
       page = 1,
@@ -111,6 +187,20 @@ export const getOutstandingList = async (req, res) => {
 
     // Build filter query
     let filters = { companyId, isActive: true };
+
+    // Apply hierarchy-based filtering for non-admin roles
+    if (userRole !== 'admin' && userRole !== 'superadmin') {
+      const ledgerGUIDs = await resolveVisibleLedgerGUIDs(userId, userRole, companyId);
+      if (ledgerGUIDs === null) {
+        // No dealers found — return empty
+        return res.status(200).json({
+          success: true,
+          data: { outstandingList: [], pagination: { currentPage: 1, totalPages: 0, totalCount: 0, hasNext: false, hasPrev: false } },
+          message: 'Outstanding list retrieved successfully'
+        });
+      }
+      filters.ledgerguid = { $in: ledgerGUIDs };
+    }
     
     if (status) filters.status = status;
     if (riskLevel) filters.riskLevel = riskLevel;
@@ -451,6 +541,76 @@ export const generateOutstandingFromOrder = async (orderId, companyId) => {
   } catch (error) {
     console.error('Error generating outstanding from order:', error);
     return null;
+  }
+};
+
+// Get outstanding grouped by party for hierarchy view (role-filtered)
+export const getOutstandingHierarchy = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const userRole = req.user.userDetails.role;
+    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+
+    let filter = { companyId, isActive: true };
+
+    if (userRole !== 'admin' && userRole !== 'superadmin') {
+      const ledgerGUIDs = await resolveVisibleLedgerGUIDs(userId, userRole, companyId);
+      if (!ledgerGUIDs) {
+        return res.json({
+          success: true,
+          data: { parties: [], summary: { totalParties: 0, totalOutstanding: 0, totalInvoices: 0 } }
+        });
+      }
+      filter.ledgerguid = { $in: ledgerGUIDs };
+    }
+
+    const outstanding = await Outstanding.find(filter).sort({ partyName: 1, dueDate: 1 }).lean();
+
+    const partyMap = new Map();
+    for (const entry of outstanding) {
+      const key = entry.partyName || 'Unknown';
+      if (!partyMap.has(key)) {
+        partyMap.set(key, {
+          partyName: key,
+          partyType: entry.partyType || 'dealer',
+          totalOutstanding: 0,
+          invoiceCount: 0,
+          maxOverdueDays: 0,
+          overdueCount: 0,
+          invoices: [],
+        });
+      }
+      const party = partyMap.get(key);
+      party.totalOutstanding += entry.outstandingAmount || 0;
+      party.invoiceCount += 1;
+      if ((entry.daysOverdue || 0) > 0) party.overdueCount += 1;
+      party.maxOverdueDays = Math.max(party.maxOverdueDays, entry.daysOverdue || 0);
+      party.invoices.push({
+        _id: entry._id,
+        outstandingId: entry.outstandingId,
+        vchnumber: entry.vchnumber,
+        vchdate: entry.vchdate,
+        outstandingAmount: entry.outstandingAmount,
+        totalAmount: entry.totalAmount,
+        paidAmount: entry.paidAmount,
+        dueDate: entry.dueDate,
+        daysOverdue: entry.daysOverdue || 0,
+        status: entry.status,
+        riskLevel: entry.riskLevel,
+      });
+    }
+
+    const parties = Array.from(partyMap.values()).sort((a, b) => b.totalOutstanding - a.totalOutstanding);
+    const totalOutstanding = parties.reduce((sum, p) => sum + p.totalOutstanding, 0);
+    const totalInvoices = parties.reduce((sum, p) => sum + p.invoiceCount, 0);
+
+    return res.json({
+      success: true,
+      data: { parties, summary: { totalParties: parties.length, totalOutstanding, totalInvoices } },
+    });
+  } catch (error) {
+    console.error('Error fetching outstanding hierarchy:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch outstanding hierarchy', error: error.message });
   }
 };
 

@@ -43,6 +43,18 @@ const outstandingSchema = new mongoose.Schema({
   orderDate: {
     type: Date
   },
+  // Tally company/ledger identifiers (for delete-and-replace sync)
+  cmpcode: {
+    type: String,
+    trim: true,
+    index: true,
+  },
+  ledgerguid: {
+    type: String,
+    trim: true,
+    index: true,
+  },
+
   // Tally Voucher Integration
   voucherId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -183,6 +195,7 @@ const outstandingSchema = new mongoose.Schema({
 
 // Indexes for better query performance
 outstandingSchema.index({ companyId: 1, isActive: 1 });
+outstandingSchema.index({ cmpcode: 1, ledgerguid: 1 });
 outstandingSchema.index({ partyId: 1, status: 1 });
 outstandingSchema.index({ orderId: 1 });
 outstandingSchema.index({ dueDate: 1, status: 1 });

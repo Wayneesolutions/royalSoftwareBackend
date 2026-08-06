@@ -28,246 +28,196 @@ import mongoose from 'mongoose';
  * @route   POST /api/v1/tally/outstanding/sync
  * @access  Public (No auth - Tally integration)
  */
+// Build outstanding payload from a raw data record
+const buildOutstandingPayload = (data, company, ledger, voucher, createdById) => {
+  const totalAmount = parseFloat(data.totalAmount) || parseFloat(data.outstandingAmount) || 0;
+  const paidAmount = parseFloat(data.paidAmount) || 0;
+  const outstandingAmount = parseFloat(data.outstandingAmount) || (totalAmount - paidAmount);
+
+  let dueDate = new Date();
+  if (data.dueDate) {
+    dueDate = new Date(data.dueDate);
+  } else if (data.vchdate) {
+    dueDate = new Date(data.vchdate);
+    dueDate.setDate(dueDate.getDate() + (parseInt(data.paymentDays) || 30));
+  } else if (voucher?.vchdate) {
+    dueDate = new Date(voucher.vchdate);
+    dueDate.setDate(dueDate.getDate() + 30);
+  }
+
+  const today = new Date();
+  const daysOverdue = Math.max(0, Math.ceil((today - dueDate) / (1000 * 60 * 60 * 24)));
+
+  let status = 'pending';
+  if (outstandingAmount <= 0) status = 'paid';
+  else if (daysOverdue > 0) status = 'overdue';
+  else if (paidAmount > 0 && paidAmount < totalAmount) status = 'partially_paid';
+
+  let riskLevel = 'low';
+  if (daysOverdue > 90) riskLevel = 'critical';
+  else if (daysOverdue > 60) riskLevel = 'high';
+  else if (daysOverdue > 30) riskLevel = 'medium';
+
+  const cmpcode = data.cmpcode.trim().toUpperCase();
+  const outstandingId = data.outstandingId ||
+    `OUT-${cmpcode}-${data.vchguid || data.ledgerguid}-${Date.now()}`;
+
+  return {
+    outstandingId,
+    cmpcode,
+    ledgerguid: data.ledgerguid,
+    companyId: company._id,
+    partyId: ledger?._id || null,
+    partyName: ledger?.LedgerName || data.partyName || data.ledgerguid || 'Unknown',
+    partyType: data.partyType || 'dealer',
+    partyContact: {
+      mobile: ledger?.LedgerMobile || data.partyMobile || '',
+      email: ledger?.Email || data.partyEmail || '',
+      address: ledger?.LedgerAddress1 || data.partyAddress || '',
+    },
+    voucherId: voucher?._id || null,
+    vchguid: data.vchguid || null,
+    vchnumber: data.vchnumber || voucher?.vchnumber || null,
+    vchdate: data.vchdate ? new Date(data.vchdate) : (voucher?.vchdate || new Date()),
+    totalAmount,
+    paidAmount,
+    outstandingAmount,
+    currency: data.currency || 'INR',
+    paymentTerms: normalizePaymentTerms(data.paymentTerms),
+    dueDate,
+    creditLimit: parseFloat(data.creditLimit) || 0,
+    status,
+    daysOverdue,
+    lastPaymentDate: data.lastPaymentDate ? new Date(data.lastPaymentDate) : null,
+    lastPaymentAmount: parseFloat(data.lastPaymentAmount) || 0,
+    riskLevel,
+    riskFactors: data.riskFactors || [],
+    tallyGUID: data.tallyGUID || data.outstandingId || null,
+    tallySyncStatus: 'synced',
+    tallySyncAt: new Date(),
+    isActive: true,
+    createdBy: createdById,
+  };
+};
+
 export const syncOutstandingFromTally = async (req, res) => {
   try {
-    // Parse body if it's a string (tally routes use text parser)
+    // Parse body
     let body = req.body;
     if (typeof body === 'string') {
-      try {
-        body = JSON.parse(body);
-      } catch (parseError) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid JSON in request body'
-        });
+      try { body = JSON.parse(body); } catch {
+        return res.status(400).json({ success: false, message: 'Invalid JSON in request body' });
       }
     }
 
-    // Support both single object and array
     const outstandingData = Array.isArray(body) ? body : [body];
-    const results = [];
 
+    // Validate required fields upfront
+    const invalid = [];
+    const valid = [];
     for (let i = 0; i < outstandingData.length; i++) {
       const data = outstandingData[i];
-      
+      const missing = ['cmpcode', 'ledgerguid', 'outstandingAmount'].filter(f => !data[f]);
+      if (missing.length > 0) {
+        invalid.push({ index: i, success: false, error: `Missing required fields: ${missing.join(', ')}` });
+      } else {
+        valid.push(data);
+      }
+    }
+
+    // Group valid records by cmpcode + ledgerguid
+    const groups = new Map();
+    for (const data of valid) {
+      const key = `${data.cmpcode.trim().toUpperCase()}::${data.ledgerguid}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(data);
+    }
+
+    const results = [...invalid];
+
+    for (const [, groupItems] of groups) {
+      const cmpcode = groupItems[0].cmpcode.trim().toUpperCase();
+      const ledgerguid = groupItems[0].ledgerguid;
+
       try {
-        // Validate required fields
-        const requiredFields = ['cmpcode', 'ledgerguid', 'vchguid', 'outstandingAmount'];
-        const missingFields = requiredFields.filter(field => !data[field]);
-
-        if (missingFields.length > 0) {
-          results.push({
-            success: false,
-            index: i,
-            error: `Missing required fields: ${missingFields.join(', ')}`,
-            data: null
-          });
-          continue;
-        }
-
-        // Normalize cmpcode to uppercase to match Company.companyCode storage
-        const cmpcode = data.cmpcode.trim().toUpperCase();
-
         // Find company
-        const company = await Company.findOne({
-          companyCode: cmpcode,
-          isActive: true
-        });
-
+        const company = await Company.findOne({ companyCode: cmpcode, isActive: true });
         if (!company) {
-          results.push({
-            success: false,
-            index: i,
-            error: `Company not found for cmpcode: ${cmpcode}`,
-            data: null
-          });
+          results.push({ success: false, cmpcode, ledgerguid, error: `Company not found for cmpcode: ${cmpcode}` });
           continue;
         }
 
-        // Find ledger (optional — don't hard-fail if not synced yet)
-        const ledger = await Ledger.findOne({
-          LedgerGUID: data.ledgerguid,
-          companyId: company._id,
-        });
+        // Find ledger (optional)
+        const ledger = await Ledger.findOne({ LedgerGUID: ledgerguid, companyId: company._id });
 
-        // Find voucher (optional but preferred)
-        let voucher = null;
-        if (data.vchguid) {
-          voucher = await VoucherMaster.findOne({
-            vchguid: data.vchguid,
-            cmpcode: company.companyCode,
-            isActive: true
-          });
+        // Find admin user for createdBy (looked up once per group)
+        const adminUser = await User.findOne({
+          role: 'admin',
+          'companies.companyId': company._id,
+          isActive: true,
+        }).select('_id');
+        const createdById = adminUser?._id || company._id;
+
+        // DELETE all previous outstanding for this ledger + company
+        const { deletedCount } = await Outstanding.deleteMany({ cmpcode, ledgerguid });
+
+        // INSERT fresh records
+        let insertedCount = 0;
+        const errors = [];
+
+        for (const data of groupItems) {
+          try {
+            // Optional voucher lookup
+            const voucher = data.vchguid
+              ? await VoucherMaster.findOne({ vchguid: data.vchguid, cmpcode: company.companyCode, isActive: true })
+              : null;
+
+            const payload = buildOutstandingPayload(data, company, ledger, voucher, createdById);
+            await Outstanding.create(payload);
+            insertedCount++;
+          } catch (err) {
+            errors.push({ vchguid: data.vchguid, error: err.message });
+          }
         }
 
-        // Calculate outstanding amount
-        const totalAmount = parseFloat(data.totalAmount) || parseFloat(data.outstandingAmount) || 0;
-        const paidAmount = parseFloat(data.paidAmount) || 0;
-        const outstandingAmount = parseFloat(data.outstandingAmount) || (totalAmount - paidAmount);
-
-        // Calculate due date
-        let dueDate = new Date();
-        if (data.dueDate) {
-          dueDate = new Date(data.dueDate);
-        } else if (data.vchdate) {
-          const vchDate = new Date(data.vchdate);
-          const paymentDays = parseInt(data.paymentDays) || 30;
-          dueDate = new Date(vchDate);
-          dueDate.setDate(dueDate.getDate() + paymentDays);
-        } else if (voucher && voucher.vchdate) {
-          const vchDate = new Date(voucher.vchdate);
-          dueDate = new Date(vchDate);
-          dueDate.setDate(dueDate.getDate() + 30); // Default 30 days
-        }
-
-        // Calculate days overdue
-        const today = new Date();
-        const daysOverdue = Math.max(0, Math.ceil((today - dueDate) / (1000 * 60 * 60 * 24)));
-
-        // Determine status
-        let status = 'pending';
-        if (outstandingAmount <= 0) {
-          status = 'paid';
-        } else if (daysOverdue > 0) {
-          status = 'overdue';
-        } else if (paidAmount > 0 && paidAmount < totalAmount) {
-          status = 'partially_paid';
-        }
-
-        // Determine risk level
-        let riskLevel = 'low';
-        if (daysOverdue > 90) {
-          riskLevel = 'critical';
-        } else if (daysOverdue > 60) {
-          riskLevel = 'high';
-        } else if (daysOverdue > 30) {
-          riskLevel = 'medium';
-        }
-
-        // Generate outstanding ID
-        const outstandingId = data.outstandingId || `OUT-${data.cmpcode}-${data.vchguid || data.ledgerguid}-${Date.now()}`;
-
-        // Check if outstanding already exists
-        const existingOutstanding = await Outstanding.findOne({
-          $or: [
-            { outstandingId },
-            { vchguid: data.vchguid, ledgerguid: data.ledgerguid, cmpcode: data.cmpcode }
-          ],
-          isActive: true
-        });
-
-        const outstandingPayload = {
-          outstandingId,
-          companyId: company._id,
-          partyId: ledger ? ledger._id : null,
-          partyName: (ledger ? ledger.LedgerName : null) || data.partyName || data.ledgerguid || 'Unknown',
-          partyType: data.partyType || 'dealer',
-          partyContact: {
-            mobile: (ledger ? ledger.LedgerMobile : null) || data.partyMobile || '',
-            email: (ledger ? ledger.Email : null) || data.partyEmail || '',
-            address: (ledger ? ledger.LedgerAddress1 : null) || data.partyAddress || ''
-          },
-          voucherId: voucher ? voucher._id : null,
-          vchguid: data.vchguid || null,
-          vchnumber: data.vchnumber || (voucher ? voucher.vchnumber : null),
-          vchdate: data.vchdate ? new Date(data.vchdate) : (voucher ? voucher.vchdate : new Date()),
-          totalAmount,
-          paidAmount,
-          outstandingAmount,
-          currency: data.currency || 'INR',
-          paymentTerms: normalizePaymentTerms(data.paymentTerms),
-          dueDate,
-          creditLimit: parseFloat(data.creditLimit) || 0,
-          status,
-          daysOverdue,
-          lastPaymentDate: data.lastPaymentDate ? new Date(data.lastPaymentDate) : null,
-          lastPaymentAmount: parseFloat(data.lastPaymentAmount) || 0,
-          riskLevel,
-          riskFactors: data.riskFactors || [],
-          tallyGUID: data.tallyGUID || data.outstandingId,
-          tallySyncStatus: 'synced',
-          tallySyncAt: new Date(),
-          isActive: true
-        };
-
-        let savedOutstanding;
-        if (existingOutstanding) {
-          // Update existing
-          Object.assign(existingOutstanding, outstandingPayload);
-          savedOutstanding = await existingOutstanding.save();
-          results.push({
-            success: true,
-            index: i,
-            action: 'Updated',
-            data: {
-              _id: savedOutstanding._id,
-              outstandingId: savedOutstanding.outstandingId,
-              partyName: savedOutstanding.partyName,
-              outstandingAmount: savedOutstanding.outstandingAmount,
-              status: savedOutstanding.status
-            }
-          });
-        } else {
-          // Create new
-          // For Tally sync, we need a createdBy - use first admin or system user
-          const adminUser = await User.findOne({
-            role: 'admin',
-            'companies.companyId': company._id,
-            isActive: true
-          }).select('_id');
-
-          outstandingPayload.createdBy = adminUser ? adminUser._id : company._id;
-          
-          savedOutstanding = await Outstanding.create(outstandingPayload);
-          results.push({
-            success: true,
-            index: i,
-            action: 'Created',
-            data: {
-              _id: savedOutstanding._id,
-              outstandingId: savedOutstanding.outstandingId,
-              partyName: savedOutstanding.partyName,
-              outstandingAmount: savedOutstanding.outstandingAmount,
-              status: savedOutstanding.status
-            }
-          });
-        }
-
-      } catch (error) {
-        console.error(`Error processing outstanding entry ${i}:`, error);
         results.push({
-          success: false,
-          index: i,
-          error: error.message,
-          data: null
+          success: errors.length === 0,
+          cmpcode,
+          ledgerguid,
+          partyName: ledger?.LedgerName || ledgerguid,
+          deleted: deletedCount,
+          inserted: insertedCount,
+          errors: errors.length > 0 ? errors : undefined,
         });
+
+      } catch (err) {
+        results.push({ success: false, cmpcode, ledgerguid, error: err.message });
       }
     }
 
     const successCount = results.filter(r => r.success).length;
     const failedCount = results.filter(r => !r.success).length;
+    const statusCode = failedCount === 0 ? 200 : successCount > 0 ? 207 : 400;
 
-    const statusCode = failedCount === 0 ? 200 : (successCount > 0 ? 207 : 400);
-
-    res.status(statusCode).json({
+    return res.status(statusCode).json({
       success: failedCount === 0,
       message: `Outstanding sync completed. Success: ${successCount}, Failed: ${failedCount}`,
       data: {
         results,
         summary: {
-          totalProcessed: results.length,
+          totalGroups: groups.size,
           totalSuccess: successCount,
-          totalFailed: failedCount
-        }
-      }
+          totalFailed: failedCount,
+        },
+      },
     });
 
   } catch (error) {
     console.error('❌ Error syncing outstanding from Tally:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Failed to sync outstanding from Tally',
-      error: error.message
+      error: error.message,
     });
   }
 };

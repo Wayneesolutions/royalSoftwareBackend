@@ -1,5 +1,6 @@
 import Company from '../models/company/companyModel.js';
 import PriceList from '../models/pricelist/priceListModel.js';
+import Ledger from '../models/ledger/ledgerModel.js';
 import { XMLParser } from 'fast-xml-parser';
 
 const normalizeString = (value, fallback = '') => {
@@ -227,7 +228,21 @@ export const upsertPriceListFromTally = async (req, res) => {
         { upsert: true, new: true, runValidators: true }
       );
 
-      results.push({ success: true, itemguid, plname });
+      // If LedgerGUID is provided, update that ledger's Other1 with the price list name
+      const ledgerGuid = normalizeGuid(
+        item.LedgerGUID || item.ledgerGUID || item.ledger_guid || item.LedgerGuid
+      );
+      if (ledgerGuid) {
+        await Ledger.findOneAndUpdate(
+          {
+            LedgerGUID: ledgerGuid,
+            $or: [{ cmpcode }, { companyId: company._id }],
+          },
+          { $set: { Other1: plname } }
+        );
+      }
+
+      results.push({ success: true, itemguid, plname, ledgerUpdated: !!ledgerGuid });
     }
 
     const failures = results.filter((r) => !r.success);

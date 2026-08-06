@@ -455,13 +455,16 @@ export const addTransaction = async (req, res) => {
       });
     }
 
-    // Calculate new balance
-    let newBalance = ledger.currentBalance;
-    if (transactionType === 'debit') {
-      newBalance += amount;
-    } else if (transactionType === 'credit') {
-      newBalance -= amount;
+    // Calculate running balance from opening + all previous transactions
+    const previousTransactions = await LedgerTransaction.find({ ledgerId, companyId });
+    let runningBalance = ledger.LedgerOpening || 0;
+    for (const txn of previousTransactions) {
+      if (txn.transactionType === 'debit') runningBalance += txn.amount || 0;
+      else if (txn.transactionType === 'credit') runningBalance -= txn.amount || 0;
     }
+    const newBalance = transactionType === 'debit'
+      ? runningBalance + amount
+      : runningBalance - amount;
 
     // Create transaction
     const transaction = new LedgerTransaction({
@@ -484,9 +487,6 @@ export const addTransaction = async (req, res) => {
     });
 
     await transaction.save();
-
-    // Update ledger balance
-    await ledger.updateBalance(amount, transactionType);
 
     // Populate transaction
     await transaction.populate([
