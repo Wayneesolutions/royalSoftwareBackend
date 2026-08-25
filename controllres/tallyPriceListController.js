@@ -228,17 +228,22 @@ export const upsertPriceListFromTally = async (req, res) => {
         { upsert: true, new: true, runValidators: true }
       );
 
-      // If LedgerGUID is provided, update that ledger's Other1 with the price list name
+      // If LedgerGUID is provided, update dealer master: Other1 = plname, Other2 = discount
       const ledgerGuid = normalizeGuid(
         item.LedgerGUID || item.ledgerGUID || item.ledger_guid || item.LedgerGuid
       );
       if (ledgerGuid) {
+        const ledgerUpdate = { Other1: plname };
+        const discount = item.discount ?? item.Discount ?? item.other2 ?? item.Other2;
+        if (discount !== undefined && discount !== null) {
+          ledgerUpdate.Other2 = normalizeString(discount);
+        }
         await Ledger.findOneAndUpdate(
           {
             LedgerGUID: ledgerGuid,
             $or: [{ cmpcode }, { companyId: company._id }],
           },
-          { $set: { Other1: plname } }
+          { $set: ledgerUpdate }
         );
       }
 
