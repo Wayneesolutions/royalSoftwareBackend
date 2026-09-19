@@ -5352,6 +5352,15 @@ tallyRoute.get('/dispatch/admin', getDispatchForAdmin);
  *                 format: date
  *               plrate:
  *                 type: number
+ *               LedgerGUID:
+ *                 type: string
+ *                 description: Dealer's LedgerGUID — if provided, updates Ledger.Other1/Other2/Other3
+ *               discount:
+ *                 type: string
+ *                 description: Dealer discount saved to Ledger.Other2 (e.g. "-10")
+ *               other3:
+ *                 type: string
+ *                 description: Sub-dealer price list name saved to Ledger.Other3 (e.g. "Sub Dealer Rate")
  *               other1:
  *                 type: string
  *               other2:

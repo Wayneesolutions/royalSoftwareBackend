@@ -228,7 +228,7 @@ export const upsertPriceListFromTally = async (req, res) => {
         { upsert: true, new: true, runValidators: true }
       );
 
-      // If LedgerGUID is provided, update dealer master: Other1 = plname, Other2 = discount
+      // If LedgerGUID is provided, update dealer master Other fields
       const ledgerGuid = normalizeGuid(
         item.LedgerGUID || item.ledgerGUID || item.ledger_guid || item.LedgerGuid
       );
@@ -237,6 +237,10 @@ export const upsertPriceListFromTally = async (req, res) => {
         const discount = item.discount ?? item.Discount ?? item.other2 ?? item.Other2;
         if (discount !== undefined && discount !== null) {
           ledgerUpdate.Other2 = normalizeString(discount);
+        }
+        const subDealerPlName = item.other3 ?? item.Other3;
+        if (subDealerPlName !== undefined && subDealerPlName !== null) {
+          ledgerUpdate.Other3 = normalizeString(subDealerPlName);
         }
         await Ledger.findOneAndUpdate(
           {
