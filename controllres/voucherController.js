@@ -549,7 +549,261 @@ export const getVoucherWithEntries = async (req, res) => {
  * @desc    Create or update voucher with ledger entries and inventory entries (Combined API)
  * @route   POST /api/v1/tally/vouchers/sync-complete
  * @access  Public (No auth - Tally integration)
+ *
+ * Accepts two body formats:
+ *   1. Array (Tally flat format): [{ cmpcode, vchguid, ..., ledgerEntries: [...], inventoryEntries: [...] }, ...]
+ *   2. Legacy object format:      { voucher: {...}, ledgerEntries: [...], inventoryEntries: [...] }
  */
+
+// Parse Tally date strings like "07/May/2026 00:00:00" or any ISO-compatible string
+const parseTallyDate = (dateStr) => {
+  if (!dateStr) return null;
+  const d = new Date(dateStr);
+  if (!isNaN(d.getTime())) return d;
+  // Handle "DD/MMM/YYYY ..." format e.g. "07/May/2026 00:00:00"
+  const m = dateStr.match(/^(\d{1,2})\/([A-Za-z]{3})\/(\d{4})/);
+  if (m) return new Date(`${m[2]} ${m[1]}, ${m[3]}`);
+  return null;
+};
+
+const processSingleVoucher = async (voucher, ledgerEntries, inventoryEntries) => {
+  const results = {
+    voucher: { success: false, action: null, error: null, data: null },
+    ledgerEntries: { success: [], failed: [], totalProcessed: 0, totalSuccess: 0, totalFailed: 0 },
+    inventoryEntries: { success: [], failed: [], totalProcessed: 0, totalSuccess: 0, totalFailed: 0 }
+  };
+
+  // Validate required fields
+  const requiredVoucherFields = ['cmpcode', 'vchguid', 'vchnumber', 'vchdate', 'vchtype', 'vchpartyguid', 'vchamount'];
+  const missingVoucherFields = requiredVoucherFields.filter(field => voucher[field] == null || voucher[field] === '');
+  if (missingVoucherFields.length > 0) {
+    results.voucher.error = `Missing required voucher fields: ${missingVoucherFields.join(', ')}`;
+    return results;
+  }
+
+  const vchDate = parseTallyDate(voucher.vchdate);
+  if (!vchDate) {
+    results.voucher.error = `Invalid vchdate format: "${voucher.vchdate}". Expected formats: ISO date or "DD/MMM/YYYY HH:MM:SS"`;
+    return results;
+  }
+
+  // Step 1: Company lookup
+  const company = await Company.findOne({ companyCode: voucher.cmpcode, isActive: true });
+  if (!company) {
+    results.voucher.error = `Company not found or inactive for cmpcode: ${voucher.cmpcode}`;
+    return results;
+  }
+
+  // Step 2: Party ledger lookup
+  const ledger = await Ledger.findOne({
+    LedgerGUID: voucher.vchpartyguid,
+    cmpcode: voucher.cmpcode,
+    companyId: company._id,
+    isActive: true
+  });
+  if (!ledger) {
+    results.voucher.error = `Ledger/Dealer not found or inactive for LedgerGUID: ${voucher.vchpartyguid} in company: ${voucher.cmpcode}`;
+    return results;
+  }
+
+  // Step 3: Create or update VoucherMaster
+  try {
+    const existingVoucher = await VoucherMaster.findOne({ vchguid: voucher.vchguid, cmpcode: voucher.cmpcode });
+
+    const voucherPayload = {
+      companyguid: company.CompanyGuid || company.companyCode,
+      cmpcode: voucher.cmpcode,
+      companyId: company._id,
+      vchguid: voucher.vchguid,
+      vchnumber: voucher.vchnumber,
+      vchdate: vchDate,
+      vchtype: voucher.vchtype,
+      vchtypeparent: voucher.vchtypeparent || '',
+      vchpartyguid: voucher.vchpartyguid,
+      ledgerId: ledger._id,
+      vchpartyname: voucher.vchpartyname || ledger.LedgerName,
+      vchpartyadd1: voucher.vchpartyadd1 || ledger.LedgerAddress1 || '',
+      vchpartyadd2: voucher.vchpartyadd2 || ledger.LedgerAddress2 || '',
+      vchpartyadd3: voucher.vchpartyadd3 || ledger.LedgerAddress3 || '',
+      vchpartygstin: voucher.vchpartygstin || ledger.LedgerGSTIN || '',
+      vchsubdealername: voucher.vchsubdealername || '',
+      vchsubdealeradd1: voucher.vchsubdealeradd1 || '',
+      vchsubdealeradd2: voucher.vchsubdealeradd2 || '',
+      vchsubdealeradd3: voucher.vchsubdealeradd3 || '',
+      isinvoice: voucher.isinvoice || 'No',
+      vchgrno: voucher.vchgrno || '',
+      vchtransport: voucher.vchtransport || '',
+      vchtruckno: voucher.vchtruckno || '',
+      vchdrivername: voucher.vchdrivername || '',
+      vchdrivermobile: voucher.vchdrivermobile || '',
+      vchdestination: voucher.vchdestination || '',
+      vchpymtterms: voucher.vchpymtterms || '',
+      vchotherref: voucher.vchotherref || '',
+      vchqtunit: voucher.vchqtunit || '',
+      vchqtunit2: voucher.vchqtunit2 || '',
+      vchgoodsamt: parseFloat(voucher.vchgoodsamt) || 0,
+      vchamount: parseFloat(voucher.vchamount) || 0,
+      vchnarration: voucher.vchnarration || '',
+      remarks: voucher.remarks || '',
+      other1: voucher.other1 || '',
+      other2: voucher.other2 || '',
+      other3: voucher.other3 || '',
+      other4: voucher.other4 || '',
+      other5: voucher.other5 || '',
+      other6: voucher.other6 || '',
+      other7: voucher.other7 || '',
+      other8: voucher.other8 || '',
+      other9: voucher.other9 || '',
+      other10: voucher.other10 || '',
+      isActive: true
+    };
+
+    let savedVoucher;
+    if (existingVoucher) {
+      Object.assign(existingVoucher, voucherPayload);
+      savedVoucher = await existingVoucher.save();
+      results.voucher.action = 'Updated';
+    } else {
+      savedVoucher = await VoucherMaster.create(voucherPayload);
+      results.voucher.action = 'Created';
+    }
+
+    results.voucher.success = true;
+    results.voucher.data = {
+      _id: savedVoucher._id,
+      vchguid: savedVoucher.vchguid,
+      vchnumber: savedVoucher.vchnumber,
+      vchtype: savedVoucher.vchtype,
+      vchdate: savedVoucher.vchdate,
+      vchamount: savedVoucher.vchamount
+    };
+
+    console.log(`✅ Voucher ${results.voucher.action}: ${savedVoucher.vchnumber} (${savedVoucher._id})`);
+
+    // Step 4: Process ledger entries
+    if (Array.isArray(ledgerEntries) && ledgerEntries.length > 0) {
+      for (let i = 0; i < ledgerEntries.length; i++) {
+        const entryData = ledgerEntries[i];
+        results.ledgerEntries.totalProcessed++;
+        try {
+          if (!entryData.ledgerguid || entryData.ledgeramount == null) {
+            results.ledgerEntries.failed.push({ index: i, ledgerguid: entryData.ledgerguid || 'N/A', error: 'Missing ledgerguid or ledgeramount' });
+            results.ledgerEntries.totalFailed++;
+            continue;
+          }
+
+          const entryLedger = await Ledger.findOne({
+            LedgerGUID: entryData.ledgerguid,
+            cmpcode: voucher.cmpcode,
+            companyId: company._id,
+            isActive: true
+          });
+
+          if (!entryLedger) {
+            results.ledgerEntries.failed.push({ index: i, ledgerguid: entryData.ledgerguid, error: `Ledger not found for ledgerguid: ${entryData.ledgerguid}` });
+            results.ledgerEntries.totalFailed++;
+            continue;
+          }
+
+          const existingEntry = await LedgerEntries.findOne({ vchguid: voucher.vchguid, ledgerguid: entryData.ledgerguid, cmpcode: voucher.cmpcode });
+
+          const entryPayload = {
+            cmpcode: voucher.cmpcode,
+            companyId: company._id,
+            vchguid: voucher.vchguid,
+            voucherId: savedVoucher._id,
+            ledgerguid: entryData.ledgerguid,
+            ledgerId: entryLedger._id,
+            ledgeramount: parseFloat(entryData.ledgeramount) || 0,
+            other1: entryData.other1 || '',
+            other2: entryData.other2 || '',
+            other3: entryData.other3 || '',
+            other4: entryData.other4 || '',
+            other5: entryData.other5 || '',
+            isActive: true
+          };
+
+          let savedEntry;
+          if (existingEntry) {
+            Object.assign(existingEntry, entryPayload);
+            savedEntry = await existingEntry.save();
+          } else {
+            savedEntry = await LedgerEntries.create(entryPayload);
+          }
+
+          results.ledgerEntries.success.push({ index: i, _id: savedEntry._id, ledgerguid: entryData.ledgerguid, ledgerName: entryLedger.LedgerName, action: existingEntry ? 'Updated' : 'Created', amount: savedEntry.ledgeramount });
+          results.ledgerEntries.totalSuccess++;
+
+        } catch (entryError) {
+          results.ledgerEntries.failed.push({ index: i, ledgerguid: entryData.ledgerguid || 'N/A', error: entryError.message });
+          results.ledgerEntries.totalFailed++;
+        }
+      }
+    }
+
+    // Step 5: Process inventory entries
+    if (Array.isArray(inventoryEntries) && inventoryEntries.length > 0) {
+      for (let i = 0; i < inventoryEntries.length; i++) {
+        const entryData = inventoryEntries[i];
+        results.inventoryEntries.totalProcessed++;
+        try {
+          if (!entryData.itemguid || entryData.itemamount == null) {
+            results.inventoryEntries.failed.push({ index: i, itemguid: entryData.itemguid || 'N/A', error: 'Missing itemguid or itemamount' });
+            results.inventoryEntries.totalFailed++;
+            continue;
+          }
+
+          const existingEntry = await InventoryEntries.findOne({ vchguid: voucher.vchguid, itemguid: entryData.itemguid, cmpcode: voucher.cmpcode });
+
+          const entryPayload = {
+            cmpcode: voucher.cmpcode,
+            companyId: company._id,
+            vchguid: voucher.vchguid,
+            voucherId: savedVoucher._id,
+            itemguid: entryData.itemguid,
+            itemmainqty: parseFloat(entryData.itemmainqty) || 0,
+            itemaltqty: parseFloat(entryData.itemaltqty) || 0,
+            itemmainunit: entryData.itemmainunit || '',
+            itemaltunit: entryData.itemaltunit || '',
+            itemrate: parseFloat(entryData.itemrate) || 0,
+            itemrateunit: entryData.itemrateunit || '',
+            itemdisc: parseFloat(entryData.itemdisc) || 0,
+            itemamount: parseFloat(entryData.itemamount) || 0,
+            itemdescription: entryData.itemdescription || '',
+            other1: entryData.other1 || '',
+            other2: entryData.other2 || '',
+            other3: entryData.other3 || '',
+            other4: entryData.other4 || '',
+            other5: entryData.other5 || '',
+            isActive: true
+          };
+
+          let savedEntry;
+          if (existingEntry) {
+            Object.assign(existingEntry, entryPayload);
+            savedEntry = await existingEntry.save();
+          } else {
+            savedEntry = await InventoryEntries.create(entryPayload);
+          }
+
+          results.inventoryEntries.success.push({ index: i, _id: savedEntry._id, itemguid: entryData.itemguid, action: existingEntry ? 'Updated' : 'Created', quantity: savedEntry.itemmainqty, amount: savedEntry.itemamount });
+          results.inventoryEntries.totalSuccess++;
+
+        } catch (entryError) {
+          results.inventoryEntries.failed.push({ index: i, itemguid: entryData.itemguid || 'N/A', error: entryError.message });
+          results.inventoryEntries.totalFailed++;
+        }
+      }
+    }
+
+  } catch (voucherError) {
+    results.voucher.error = voucherError.message;
+    console.error(`❌ Error saving voucher ${voucher.vchnumber}:`, voucherError.message);
+  }
+
+  return results;
+};
+
 export const syncVoucherComplete = async (req, res) => {
   try {
     // Parse body if it's a string (tally routes use text parser)
@@ -558,378 +812,53 @@ export const syncVoucherComplete = async (req, res) => {
       try {
         body = JSON.parse(body);
       } catch (parseError) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid JSON in request body'
-        });
+        return res.status(400).json({ success: false, message: 'Invalid JSON in request body' });
       }
     }
 
-    const { voucher, ledgerEntries = [], inventoryEntries = [] } = body;
-
-    // Validate voucher data
-    if (!voucher) {
-      return res.status(400).json({
-        success: false,
-        message: 'Voucher data is required'
-      });
+    // Normalize to array of { voucher, ledgerEntries, inventoryEntries }
+    let items = [];
+    if (Array.isArray(body)) {
+      // Tally flat array format: each element IS the voucher, with embedded entries
+      items = body.map(item => ({
+        voucher: item,
+        ledgerEntries: Array.isArray(item.ledgerEntries) ? item.ledgerEntries : [],
+        inventoryEntries: Array.isArray(item.inventoryEntries) ? item.inventoryEntries : []
+      }));
+    } else if (body && typeof body === 'object' && body.voucher) {
+      // Legacy single-object format: { voucher: {...}, ledgerEntries: [...], inventoryEntries: [...] }
+      items = [{
+        voucher: body.voucher,
+        ledgerEntries: Array.isArray(body.ledgerEntries) ? body.ledgerEntries : [],
+        inventoryEntries: Array.isArray(body.inventoryEntries) ? body.inventoryEntries : []
+      }];
+    } else {
+      return res.status(400).json({ success: false, message: 'Voucher data is required. Send an array or { voucher, ledgerEntries, inventoryEntries }' });
     }
 
-    const requiredVoucherFields = ['cmpcode', 'vchguid', 'vchnumber', 'vchdate', 'vchtype', 'vchpartyguid', 'vchamount'];
-    const missingVoucherFields = requiredVoucherFields.filter(field => !voucher[field]);
-
-    if (missingVoucherFields.length > 0) {
-      return res.status(400).json({
-        success: false,
-        message: `Missing required voucher fields: ${missingVoucherFields.join(', ')}`
-      });
+    if (items.length === 0) {
+      return res.status(400).json({ success: false, message: 'No vouchers to process' });
     }
 
-    console.log(`📥 Syncing complete voucher: ${voucher.vchnumber} with ${ledgerEntries.length} ledger entries and ${inventoryEntries.length} inventory entries`);
+    console.log(`📥 sync-complete: processing ${items.length} voucher(s)`);
 
-    const results = {
-      voucher: { success: false, action: null, error: null, data: null },
-      ledgerEntries: {
-        success: [],
-        failed: [],
-        totalProcessed: 0,
-        totalSuccess: 0,
-        totalFailed: 0
-      },
-      inventoryEntries: {
-        success: [],
-        failed: [],
-        totalProcessed: 0,
-        totalSuccess: 0,
-        totalFailed: 0
-      }
-    };
+    const allResults = [];
+    for (const { voucher, ledgerEntries, inventoryEntries } of items) {
+      const result = await processSingleVoucher(voucher, ledgerEntries, inventoryEntries);
+      allResults.push({ vchguid: voucher.vchguid, vchnumber: voucher.vchnumber, ...result });
+    }
 
-    // Step 1: Validate and fetch company
-    const company = await Company.findOne({
-      companyCode: voucher.cmpcode,
-      isActive: true
+    const totalSuccess = allResults.filter(r => r.voucher.success).length;
+    const totalFailed = allResults.length - totalSuccess;
+    const hasPartialFailures = allResults.some(r => r.ledgerEntries.totalFailed > 0 || r.inventoryEntries.totalFailed > 0);
+
+    const httpStatus = totalFailed === allResults.length ? 500 : (hasPartialFailures || totalFailed > 0 ? 207 : 200);
+
+    res.status(httpStatus).json({
+      success: totalFailed === 0,
+      message: `Sync completed. Vouchers: ${totalSuccess} succeeded, ${totalFailed} failed`,
+      data: allResults.length === 1 ? allResults[0] : allResults
     });
-
-    if (!company) {
-      return res.status(404).json({
-        success: false,
-        message: `Company not found or inactive for cmpcode: ${voucher.cmpcode}`
-      });
-    }
-
-    console.log(`✅ Company found: ${company.companyName} (${company._id})`);
-
-    // Step 2: Validate and fetch ledger (dealer)
-    const ledger = await Ledger.findOne({
-      LedgerGUID: voucher.vchpartyguid,
-      cmpcode: voucher.cmpcode,
-      companyId: company._id,
-      isActive: true
-    });
-
-    if (!ledger) {
-      return res.status(404).json({
-        success: false,
-        message: `Ledger/Dealer not found or inactive for LedgerGUID: ${voucher.vchpartyguid} in company: ${voucher.cmpcode}`
-      });
-    }
-
-    console.log(`✅ Ledger found: ${ledger.LedgerName} (${ledger._id})`);
-
-    // Step 3: Create or update voucher
-    try {
-      let existingVoucher = await VoucherMaster.findOne({
-        vchguid: voucher.vchguid,
-        cmpcode: voucher.cmpcode
-      });
-
-      const voucherPayload = {
-        companyguid: company.CompanyGuid || company.companyCode,
-        cmpcode: voucher.cmpcode,
-        companyId: company._id,
-        vchguid: voucher.vchguid,
-        vchnumber: voucher.vchnumber,
-        vchdate: new Date(voucher.vchdate),
-        vchtype: voucher.vchtype,
-        vchtypeparent: voucher.vchtypeparent || '',
-        vchpartyguid: voucher.vchpartyguid,
-        vchpartyname: voucher.vchpartyname || ledger.LedgerName,
-        vchpartyadd1: voucher.vchpartyadd1 || ledger.LedgerAddress1 || '',
-        vchpartyadd2: voucher.vchpartyadd2 || ledger.LedgerAddress2 || '',
-        vchpartyadd3: voucher.vchpartyadd3 || ledger.LedgerAddress3 || '',
-        vchpartygstin: voucher.vchpartygstin || ledger.LedgerGSTIN || '',
-        vchsubdealername: voucher.vchsubdealername || '',
-        vchsubdealeradd1: voucher.vchsubdealeradd1 || '',
-        vchsubdealeradd2: voucher.vchsubdealeradd2 || '',
-        vchsubdealeradd3: voucher.vchsubdealeradd3 || '',
-        isinvoice: voucher.isinvoice || 'No',
-        vchgrno: voucher.vchgrno || '',
-        vchtransport: voucher.vchtransport || '',
-        vchtruckno: voucher.vchtruckno || '',
-        vchdrivername: voucher.vchdrivername || '',
-        vchdrivermobile: voucher.vchdrivermobile || '',
-        vchdestination: voucher.vchdestination || '',
-        vchpymtterms: voucher.vchpymtterms || '',
-        vchotherref: voucher.vchotherref || '',
-        vchqtunit: voucher.vchqtunit || '',
-        vchqtunit2: voucher.vchqtunit2 || '',
-        vchgoodsamt: parseFloat(voucher.vchgoodsamt) || 0,
-        vchamount: parseFloat(voucher.vchamount) || 0,
-        vchnarration: voucher.vchnarration || '',
-        remarks: voucher.remarks || '',
-        other1: voucher.other1 || '',
-        other2: voucher.other2 || '',
-        other3: voucher.other3 || '',
-        other4: voucher.other4 || '',
-        other5: voucher.other5 || '',
-        other6: voucher.other6 || '',
-        other7: voucher.other7 || '',
-        other8: voucher.other8 || '',
-        other9: voucher.other9 || '',
-        other10: voucher.other10 || '',
-        ledgerId: ledger._id,
-        isActive: true
-      };
-
-      let savedVoucher;
-      if (existingVoucher) {
-        // Update existing voucher
-        Object.assign(existingVoucher, voucherPayload);
-        savedVoucher = await existingVoucher.save();
-        results.voucher.action = 'Updated';
-        console.log(`✅ Voucher updated: ${savedVoucher.vchnumber} (${savedVoucher._id})`);
-      } else {
-        // Create new voucher
-        savedVoucher = await VoucherMaster.create(voucherPayload);
-        results.voucher.action = 'Created';
-        console.log(`✅ Voucher created: ${savedVoucher.vchnumber} (${savedVoucher._id})`);
-      }
-
-      results.voucher.success = true;
-      results.voucher.data = {
-        _id: savedVoucher._id,
-        vchguid: savedVoucher.vchguid,
-        vchnumber: savedVoucher.vchnumber,
-        vchtype: savedVoucher.vchtype,
-        vchdate: savedVoucher.vchdate,
-        vchamount: savedVoucher.vchamount
-      };
-
-      // Step 4: Process ledger entries
-      if (ledgerEntries && Array.isArray(ledgerEntries) && ledgerEntries.length > 0) {
-        for (let i = 0; i < ledgerEntries.length; i++) {
-          const entryData = ledgerEntries[i];
-          results.ledgerEntries.totalProcessed++;
-
-          try {
-            const requiredFields = ['ledgerguid', 'ledgeramount'];
-            const missingFields = requiredFields.filter(field => !entryData[field]);
-
-            if (missingFields.length > 0) {
-              results.ledgerEntries.failed.push({
-                index: i,
-                ledgerguid: entryData.ledgerguid || 'N/A',
-                error: `Missing required fields: ${missingFields.join(', ')}`
-              });
-              results.ledgerEntries.totalFailed++;
-              continue;
-            }
-
-            // Validate ledger exists
-            const entryLedger = await Ledger.findOne({
-              LedgerGUID: entryData.ledgerguid,
-              cmpcode: voucher.cmpcode,
-              companyId: company._id,
-              isActive: true
-            });
-
-            if (!entryLedger) {
-              results.ledgerEntries.failed.push({
-                index: i,
-                ledgerguid: entryData.ledgerguid,
-                error: `Ledger not found for ledgerguid: ${entryData.ledgerguid}`
-              });
-              results.ledgerEntries.totalFailed++;
-              continue;
-            }
-
-            // Check if entry exists (update or create)
-            const existingEntry = await LedgerEntries.findOne({
-              vchguid: voucher.vchguid,
-              ledgerguid: entryData.ledgerguid,
-              cmpcode: voucher.cmpcode
-            });
-
-            const entryPayload = {
-              cmpcode: voucher.cmpcode,
-              companyId: company._id,
-              vchguid: voucher.vchguid,
-              voucherId: savedVoucher._id,
-              ledgerguid: entryData.ledgerguid,
-              ledgerId: entryLedger._id,
-              ledgeramount: parseFloat(entryData.ledgeramount) || 0,
-              other1: entryData.other1 || '',
-              other2: entryData.other2 || '',
-              other3: entryData.other3 || '',
-              other4: entryData.other4 || '',
-              other5: entryData.other5 || '',
-              isActive: true
-            };
-
-            let savedEntry;
-            if (existingEntry) {
-              Object.assign(existingEntry, entryPayload);
-              savedEntry = await existingEntry.save();
-              results.ledgerEntries.success.push({
-                index: i,
-                _id: savedEntry._id,
-                ledgerguid: entryData.ledgerguid,
-                ledgerName: entryLedger.LedgerName,
-                action: 'Updated',
-                amount: savedEntry.ledgeramount
-              });
-            } else {
-              savedEntry = await LedgerEntries.create(entryPayload);
-              results.ledgerEntries.success.push({
-                index: i,
-                _id: savedEntry._id,
-                ledgerguid: entryData.ledgerguid,
-                ledgerName: entryLedger.LedgerName,
-                action: 'Created',
-                amount: savedEntry.ledgeramount
-              });
-            }
-
-            results.ledgerEntries.totalSuccess++;
-            console.log(`✅ Ledger entry ${existingEntry ? 'updated' : 'created'}: ${entryLedger.LedgerName}`);
-
-          } catch (entryError) {
-            console.error(`❌ Error processing ledger entry ${i}:`, entryError);
-            results.ledgerEntries.failed.push({
-              index: i,
-              ledgerguid: entryData.ledgerguid || 'N/A',
-              error: entryError.message
-            });
-            results.ledgerEntries.totalFailed++;
-          }
-        }
-      }
-
-      // Step 5: Process inventory entries
-      if (inventoryEntries && Array.isArray(inventoryEntries) && inventoryEntries.length > 0) {
-        for (let i = 0; i < inventoryEntries.length; i++) {
-          const entryData = inventoryEntries[i];
-          results.inventoryEntries.totalProcessed++;
-
-          try {
-            const requiredFields = ['itemguid', 'itemamount'];
-            const missingFields = requiredFields.filter(field => !entryData[field]);
-
-            if (missingFields.length > 0) {
-              results.inventoryEntries.failed.push({
-                index: i,
-                itemguid: entryData.itemguid || 'N/A',
-                error: `Missing required fields: ${missingFields.join(', ')}`
-              });
-              results.inventoryEntries.totalFailed++;
-              continue;
-            }
-
-            // Check if entry exists (update or create)
-            // Note: We use a combination of vchguid, itemguid, and a unique identifier if available
-            const existingEntry = await InventoryEntries.findOne({
-              vchguid: voucher.vchguid,
-              itemguid: entryData.itemguid,
-              cmpcode: voucher.cmpcode,
-              // If there's a unique identifier in other fields, use it
-              ...(entryData.entryId ? { _id: entryData.entryId } : {})
-            });
-
-            const entryPayload = {
-              cmpcode: voucher.cmpcode,
-              companyId: company._id,
-              vchguid: voucher.vchguid,
-              voucherId: savedVoucher._id,
-              itemguid: entryData.itemguid,
-              itemmainqty: parseFloat(entryData.itemmainqty) || 0,
-              itemaltqty: parseFloat(entryData.itemaltqty) || 0,
-              itemmainunit: entryData.itemmainunit || '',
-              itemaltunit: entryData.itemaltunit || '',
-              itemrate: parseFloat(entryData.itemrate) || 0,
-              itemrateunit: entryData.itemrateunit || '',
-              itemdisc: parseFloat(entryData.itemdisc) || 0,
-              itemamount: parseFloat(entryData.itemamount) || 0,
-              itemdescription: entryData.itemdescription || '',
-              other1: entryData.other1 || '',
-              other2: entryData.other2 || '',
-              other3: entryData.other3 || '',
-              other4: entryData.other4 || '',
-              other5: entryData.other5 || '',
-              isActive: true
-            };
-
-            let savedEntry;
-            if (existingEntry) {
-              Object.assign(existingEntry, entryPayload);
-              savedEntry = await existingEntry.save();
-              results.inventoryEntries.success.push({
-                index: i,
-                _id: savedEntry._id,
-                itemguid: entryData.itemguid,
-                itemDescription: entryData.itemdescription || entryData.itemguid,
-                action: 'Updated',
-                quantity: savedEntry.itemmainqty,
-                amount: savedEntry.itemamount
-              });
-            } else {
-              savedEntry = await InventoryEntries.create(entryPayload);
-              results.inventoryEntries.success.push({
-                index: i,
-                _id: savedEntry._id,
-                itemguid: entryData.itemguid,
-                itemDescription: entryData.itemdescription || entryData.itemguid,
-                action: 'Created',
-                quantity: savedEntry.itemmainqty,
-                amount: savedEntry.itemamount
-              });
-            }
-
-            results.inventoryEntries.totalSuccess++;
-            console.log(`✅ Inventory entry ${existingEntry ? 'updated' : 'created'}: ${entryData.itemguid}`);
-
-          } catch (entryError) {
-            console.error(`❌ Error processing inventory entry ${i}:`, entryError);
-            results.inventoryEntries.failed.push({
-              index: i,
-              itemguid: entryData.itemguid || 'N/A',
-              error: entryError.message
-            });
-            results.inventoryEntries.totalFailed++;
-          }
-        }
-      }
-
-      // Prepare response
-      const responseStatus = results.voucher.success ? 200 : 500;
-      const hasFailures = results.ledgerEntries.totalFailed > 0 || results.inventoryEntries.totalFailed > 0;
-
-      res.status(hasFailures && responseStatus === 200 ? 207 : responseStatus).json({
-        success: results.voucher.success,
-        message: `Voucher sync completed. Voucher: ${results.voucher.action}, Ledger Entries: ${results.ledgerEntries.totalSuccess}/${results.ledgerEntries.totalProcessed}, Inventory Entries: ${results.inventoryEntries.totalSuccess}/${results.inventoryEntries.totalProcessed}`,
-        data: results
-      });
-
-    } catch (voucherError) {
-      console.error('❌ Error processing voucher:', voucherError);
-      results.voucher.error = voucherError.message;
-      res.status(500).json({
-        success: false,
-        message: 'Failed to process voucher',
-        error: voucherError.message,
-        data: results
-      });
-    }
 
   } catch (error) {
     console.error('❌ Error in syncVoucherComplete:', error);
