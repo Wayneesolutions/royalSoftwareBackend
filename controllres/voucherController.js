@@ -13,13 +13,22 @@ const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  * companyId OR cmpcode/cmpCode (older dealers may have only one of them set),
  * and treats a missing isActive flag as active.
  */
-const findActiveLedger = (guid, cmpcode, companyId) => {
+const findActiveLedger = async (guid, cmpcode, companyId) => {
   const cleanGuid = String(guid ?? '').trim();
   const cleanCode = String(cmpcode ?? '').trim();
-  return Ledger.findOne({
-    LedgerGUID: { $regex: new RegExp(`^\\s*${escapeRegex(cleanGuid)}\\s*$`, 'i') },
+  const scope = {
     $or: [{ companyId }, { cmpcode: cleanCode }, { cmpCode: cleanCode }],
     isActive: { $ne: false }
+  };
+
+  // Fast path: exact GUID uses the LedgerGUID index
+  const exact = await Ledger.findOne({ LedgerGUID: cleanGuid, ...scope });
+  if (exact) return exact;
+
+  // Slow path (only on a miss): tolerate stray whitespace / case differences
+  return Ledger.findOne({
+    LedgerGUID: { $regex: new RegExp(`^\\s*${escapeRegex(cleanGuid)}\\s*$`, 'i') },
+    ...scope
   });
 };
 
