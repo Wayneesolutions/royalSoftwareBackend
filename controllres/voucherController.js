@@ -5,6 +5,51 @@ import LedgerEntries from '../models/ledger/ledgerEntriesModel.js';
 import InventoryEntries from '../models/inventory/inventoryEntriesModel.js';
 import mongoose from 'mongoose';
 
+const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Find an active ledger/dealer by GUID inside a company.
+ * Tolerant of whitespace/case differences in the GUID, matches the company by
+ * companyId OR cmpcode/cmpCode (older dealers may have only one of them set),
+ * and treats a missing isActive flag as active.
+ */
+const findActiveLedger = async (guid, cmpcode, companyId) => {
+  const cleanGuid = String(guid ?? '').trim();
+  const cleanCode = String(cmpcode ?? '').trim();
+  const scope = {
+    $or: [{ companyId }, { cmpcode: cleanCode }, { cmpCode: cleanCode }],
+    isActive: { $ne: false }
+  };
+
+  // Fast path: exact GUID uses the LedgerGUID index
+  const exact = await Ledger.findOne({ LedgerGUID: cleanGuid, ...scope });
+  if (exact) return exact;
+
+  // Slow path (only on a miss): tolerate stray whitespace / case differences
+  return Ledger.findOne({
+    LedgerGUID: { $regex: new RegExp(`^\\s*${escapeRegex(cleanGuid)}\\s*$`, 'i') },
+    ...scope
+  });
+};
+
+/**
+ * Explain why a ledger lookup failed, so the sync error is actionable.
+ */
+const explainLedgerMiss = async (guid, cmpcode) => {
+  const cleanGuid = String(guid ?? '').trim();
+  const found = await Ledger.findOne({
+    LedgerGUID: { $regex: new RegExp(`^\\s*${escapeRegex(cleanGuid)}\\s*$`, 'i') }
+  }).select('LedgerName cmpcode cmpCode isActive companyId');
+
+  if (!found) {
+    return `Ledger/Dealer not found for LedgerGUID: ${cleanGuid} in any company. Sync ledgers (POST /api/v1/tally/ledger/sync) before vouchers`;
+  }
+  if (found.isActive === false) {
+    return `Ledger/Dealer "${found.LedgerName}" exists for LedgerGUID: ${cleanGuid} but is inactive`;
+  }
+  return `Ledger/Dealer "${found.LedgerName}" exists for LedgerGUID: ${cleanGuid} but under a different company (ledger cmpcode: ${found.cmpcode || found.cmpCode || 'N/A'}, voucher cmpcode: ${String(cmpcode).trim()})`;
+};
+
 /**
  * @desc    Create single or multiple vouchers from Tally
  * @route   POST /api/v1/voucher/sync
@@ -73,19 +118,14 @@ export const syncVouchersFromTally = async (req, res) => {
         console.log(`✅ Company found: ${company.companyName} (${company._id})`);
 
         // Step 2: Validate and fetch ledger (dealer) in this company
-        const ledger = await Ledger.findOne({
-          LedgerGUID: voucherData.vchpartyguid,
-          cmpcode: voucherData.cmpcode,
-          companyId: company._id,
-          isActive: true
-        });
+        const ledger = await findActiveLedger(voucherData.vchpartyguid, voucherData.cmpcode, company._id);
 
         if (!ledger) {
           results.failed.push({
             index: i,
             vchguid: voucherData.vchguid,
             vchnumber: voucherData.vchnumber,
-            error: `Ledger/Dealer not found or inactive for LedgerGUID: ${voucherData.vchpartyguid} in company: ${voucherData.cmpcode}`
+            error: `${await explainLedgerMiss(voucherData.vchpartyguid, voucherData.cmpcode)} (company: ${voucherData.cmpcode})`
           });
           results.totalFailed++;
           continue;
@@ -588,21 +628,16 @@ const processSingleVoucher = async (voucher, ledgerEntries, inventoryEntries) =>
   }
 
   // Step 1: Company lookup
-  const company = await Company.findOne({ companyCode: voucher.cmpcode, isActive: true });
+  const company = await Company.findOne({ companyCode: String(voucher.cmpcode).trim(), isActive: true });
   if (!company) {
     results.voucher.error = `Company not found or inactive for cmpcode: ${voucher.cmpcode}`;
     return results;
   }
 
   // Step 2: Party ledger lookup
-  const ledger = await Ledger.findOne({
-    LedgerGUID: voucher.vchpartyguid,
-    cmpcode: voucher.cmpcode,
-    companyId: company._id,
-    isActive: true
-  });
+  const ledger = await findActiveLedger(voucher.vchpartyguid, voucher.cmpcode, company._id);
   if (!ledger) {
-    results.voucher.error = `Ledger/Dealer not found or inactive for LedgerGUID: ${voucher.vchpartyguid} in company: ${voucher.cmpcode}`;
+    results.voucher.error = `${await explainLedgerMiss(voucher.vchpartyguid, voucher.cmpcode)} (company: ${voucher.cmpcode})`;
     return results;
   }
 
@@ -692,15 +727,10 @@ const processSingleVoucher = async (voucher, ledgerEntries, inventoryEntries) =>
             continue;
           }
 
-          const entryLedger = await Ledger.findOne({
-            LedgerGUID: entryData.ledgerguid,
-            cmpcode: voucher.cmpcode,
-            companyId: company._id,
-            isActive: true
-          });
+          const entryLedger = await findActiveLedger(entryData.ledgerguid, voucher.cmpcode, company._id);
 
           if (!entryLedger) {
-            results.ledgerEntries.failed.push({ index: i, ledgerguid: entryData.ledgerguid, error: `Ledger not found for ledgerguid: ${entryData.ledgerguid}` });
+            results.ledgerEntries.failed.push({ index: i, ledgerguid: entryData.ledgerguid, error: await explainLedgerMiss(entryData.ledgerguid, voucher.cmpcode) });
             results.ledgerEntries.totalFailed++;
             continue;
           }
