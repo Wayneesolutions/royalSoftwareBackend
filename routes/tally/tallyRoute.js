@@ -45,6 +45,7 @@ import {
 import {
   getVoucherWithEntries,
   syncVoucherComplete,
+  listVouchersByCompany,
 } from '../../controllres/voucherController.js';
 import {
   syncOutstandingFromTally,
@@ -3495,6 +3496,60 @@ tallyRoute.delete('/subdealers/delete', deleteSubDealerFromTally);
  *         description: Server error
  */
 tallyRoute.get('/vouchers/:vchguid/details', getVoucherWithEntries);
+
+/**
+ * @swagger
+ * /api/v1/tally/vouchers:
+ *   get:
+ *     summary: List all vouchers for a company
+ *     description: >
+ *       Returns all synced vouchers for a company. Pass either `cmpcode` or `guid` (company GUID).
+ *       Optional filters: vchtype, startDate, endDate, vchpartyguid.
+ *     tags: [Tally Vouchers]
+ *     parameters:
+ *       - in: query
+ *         name: cmpcode
+ *         schema:
+ *           type: string
+ *         description: Company code (e.g. 732081942-09341434-AD0D-4E30-A53E-28AA6A65EB3B)
+ *       - in: query
+ *         name: guid
+ *         schema:
+ *           type: string
+ *         description: Company GUID (e.g. 09341434-ad0d-4e30-a53e-28aa6a65eb3b)
+ *       - in: query
+ *         name: vchtype
+ *         schema:
+ *           type: string
+ *         description: Filter by voucher type (e.g. Sales, Purchase, Receipt)
+ *       - in: query
+ *         name: startDate
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Filter from date (YYYY-MM-DD)
+ *       - in: query
+ *         name: endDate
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Filter to date (YYYY-MM-DD)
+ *       - in: query
+ *         name: vchpartyguid
+ *         schema:
+ *           type: string
+ *         description: Filter by specific party/ledger GUID
+ *     responses:
+ *       200:
+ *         description: Vouchers fetched successfully
+ *       400:
+ *         description: cmpcode or guid is required
+ *       404:
+ *         description: Company not found
+ *       500:
+ *         description: Server error
+ */
+tallyRoute.get('/vouchers', listVouchersByCompany);
 
 /**
  * @swagger

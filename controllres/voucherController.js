@@ -546,6 +546,75 @@ export const getVoucherWithEntries = async (req, res) => {
 };
 
 /**
+ * @desc    List all vouchers for a company by cmpcode or company GUID
+ * @route   GET /api/v1/tally/vouchers?cmpcode=<cmpcode>&guid=<companyGuid>&vchtype=Sales&startDate=2026-01-01&endDate=2026-12-31
+ * @access  Public (No auth - Tally integration)
+ */
+export const listVouchersByCompany = async (req, res) => {
+  try {
+    const { cmpcode, guid, vchtype, startDate, endDate, vchpartyguid } = req.query;
+
+    if (!cmpcode && !guid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Either cmpcode or guid (company GUID) is required',
+      });
+    }
+
+    let resolvedCmpcode = cmpcode;
+
+    // If guid provided (and no cmpcode), resolve company to get cmpcode
+    if (!cmpcode && guid) {
+      const company = await Company.findOne({
+        $or: [
+          { guid },
+          { guid: { $regex: new RegExp(`^${guid}$`, 'i') } },
+          { companyCode: { $regex: new RegExp(`^${guid}$`, 'i') } },
+        ],
+      }).lean();
+
+      if (!company) {
+        return res.status(404).json({
+          success: false,
+          message: `Company not found for GUID: ${guid}`,
+        });
+      }
+      resolvedCmpcode = company.companyCode;
+    }
+
+    const query = { cmpcode: resolvedCmpcode, isActive: true };
+    if (vchtype) query.vchtype = vchtype;
+    if (vchpartyguid) query.vchpartyguid = vchpartyguid;
+    if (startDate || endDate) {
+      query.vchdate = {};
+      if (startDate) query.vchdate.$gte = new Date(startDate);
+      if (endDate) query.vchdate.$lte = new Date(endDate);
+    }
+
+    const vouchers = await VoucherMaster.find(query)
+      .populate('ledgerId', 'LedgerName LedgerMobile LedgerGSTIN LedgerAddress1')
+      .populate('companyId', 'companyName companyCode')
+      .sort({ vchdate: -1 })
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      total: vouchers.length,
+      cmpcode: resolvedCmpcode,
+      filters: { vchtype: vchtype || null, startDate: startDate || null, endDate: endDate || null, vchpartyguid: vchpartyguid || null },
+      data: vouchers,
+    });
+  } catch (error) {
+    console.error('❌ Error listing vouchers by company:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch vouchers',
+      error: error.message,
+    });
+  }
+};
+
+/**
  * @desc    Create or update voucher with ledger entries and inventory entries (Combined API)
  * @route   POST /api/v1/tally/vouchers/sync-complete
  * @access  Public (No auth - Tally integration)
