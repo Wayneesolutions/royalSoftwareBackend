@@ -602,8 +602,9 @@ export const listVouchersByCompany = async (req, res) => {
     }
 
     let resolvedCmpcode = cmpcode;
+    let resolvedCompanyId = null;
 
-    // If guid provided (and no cmpcode), resolve company to get cmpcode
+    // If guid provided (and no cmpcode), resolve company
     if (!cmpcode && guid) {
       const company = await Company.findOne({
         $or: [
@@ -620,9 +621,15 @@ export const listVouchersByCompany = async (req, res) => {
         });
       }
       resolvedCmpcode = company.companyCode;
+      resolvedCompanyId = company._id;
     }
 
-    const query = { cmpcode: resolvedCmpcode, isActive: true };
+    // Use companyId if available (most reliable), otherwise case-insensitive cmpcode match
+    const cmpFilter = resolvedCompanyId
+      ? { $or: [{ companyId: resolvedCompanyId }, { cmpcode: { $regex: new RegExp(`^${resolvedCmpcode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } }] }
+      : { cmpcode: { $regex: new RegExp(`^${resolvedCmpcode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } };
+
+    const query = { ...cmpFilter, isActive: true };
     if (vchtype) query.vchtype = vchtype;
     if (vchpartyguid) query.vchpartyguid = vchpartyguid;
     if (startDate || endDate) {
