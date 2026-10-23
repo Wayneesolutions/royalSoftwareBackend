@@ -608,7 +608,16 @@ export const getOrders = async (req, res) => {
     }
 
     // Apply other filters
-    if (status) filter.status = status;
+    // Map simplified frontend status labels to actual DB enum values
+    if (status) {
+      const statusAliasMap = {
+        pending:    { $in: ['pending_approval', 'draft'] },
+        confirmed:  { $in: ['approved'] },
+        processing: { $in: ['sent_to_tally'] },
+        shipped:    { $in: ['dispatched'] },
+      };
+      filter.status = statusAliasMap[status] || status;
+    }
     if (customerId) filter.customerId = customerId;
     if (orderType) filter.orderType = orderType; // Filter by orderType (e.g., 'zonal_created', 'admin_created')
     if (orderCategory) filter.orderCategory = orderCategory; // 'sale' | 'purchase'

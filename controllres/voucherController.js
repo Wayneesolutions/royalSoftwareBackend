@@ -98,9 +98,10 @@ export const syncVouchersFromTally = async (req, res) => {
           continue;
         }
 
-        // Step 1: Validate and fetch company
+        // Step 1: Validate and fetch company (case-insensitive)
+        const _c = String(voucherData.cmpcode).trim();
         const company = await Company.findOne({
-          companyCode: voucherData.cmpcode,
+          companyCode: { $regex: new RegExp(`^${_c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
           isActive: true
         });
 
@@ -703,8 +704,12 @@ const processSingleVoucher = async (voucher, ledgerEntries, inventoryEntries) =>
     return results;
   }
 
-  // Step 1: Company lookup
-  const company = await Company.findOne({ companyCode: String(voucher.cmpcode).trim(), isActive: true });
+  // Step 1: Company lookup (case-insensitive to handle Tally sending lowercase cmpcode)
+  const _cmpTrimmed = String(voucher.cmpcode).trim();
+  const company = await Company.findOne({
+    companyCode: { $regex: new RegExp(`^${_cmpTrimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+    isActive: true
+  });
   if (!company) {
     results.voucher.error = `Company not found or inactive for cmpcode: ${voucher.cmpcode}`;
     return results;
