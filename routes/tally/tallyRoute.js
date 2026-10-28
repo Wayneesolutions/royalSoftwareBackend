@@ -1993,9 +1993,9 @@ tallyRoute.delete('/companies/:guid/users', deleteUsersFromTally);
  *       of multiple groups for batch processing. All groups are upserted (created or updated) into Royal Software.
  *       Groups are identified by GroupGUID and cmpcode combination.
  *       
- *       **Important:** 
- *       - `companyGuid` is required. The `cmpcode` will be automatically assigned from the company based on the `companyGuid`.
- *       - You do not need to provide `cmpcode` - it will be derived from the company's `companyCode`.
+ *       **Important:**
+ *       - Either `companyGuid` OR `cmpcode` is required (not both needed). If `companyGuid` is provided it takes priority; otherwise `cmpcode` is used to look up the company.
+ *       - The `cmpcode` stored on the group will always be auto-assigned from the matched company's `companyCode`.
  *       - **First Group for a Company:** When creating the first group for a company, do not provide `GroupParent` or `parentGroupGUID`.
  *         The first group will be created as a root group with `GroupParent = null`. This is the base group for the company.
  *       - **Group Hierarchy:** For subsequent groups, you can create group hierarchy by providing `GroupParent` or `parentGroupGUID` field.
@@ -2029,7 +2029,7 @@ tallyRoute.delete('/companies/:guid/users', deleteUsersFromTally);
  *                     example: "Sales Group"
  *                   companyGuid:
  *                     type: string
- *                     description: Company GUID (required) - cmpcode will be auto-assigned from company
+ *                     description: Company GUID (optional if cmpcode is provided) - cmpcode will be auto-assigned from company
  *                     example: "COM-001"
  *                   GroupParent:
  *                     type: string
@@ -2180,7 +2180,7 @@ tallyRoute.post('/groups', upsertGroupFromTally);
  *                     example: "GRP001"
  *                   companyGuid:
  *                     type: string
- *                     description: Company GUID (required) - cmpcode will be auto-assigned from company
+ *                     description: Company GUID (optional if cmpcode is provided) - cmpcode will be auto-assigned from company
  *                     example: "COM-001"
  *                   GroupName:
  *                     type: string

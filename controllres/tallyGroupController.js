@@ -249,10 +249,13 @@ export const upsertGroupFromTally = async (req, res) => {
       const groupGuid = normalizeGuid(item.GroupGUID || item.groupGUID || item.group_guid);
       const groupName = normalizeString(item.GroupName || item.groupName || item.group_name);
       
-      // Get companyGuid from item (required)
+      // Get companyGuid from item (optional if cmpcode is provided)
       const companyGuidSource = item.companyGuid || item.guid || item.companyGUID || item.GUID;
       const companyGuid = normalizeGuid(companyGuidSource);
-      
+
+      // Get cmpcode from item (fallback when companyGuid is not provided)
+      const cmpcodeFromItem = normalizeString(item.cmpcode || item.cmpCode || item.companyCode);
+
       // Validate required fields
       if (!groupGuid) {
         results.push({
@@ -276,38 +279,49 @@ export const upsertGroupFromTally = async (req, res) => {
         continue;
       }
 
-      if (!companyGuid) {
+      if (!companyGuid && !cmpcodeFromItem) {
         results.push({
           GroupGUID: groupGuid,
           GroupName: groupName,
           success: false,
-          message: 'companyGuid is required (cmpcode will be auto-assigned from company)',
-          error: 'MISSING_COMPANYGUID',
+          message: 'Either companyGuid or cmpcode is required to identify the company',
+          error: 'MISSING_COMPANY_IDENTIFIER',
         });
         continue;
       }
 
-      // Find company by GUID (required - cmpcode will be derived from company)
+      // Find company by GUID or cmpcode (cmpcode will be derived from company)
       let company = null;
       let companyId = null;
       let cmpcode = null;
-      
-      // Try to find company by GUID
-      company = await Company.findOne({ guid: companyGuid });
-      if (!company) {
-        // Try case-insensitive search
+
+      if (companyGuid) {
+        // Try to find company by GUID
+        company = await Company.findOne({ guid: companyGuid });
+        if (!company) {
+          // Try case-insensitive search
+          company = await Company.findOne({
+            guid: { $regex: new RegExp(`^${companyGuid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
+          });
+        }
+      } else {
+        // Fallback: find company by cmpcode
         company = await Company.findOne({
-          guid: { $regex: new RegExp(`^${companyGuid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
+          companyCode: { $regex: new RegExp(`^${cmpcodeFromItem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+          isActive: true,
         });
       }
-      
+
       if (!company) {
         results.push({
           GroupGUID: groupGuid,
           GroupName: groupName,
-          companyGuid: companyGuid,
+          companyGuid: companyGuid || undefined,
+          cmpcode: cmpcodeFromItem || undefined,
           success: false,
-          message: `Company not found for GUID: ${companyGuid}. Please ensure the company is registered in the system with this GUID.`,
+          message: companyGuid
+            ? `Company not found for GUID: ${companyGuid}. Please ensure the company is registered in the system with this GUID.`
+            : `Company not found for cmpcode: ${cmpcodeFromItem}. Please ensure the company is registered in the system.`,
           error: 'COMPANY_NOT_FOUND',
         });
         continue;
@@ -541,10 +555,14 @@ export const upsertGroupFromTally = async (req, res) => {
     }
 
     const failures = results.filter((item) => !item.success);
+    const successes = results.filter((item) => item.success);
     const status = failures.length === results.length ? 400 : failures.length > 0 ? 207 : 200;
 
     return res.status(status).json({
-      success: failures.length === 0,
+      success: successes.length > 0,
+      total: results.length,
+      succeeded: successes.length,
+      failed: failures.length,
       results,
     });
   } catch (error) {
@@ -596,35 +614,48 @@ export const updateGroupFromTally = async (req, res) => {
         continue;
       }
 
-      // Get companyGuid from item (required)
+      // Get companyGuid from item (optional if cmpcode is provided)
       const companyGuidSource = item.companyGuid || item.guid || item.companyGUID || item.GUID;
       const companyGuid = normalizeGuid(companyGuidSource);
-      
-      if (!companyGuid) {
+
+      // Get cmpcode from item (fallback when companyGuid is not provided)
+      const cmpcodeFromItem = normalizeString(item.cmpcode || item.cmpCode || item.companyCode);
+
+      if (!companyGuid && !cmpcodeFromItem) {
         results.push({
           GroupGUID: groupGuid,
           success: false,
-          message: 'companyGuid is required to identify the group (cmpcode will be auto-assigned from company)',
-          error: 'MISSING_COMPANYGUID',
+          message: 'Either companyGuid or cmpcode is required to identify the company',
+          error: 'MISSING_COMPANY_IDENTIFIER',
         });
         continue;
       }
 
-      // Find company by GUID to get cmpcode
-      let company = await Company.findOne({ guid: companyGuid });
-      if (!company) {
-        // Try case-insensitive search
+      // Find company by GUID or cmpcode
+      let company = null;
+      if (companyGuid) {
+        company = await Company.findOne({ guid: companyGuid });
+        if (!company) {
+          company = await Company.findOne({
+            guid: { $regex: new RegExp(`^${companyGuid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
+          });
+        }
+      } else {
         company = await Company.findOne({
-          guid: { $regex: new RegExp(`^${companyGuid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
+          companyCode: { $regex: new RegExp(`^${cmpcodeFromItem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+          isActive: true,
         });
       }
-      
+
       if (!company) {
         results.push({
           GroupGUID: groupGuid,
-          companyGuid: companyGuid,
+          companyGuid: companyGuid || undefined,
+          cmpcode: cmpcodeFromItem || undefined,
           success: false,
-          message: `Company not found for GUID: ${companyGuid}`,
+          message: companyGuid
+            ? `Company not found for GUID: ${companyGuid}`
+            : `Company not found for cmpcode: ${cmpcodeFromItem}`,
           error: 'COMPANY_NOT_FOUND',
         });
         continue;
@@ -767,10 +798,14 @@ export const updateGroupFromTally = async (req, res) => {
     }
 
     const failures = results.filter((item) => !item.success);
+    const successes = results.filter((item) => item.success);
     const status = failures.length === results.length ? 400 : failures.length > 0 ? 207 : 200;
 
     return res.status(status).json({
-      success: failures.length === 0,
+      success: successes.length > 0,
+      total: results.length,
+      succeeded: successes.length,
+      failed: failures.length,
       results,
     });
   } catch (error) {
