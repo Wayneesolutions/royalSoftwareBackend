@@ -118,6 +118,25 @@ const companySchema = new mongoose.Schema({
             default: true
         }
     }]
+    ,
+    // Bundle B (Korvo + Loyvexa): the brand's Loyvexa loyalty account.
+    // Set up from Loyvexa (POST /api/v1/hub/provision) or by an admin
+    // (PUT /api/v1/integrations/loyvexa). See services/loyvexa.js.
+    integrations: {
+        loyvexa: {
+            enabled: { type: Boolean, default: false },
+            baseUrl: { type: String, trim: true },
+            tenantSlug: { type: String, trim: true },
+            // lvx_ connector key Korvo uses to call Loyvexa (never sent to apps)
+            connectorKey: { type: String, select: false },
+            // Key Loyvexa uses to push WhatsApp orders here; only its hash is kept
+            inboundKeyHash: { type: String, select: false, index: true, sparse: true },
+            inboundKeyPrefix: { type: String },
+            earnOn: { type: String, enum: ['approved', 'delivered'], default: 'delivered' },
+            lastMasterSyncAt: Date,
+            lastOutstandingSyncAt: Date,
+        }
+    }
 }, {
     timestamps: true
 });

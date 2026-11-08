@@ -1,6 +1,7 @@
 import { app } from "./app.js";
 import 'dotenv/config';
 import { connectDB } from "./config/mongoConnection.js";
+import { startLoyvexaWorker } from "./services/loyvexa.js";
 
 const PORT = process.env.PORT || 5000;
 
@@ -10,6 +11,9 @@ app.get("/", (req, res) => {
 
 // Connect to database
 connectDB();
+
+// Bundle B: deliver queued Loyvexa updates and run the nightly syncs
+startLoyvexaWorker();
 
 // Start server
 app.listen(PORT, () => {
