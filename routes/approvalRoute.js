@@ -4,6 +4,8 @@ import {
   submitOrderForApproval,
   getPendingApprovals,
   approveRejectOrder,
+  bulkApproveRejectOrders,
+  unapproveOrder,
   getApprovalHistory,
   getMyOrders
 } from '../controllres/approvalController.js';
@@ -19,8 +21,14 @@ router.post('/submit/:orderId', submitOrderForApproval);
 // Get orders pending approval for current user
 router.get('/pending', getPendingApprovals);
 
-// Approve or reject an order
+// Bulk approve or reject multiple orders
+router.post('/bulk-action', bulkApproveRejectOrders);
+
+// Approve or reject a single order
 router.post('/:orderId/action', approveRejectOrder);
+
+// Unapprove (revert approved order back to pending_approval)
+router.post('/:orderId/unapprove', unapproveOrder);
 
 // Get approval history for an order
 router.get('/:orderId/history', getApprovalHistory);

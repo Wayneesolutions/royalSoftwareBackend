@@ -294,7 +294,7 @@ const orderSchema = new mongoose.Schema({
     approverRole: String,
     action: {
       type: String,
-      enum: ['approved', 'rejected', 'pending'],
+      enum: ['approved', 'rejected', 'pending', 'unapproved'],
       required: true
     },
     notes: String,

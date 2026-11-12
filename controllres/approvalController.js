@@ -396,6 +396,161 @@ export const getApprovalHistory = async (req, res) => {
   }
 };
 
+// Bulk approve or reject multiple orders (admin/manager)
+export const bulkApproveRejectOrders = async (req, res) => {
+  try {
+    const { orderIds, action, notes } = req.body;
+    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+    const userId = req.user.userDetails._id;
+    const userRole = req.user.userDetails.role;
+
+    if (!Array.isArray(orderIds) || orderIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderIds must be a non-empty array'
+      });
+    }
+
+    if (!['approved', 'rejected'].includes(action)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid action. Must be "approved" or "rejected"'
+      });
+    }
+
+    const results = [];
+    let succeeded = 0;
+    let failed = 0;
+
+    for (const orderId of orderIds) {
+      try {
+        const order = await Order.findOne({
+          _id: orderId,
+          companyId,
+          status: 'pending_approval',
+          isActive: true
+        });
+
+        if (!order) {
+          results.push({ orderId, success: false, error: 'Order not found or not in pending_approval status' });
+          failed++;
+          continue;
+        }
+
+        order.approvalHistory.push({
+          approverId: userId,
+          approverName: req.user.userDetails.name,
+          approverRole: userRole,
+          action,
+          notes: notes || '',
+          timestamp: new Date()
+        });
+
+        if (action === 'rejected') {
+          order.status = 'cancelled';
+          order.nextApprover = null;
+          order.approvalNotes = notes || 'Order rejected';
+        } else {
+          order.status = 'approved';
+          order.approvedBy = userId;
+          order.approvedAt = new Date();
+          order.nextApprover = null;
+          order.approvalNotes = notes || 'Order approved';
+        }
+
+        await order.save();
+        results.push({
+          orderId: order._id,
+          orderNumber: order.orderNumber,
+          success: true,
+          status: order.status
+        });
+        succeeded++;
+      } catch (err) {
+        results.push({ orderId, success: false, error: err.message });
+        failed++;
+      }
+    }
+
+    const statusCode = succeeded > 0 && failed > 0 ? 207 : (succeeded > 0 ? 200 : 400);
+
+    return res.status(statusCode).json({
+      success: succeeded > 0,
+      message: `Processed ${orderIds.length} orders: ${succeeded} succeeded, ${failed} failed`,
+      total: orderIds.length,
+      succeeded,
+      failed,
+      results
+    });
+
+  } catch (error) {
+    console.error('Bulk approve/reject error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: error.message
+    });
+  }
+};
+
+// Unapprove an order — revert from approved back to pending_approval
+export const unapproveOrder = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { notes } = req.body;
+    const companyId = req.user.userDetails.defaultCompany._id || req.user.userDetails.defaultCompany;
+    const userId = req.user.userDetails._id;
+    const userRole = req.user.userDetails.role;
+
+    const order = await Order.findOne({
+      _id: orderId,
+      companyId,
+      status: 'approved',
+      isActive: true
+    }).populate('createdBy', 'name role email');
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found or not in approved status'
+      });
+    }
+
+    const nextApprover = await findNextApprover(order.createdBy, companyId);
+
+    order.status = 'pending_approval';
+    order.nextApprover = nextApprover ? nextApprover._id : order.createdBy._id;
+    order.approvedBy = null;
+    order.approvedAt = null;
+    order.approvalNotes = notes || 'Returned to pending approval';
+
+    order.approvalHistory.push({
+      approverId: userId,
+      approverName: req.user.userDetails.name,
+      approverRole: userRole,
+      action: 'unapproved',
+      notes: notes || 'Order returned to pending approval',
+      timestamp: new Date()
+    });
+
+    await order.save();
+
+    res.json({
+      success: true,
+      message: 'Order successfully returned to pending approval',
+      order
+    });
+
+  } catch (error) {
+    console.error('Unapprove order error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: error.message
+    });
+  }
+};
+
 // Get orders created by current user (for tracking)
 export const getMyOrders = async (req, res) => {
   try {
