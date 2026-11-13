@@ -216,16 +216,26 @@ export const getPendingApprovals = async (req, res) => {
     const userId = req.user.userDetails._id;
     const { page = 1, limit = 20, status } = req.query;
 
-    const query = {
-      companyId,
-      nextApprover: userId,
-      isActive: true
-    };
+    let query;
 
     if (status) {
-      query.status = status;
+      // Specific status filter requested
+      if (status === 'draft') {
+        query = { companyId, createdBy: userId, status: 'draft', isActive: true };
+      } else {
+        query = { companyId, nextApprover: userId, status, isActive: true };
+      }
     } else {
-      query.status = 'pending_approval';
+      // Default: show pending_approval orders assigned to this user
+      //         PLUS any draft orders this user created (so they can review & approve their own drafts)
+      query = {
+        companyId,
+        isActive: true,
+        $or: [
+          { nextApprover: userId, status: 'pending_approval' },
+          { createdBy: userId, status: 'draft' }
+        ]
+      };
     }
 
     const orders = await Order.find(query)
