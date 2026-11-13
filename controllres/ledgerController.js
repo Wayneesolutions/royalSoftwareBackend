@@ -320,6 +320,15 @@ export const getLedgerDetails = async (req, res) => {
           totalCredit,
           closingBalance: (ledger.LedgerOpening || 0) + totalDebit - totalCredit,
           transactionCount: totalTransactions,
+        },
+        _debug: {
+          ledgerEntriesRaw: rawEntries.length,
+          ledgerEntriesFiltered: normalisedEntries.length,
+          partyVouchers: normalisedPartyVouchers.length,
+          salesRows: normalisedSales.length,
+          appTxns: normalisedAppTxns.length,
+          total: totalTransactions,
+          dateFilter: { startDate: startDate || null, endDate: endDate || null },
         }
       },
       message: 'Ledger details retrieved successfully'
