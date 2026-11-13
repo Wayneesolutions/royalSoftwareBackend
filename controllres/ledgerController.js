@@ -1,6 +1,7 @@
 import Ledger from '../models/ledger/ledgerModel.js';
 import LedgerTransaction from '../models/ledger/ledgerTransactionModel.js';
 import VoucherMaster from '../models/voucher/voucherMasterModel.js';
+import Sales from '../models/sales/salesModel.js';
 import User from '../models/user/userModel.js';
 import mongoose from 'mongoose';
 
@@ -213,11 +214,54 @@ export const getLedgerDetails = async (req, res) => {
       balance: t.balanceAfter || 0,
     }));
 
+    // Also fetch Tally-synced Sales records (grouped by invoice number to avoid item-level duplicates)
+    const salesQuery = {
+      ledgerId: new mongoose.Types.ObjectId(ledgerId),
+      companyId: new mongoose.Types.ObjectId(companyId),
+    };
+    if (startDate || endDate) {
+      salesQuery.vchdate = {};
+      if (startDate) salesQuery.vchdate.$gte = new Date(startDate);
+      if (endDate)   salesQuery.vchdate.$lte = new Date(endDate);
+    }
+
+    // Aggregate to invoice level (sum per vchnumber) to avoid one-row-per-item duplication
+    const salesAgg = await Sales.aggregate([
+      { $match: salesQuery },
+      { $group: {
+        _id: '$vchnumber',
+        vchdate:    { $first: '$vchdate' },
+        vchtype:    { $first: '$vchtype' },
+        ledgername: { $first: '$ledgername' },
+        voucherId:  { $first: '$voucherId' },
+        totalAmount:{ $sum: '$amount' }
+      }},
+      { $sort: { vchdate: -1 } }
+    ]);
+
+    // Only include sales invoices not already covered by VoucherMaster (deduplicate by vchnumber)
+    const existingVchNumbers = new Set(vouchers.map(v => v.vchnumber));
+    const normalisedSales = salesAgg
+      .filter(s => !existingVchNumbers.has(s._id))
+      .map(s => ({
+        _id: s.voucherId || s._id,
+        source: 'tally_sales',
+        date: s.vchdate,
+        voucherNo: s._id,
+        type: s.vchtype || 'Sales',
+        amount: s.totalAmount || 0,
+        debit: s.totalAmount > 0 ? s.totalAmount : 0,
+        credit: s.totalAmount < 0 ? Math.abs(s.totalAmount) : 0,
+        partyName: s.ledgername,
+        description: s.vchtype || 'Sales',
+        balance: 0,
+      }));
+
     // Merge and sort by date descending
-    const allTransactions = [...normalisedVouchers, ...normalisedAppTxns]
+    const allTransactions = [...normalisedVouchers, ...normalisedSales, ...normalisedAppTxns]
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
-    const totalTransactions = totalVouchers + appTransactions.length;
+    const totalTransactions = totalVouchers + normalisedSales.length + appTransactions.length;
 
     // Summary — include LedgerOpening so frontend can display it
     const totalDebit  = allTransactions.reduce((s, t) => s + (t.debit  || 0), 0);
