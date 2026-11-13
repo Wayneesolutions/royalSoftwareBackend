@@ -1,5 +1,6 @@
 import Ledger from '../models/ledger/ledgerModel.js';
 import LedgerTransaction from '../models/ledger/ledgerTransactionModel.js';
+import LedgerEntries from '../models/ledger/ledgerEntriesModel.js';
 import VoucherMaster from '../models/voucher/voucherMasterModel.js';
 import Sales from '../models/sales/salesModel.js';
 import User from '../models/user/userModel.js';
@@ -149,30 +150,74 @@ export const getLedgerDetails = async (req, res) => {
       });
     }
 
-    // ── Query VoucherMaster for Tally-synced transactions ────────────────────
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    // ── 1. LedgerEntries — all vouchers where this ledger is a named entry ──
+    // This is the primary source for Journal, Payment, Receipt vouchers where
+    // `other1` ("Debit"/"Credit") gives the definitive direction.
+    const rawEntries = await LedgerEntries.find({
+      ledgerId: new mongoose.Types.ObjectId(ledgerId),
+      companyId: new mongoose.Types.ObjectId(companyId),
+    })
+      .populate('voucherId', 'vchnumber vchdate vchtype vchpartyname vchamount vchguid')
+      .lean();
+
+    // Apply date filter against populated voucherId.vchdate
+    const ledgerEntries = rawEntries.filter(e => {
+      if (!e.voucherId) return false;
+      const vd = new Date(e.voucherId.vchdate);
+      if (startDate && vd < new Date(startDate)) return false;
+      if (endDate   && vd > new Date(endDate))   return false;
+      return true;
+    });
+
+    const entryVchGuids = new Set(ledgerEntries.map(e => e.vchguid).filter(Boolean));
+    const entryVchNumbers = new Set(ledgerEntries.map(e => e.voucherId?.vchnumber).filter(Boolean));
+
+    const normalisedEntries = ledgerEntries.map(e => ({
+      _id: e._id,
+      source: 'tally_entry',
+      date: e.voucherId.vchdate,
+      voucherNo: e.voucherId.vchnumber,
+      type: e.voucherId.vchtype,
+      amount: Math.abs(e.ledgeramount || 0),
+      debit: e.other1 === 'Debit'  ? Math.abs(e.ledgeramount || 0) : 0,
+      credit: e.other1 === 'Credit' ? Math.abs(e.ledgeramount || 0) : 0,
+      partyName: e.voucherId.vchpartyname,
+      description: e.voucherId.vchtype,
+      balance: 0,
+    }));
+
+    // ── 2. VoucherMaster — party-level vouchers not already in LedgerEntries ──
     const voucherQuery = {
       ledgerId: new mongoose.Types.ObjectId(ledgerId),
       companyId: new mongoose.Types.ObjectId(companyId),
     };
-
     if (startDate || endDate) {
       voucherQuery.vchdate = {};
       if (startDate) voucherQuery.vchdate.$gte = new Date(startDate);
       if (endDate)   voucherQuery.vchdate.$lte = new Date(endDate);
     }
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const partyVouchers = await VoucherMaster.find(voucherQuery).sort({ vchdate: -1 }).lean();
 
-    // Fetch vouchers (Tally-synced) — primary transaction source
-    const vouchers = await VoucherMaster.find(voucherQuery)
-      .sort({ vchdate: -1 })
-      .skip(skip)
-      .limit(parseInt(limit))
-      .lean();
+    const normalisedPartyVouchers = partyVouchers
+      .filter(v => !entryVchGuids.has(v.vchguid))
+      .map(v => ({
+        _id: v._id,
+        source: 'tally',
+        date: v.vchdate,
+        voucherNo: v.vchnumber,
+        type: v.vchtype,
+        amount: Math.abs(v.vchamount || 0),
+        debit: v.vchamount > 0 ? Math.abs(v.vchamount) : 0,
+        credit: v.vchamount < 0 ? Math.abs(v.vchamount) : 0,
+        partyName: v.vchpartyname,
+        description: v.vchtype,
+        balance: 0,
+      }));
 
-    const totalVouchers = await VoucherMaster.countDocuments(voucherQuery);
-
-    // Also fetch app-created LedgerTransactions (manual entries)
+    // ── 3. App-created LedgerTransactions ──
     const appTxnQuery = {
       ledgerId: new mongoose.Types.ObjectId(ledgerId),
       companyId: new mongoose.Types.ObjectId(companyId),
@@ -185,21 +230,6 @@ export const getLedgerDetails = async (req, res) => {
     const appTransactions = await LedgerTransaction.find(appTxnQuery)
       .sort({ transactionDate: -1 })
       .lean();
-
-    // Normalise both sources to a common shape for the frontend
-    const normalisedVouchers = vouchers.map(v => ({
-      _id: v._id,
-      source: 'tally',
-      date: v.vchdate,
-      voucherNo: v.vchnumber,
-      type: v.vchtype,
-      amount: v.vchamount || 0,
-      debit: v.vchamount > 0 ? Math.abs(v.vchamount) : 0,
-      credit: v.vchamount < 0 ? Math.abs(v.vchamount) : 0,
-      partyName: v.vchpartyname,
-      description: v.vchtype,
-      balance: 0, // Tally running balance not stored; frontend can omit
-    }));
 
     const normalisedAppTxns = appTransactions.map(t => ({
       _id: t._id,
@@ -214,7 +244,7 @@ export const getLedgerDetails = async (req, res) => {
       balance: t.balanceAfter || 0,
     }));
 
-    // Also fetch Tally-synced Sales records (grouped by invoice number to avoid item-level duplicates)
+    // ── 4. Sales model — invoice-level (deduplicate by vchnumber) ──
     const salesQuery = {
       ledgerId: new mongoose.Types.ObjectId(ledgerId),
       companyId: new mongoose.Types.ObjectId(companyId),
@@ -225,7 +255,6 @@ export const getLedgerDetails = async (req, res) => {
       if (endDate)   salesQuery.vchdate.$lte = new Date(endDate);
     }
 
-    // Aggregate to invoice level (sum per vchnumber) to avoid one-row-per-item duplication
     const salesAgg = await Sales.aggregate([
       { $match: salesQuery },
       { $group: {
@@ -239,17 +268,19 @@ export const getLedgerDetails = async (req, res) => {
       { $sort: { vchdate: -1 } }
     ]);
 
-    // Only include sales invoices not already covered by VoucherMaster (deduplicate by vchnumber)
-    const existingVchNumbers = new Set(vouchers.map(v => v.vchnumber));
+    const allSeenVchNumbers = new Set([
+      ...partyVouchers.map(v => v.vchnumber),
+      ...entryVchNumbers,
+    ]);
     const normalisedSales = salesAgg
-      .filter(s => !existingVchNumbers.has(s._id))
+      .filter(s => !allSeenVchNumbers.has(s._id))
       .map(s => ({
         _id: s.voucherId || s._id,
         source: 'tally_sales',
         date: s.vchdate,
         voucherNo: s._id,
         type: s.vchtype || 'Sales',
-        amount: s.totalAmount || 0,
+        amount: s.totalAmount > 0 ? s.totalAmount : Math.abs(s.totalAmount),
         debit: s.totalAmount > 0 ? s.totalAmount : 0,
         credit: s.totalAmount < 0 ? Math.abs(s.totalAmount) : 0,
         partyName: s.ledgername,
@@ -257,13 +288,17 @@ export const getLedgerDetails = async (req, res) => {
         balance: 0,
       }));
 
-    // Merge and sort by date descending
-    const allTransactions = [...normalisedVouchers, ...normalisedSales, ...normalisedAppTxns]
-      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    // ── 5. Merge, sort, paginate ──
+    const allTransactions = [
+      ...normalisedEntries,
+      ...normalisedPartyVouchers,
+      ...normalisedSales,
+      ...normalisedAppTxns,
+    ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
-    const totalTransactions = totalVouchers + normalisedSales.length + appTransactions.length;
+    const totalTransactions = allTransactions.length;
+    const paginatedTransactions = allTransactions.slice(skip, skip + parseInt(limit));
 
-    // Summary — include LedgerOpening so frontend can display it
     const totalDebit  = allTransactions.reduce((s, t) => s + (t.debit  || 0), 0);
     const totalCredit = allTransactions.reduce((s, t) => s + (t.credit || 0), 0);
 
@@ -271,12 +306,12 @@ export const getLedgerDetails = async (req, res) => {
       success: true,
       data: {
         ledger,
-        transactions: allTransactions,
+        transactions: paginatedTransactions,
         pagination: {
           currentPage: parseInt(page),
           totalPages: Math.ceil(totalTransactions / parseInt(limit)),
           totalTransactions,
-          hasNext: skip + allTransactions.length < totalTransactions,
+          hasNext: skip + parseInt(limit) < totalTransactions,
           hasPrev: parseInt(page) > 1
         },
         summary: {
