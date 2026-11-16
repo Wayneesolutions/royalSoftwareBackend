@@ -288,13 +288,13 @@ export const getLedgerDetails = async (req, res) => {
         balance: 0,
       }));
 
-    // ── 5. Merge, sort, paginate ──
+    // ── 5. Merge, sort ascending (oldest first) for running-balance calculation ──
     const allTransactions = [
       ...normalisedEntries,
       ...normalisedPartyVouchers,
       ...normalisedSales,
       ...normalisedAppTxns,
-    ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
     const totalTransactions = allTransactions.length;
     const paginatedTransactions = allTransactions.slice(skip, skip + parseInt(limit));
