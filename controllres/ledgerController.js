@@ -318,7 +318,7 @@ export const getLedgerDetails = async (req, res) => {
           openingBalance: ledger.LedgerOpening || 0,
           totalDebit,
           totalCredit,
-          closingBalance: (ledger.LedgerOpening || 0) + totalDebit - totalCredit,
+          closingBalance: (ledger.LedgerOpening || 0) - totalDebit + totalCredit,
           transactionCount: totalTransactions,
         },
         _debug: {
