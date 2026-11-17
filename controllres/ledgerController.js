@@ -121,6 +121,12 @@ const NATURAL_CR_GROUPS = ['sundry creditors', 'loans (liability)', 'current lia
 const normalizeOpening = (ledger) => {
   const raw = ledger.LedgerOpening || 0;
   const parent = (ledger.LedgerParent || '').toLowerCase().trim();
+  if (!parent) {
+    // LedgerParent not set — Tally sync didn't populate it.
+    // All dealers in this app are Sundry Debtors (Dr natured).
+    // Negative raw value = Tally inverted sign convention → flip to Dr.
+    return Math.abs(raw);
+  }
   const isNaturallyCr = NATURAL_CR_GROUPS.some(g => parent.includes(g));
   return isNaturallyCr ? -raw : raw;
 };
