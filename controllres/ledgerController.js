@@ -114,6 +114,17 @@ export const getLedgers = async (req, res) => {
   }
 };
 
+// In Tally, naturally-Cr group accounts store their opening balance with inverted sign:
+// positive = Cr (natural direction), negative = Dr (opposite).
+// We normalise so that our convention is always: positive = Dr, negative = Cr.
+const NATURAL_CR_GROUPS = ['sundry creditors', 'loans (liability)', 'current liabilities', 'accounts payable', 'creditors', 'provisions', 'bank od a/c', 'bank occ a/c'];
+const normalizeOpening = (ledger) => {
+  const raw = ledger.LedgerOpening || 0;
+  const parent = (ledger.LedgerParent || '').toLowerCase().trim();
+  const isNaturallyCr = NATURAL_CR_GROUPS.some(g => parent.includes(g));
+  return isNaturallyCr ? -raw : raw;
+};
+
 // Get ledger details with transactions
 export const getLedgerDetails = async (req, res) => {
   try {
@@ -315,10 +326,10 @@ export const getLedgerDetails = async (req, res) => {
           hasPrev: parseInt(page) > 1
         },
         summary: {
-          openingBalance: ledger.LedgerOpening || 0,
+          openingBalance: normalizeOpening(ledger),
           totalDebit,
           totalCredit,
-          closingBalance: (ledger.LedgerOpening || 0) - totalDebit + totalCredit,
+          closingBalance: normalizeOpening(ledger) - totalDebit + totalCredit,
           transactionCount: totalTransactions,
         },
         _debug: {
