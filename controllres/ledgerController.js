@@ -340,6 +340,9 @@ export const getLedgerDetails = async (req, res) => {
           appTxns: normalisedAppTxns.length,
           total: totalTransactions,
           dateFilter: { startDate: startDate || null, endDate: endDate || null },
+          ledgerParent: ledger.LedgerParent || null,
+          rawOpening: ledger.LedgerOpening || 0,
+          normalizedOpening: normalizeOpening(ledger),
         }
       },
       message: 'Ledger details retrieved successfully'
