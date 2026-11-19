@@ -30,7 +30,11 @@ export const sha256 = (v) => crypto.createHash('sha256').update(String(v)).diges
 
 /** The company's Loyvexa link, or null when it isn't switched on. */
 export async function linkFor(companyId) {
-  const c = await Company.findById(companyId).select('+integrations.loyvexa.connectorKey integrations companyCode companyName').lean();
+  // Only "+connectorKey": asking for "integrations" as well as a path inside it is a
+  // projection path collision on MongoDB 4.4+ ("Path collision at
+  // integrations.loyvexa.connectorKey"), which broke console-link and every sync.
+  // "+field" alone returns the normal fields plus the hidden key.
+  const c = await Company.findById(companyId).select('+integrations.loyvexa.connectorKey').lean();
   const l = c?.integrations?.loyvexa;
   if (!l?.enabled || !l.baseUrl || !l.connectorKey) return null;
   return { baseUrl: l.baseUrl.replace(/\/$/, ''), key: l.connectorKey, earnOn: l.earnOn || 'delivered', company: c };
