@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { onOrderStatus } from "../../services/loyvexa.js";
 
 const orderSchema = new mongoose.Schema({
   orderNumber: {
@@ -440,6 +441,17 @@ orderSchema.statics.generateOrderNumber = async function(companyId) {
 
   return `${prefix}-${String(sequence).padStart(4, '0')}`;
 };
+
+// Bundle B: tell Loyvexa when an order is approved, delivered, cancelled or
+// returned (purchase points + the AI's reorder model). Queued in the
+// IntegrationOutbox, so saving an order never waits on Loyvexa.
+orderSchema.pre('save', function (next) {
+  this.$locals.loyvexaStatusChanged = this.isNew || this.isModified('status');
+  next();
+});
+orderSchema.post('save', function (doc) {
+  if (doc.$locals?.loyvexaStatusChanged) onOrderStatus(doc);
+});
 
 const Order = mongoose.model('Order', orderSchema);
 

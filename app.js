@@ -24,6 +24,7 @@ import { specs, swaggerUi } from './config/swagger.js'
 import tallyRoute from './routes/tally/tallyRoute.js'
 import maintenanceRoute from './routes/maintenanceRoute.js'
 import priceListRoute from './routes/priceListRoute.js'
+import { externalOrders, rewards, admin as loyvexaAdmin, hub as hubRoute } from './routes/integrations/loyvexaRoute.js'
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -84,6 +85,11 @@ app.get('/api/v1/health', (req, res) => {
   app.use('/api/v1/auth', authRoute)
   app.use('/api/v1/admin', adminRoute)
   app.use('/api/v1/user', userRoute)
+  // Bundle B (Korvo + Loyvexa). /orders/external must come before /orders.
+  app.use('/api/v1/orders/external', externalOrders)
+  app.use('/api/v1/rewards', rewards)
+  app.use('/api/v1/integrations/loyvexa', loyvexaAdmin)
+  app.use('/api/v1/hub', hubRoute)
   app.use('/api/v1/orders', orderRoute)
   app.use('/api/v1/approvals', approvalRoute)
   app.use('/api/v1/products', productRoute)
