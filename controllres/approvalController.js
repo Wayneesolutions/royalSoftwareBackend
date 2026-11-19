@@ -515,14 +515,14 @@ export const unapproveOrder = async (req, res) => {
     const order = await Order.findOne({
       _id: orderId,
       companyId,
-      status: 'approved',
+      status: { $in: ['approved', 'sent_to_tally'] },
       isActive: true
     }).populate('createdBy', 'name role email');
 
     if (!order) {
       return res.status(404).json({
         success: false,
-        message: 'Order not found or not in approved status'
+        message: 'Order not found or not in approved/sent_to_tally status'
       });
     }
 
