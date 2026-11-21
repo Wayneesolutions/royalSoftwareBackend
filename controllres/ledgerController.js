@@ -188,7 +188,8 @@ export const getLedgerDetails = async (req, res) => {
       return true;
     });
 
-    const entryVchGuids = new Set(ledgerEntries.map(e => e.vchguid).filter(Boolean));
+    const normalizeGuid = (g) => (g || '').trim().toLowerCase();
+    const entryVchGuids = new Set(ledgerEntries.map(e => normalizeGuid(e.vchguid)).filter(Boolean));
     const entryVchNumbers = new Set(ledgerEntries.map(e => e.voucherId?.vchnumber).filter(Boolean));
 
     const normalisedEntries = ledgerEntries.map(e => ({
@@ -218,21 +219,34 @@ export const getLedgerDetails = async (req, res) => {
 
     const partyVouchers = await VoucherMaster.find(voucherQuery).sort({ vchdate: -1 }).lean();
 
+    // Determine Dr/Cr direction from voucher type (amount sign alone is unreliable for Purchase)
+    const getVoucherDrCr = (vchtype, vchamount) => {
+      const type = (vchtype || '').toLowerCase();
+      const amt = Math.abs(vchamount || 0);
+      if (type === 'purchase' || type === 'receipt') return { debit: 0, credit: amt };
+      if (type === 'sales'    || type === 'payment') return { debit: amt, credit: 0 };
+      // Journal / others: fall back to sign
+      return vchamount < 0 ? { debit: 0, credit: amt } : { debit: amt, credit: 0 };
+    };
+
     const normalisedPartyVouchers = partyVouchers
-      .filter(v => !entryVchGuids.has(v.vchguid))
-      .map(v => ({
-        _id: v._id,
-        source: 'tally',
-        date: v.vchdate,
-        voucherNo: v.vchnumber,
-        type: v.vchtype,
-        amount: Math.abs(v.vchamount || 0),
-        debit: v.vchamount > 0 ? Math.abs(v.vchamount) : 0,
-        credit: v.vchamount < 0 ? Math.abs(v.vchamount) : 0,
-        partyName: v.vchpartyname,
-        description: v.vchtype,
-        balance: 0,
-      }));
+      .filter(v => !entryVchGuids.has(normalizeGuid(v.vchguid)))
+      .map(v => {
+        const { debit, credit } = getVoucherDrCr(v.vchtype, v.vchamount);
+        return {
+          _id: v._id,
+          source: 'tally',
+          date: v.vchdate,
+          voucherNo: v.vchnumber,
+          type: v.vchtype,
+          amount: Math.abs(v.vchamount || 0),
+          debit,
+          credit,
+          partyName: v.vchpartyname,
+          description: v.vchtype,
+          balance: 0,
+        };
+      });
 
     // ── 3. App-created LedgerTransactions ──
     const appTxnQuery = {
